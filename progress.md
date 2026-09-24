@@ -60,17 +60,16 @@ detection → sharpness verdict → species ID → grid/review UI).
   "Tune rules…" jump into Settings.
 - **Detector is bundled** with the app (seeded into the model dir on first run);
   the app and CLI auto-load installed models.
-- **Preview modes**: a selector in the review bar — **Fast** (analysis res),
-  **High-res** (native embedded preview, ~1.4 s) and **Developed** (AHD demosaic
-  + camera look, ~3 s, capped at 6000 px). Each mode is cached separately and a
-  spinner shows while rendering. Detection boxes are positioned against the
+- **Preview modes**: a selector in the review bar — **Fast** (analysis res) and
+  **High-res** (native embedded camera preview, ~1.4 s). Each mode is cached and
+  a spinner shows while rendering. Detection boxes are positioned against the
   **stored analysis dimensions** (schema v8), so they stay aligned at any
   preview resolution.
-- **Developed look** (matching DPP/Lightroom): AHD demosaic → white balance →
-  camera→sRGB → median-targeted auto exposure → **ACES filmic tone curve**
-  (highlight rolloff, so a white bird keeps detail) → slight saturation →
-  capture sharpening. Verified on a real CR3: mean 105 (camera preview 108),
-  p99.9 = 245 (no clipping).
+  - _Removed from the UI:_ the **Developed** mode (AHD demosaic + camera look).
+    Side-by-side it looked slightly softer than the camera's own preview, so the
+    native preview is the better default. The pipeline is kept in
+    `core::io::develop` (CLI: `preview --develop [--linear|--no-sharpen]`) for
+    future work — RL deconvolution, chroma denoise, lens corrections.
 - **Zoom is sharp**: the preview element is sized to `fit × zoom` so the browser
   resamples from the full-resolution bitmap instead of magnifying a small raster.
 - **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
@@ -103,8 +102,10 @@ detection → sharpness verdict → species ID → grid/review UI).
 3. **Virtualized grid** for very large folders (currently renders all tiles).
 4. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
 5. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
-6. **Preview over an asset protocol** — full-res previews currently cross IPC as
-   base64 (~5 MB strings); stream from disk instead.
+6. **Preview over an asset protocol** — previews cross IPC as base64; stream from
+   disk instead.
+7. **Developed preview, round 2** (if wanted) — RL deconvolution sharpening,
+   chroma denoise, lens corrections, better demosaic (LibRaw DHT/DCB).
 
 ## Known issues / notes
 
