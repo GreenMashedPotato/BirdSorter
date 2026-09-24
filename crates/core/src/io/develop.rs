@@ -32,13 +32,23 @@ use crate::{CoreError, Result};
 /// Re-exported so callers can choose the demosaic algorithm.
 pub use demosaic::Algorithm as DemosaicAlgorithm;
 
-/// Post-conversion processing. All default to on (the "camera look").
+/// Sharpening strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharpenMode {
+    Off,
+    /// Unsharp mask (fast).
+    Unsharp,
+    /// Richardson–Lucy deconvolution on luma (slower, more detail, fewer halos).
+    Deconvolve,
+}
+
+/// Post-conversion processing. Defaults are the "camera look".
 #[derive(Debug, Clone, Copy)]
 pub struct DevelopOptions {
     pub auto_brightness: bool,
     pub tone_curve: bool,
     pub saturation: bool,
-    pub sharpen: bool,
+    pub sharpen: SharpenMode,
 }
 
 impl Default for DevelopOptions {
@@ -47,7 +57,9 @@ impl Default for DevelopOptions {
             auto_brightness: true,
             tone_curve: true,
             saturation: true,
-            sharpen: true,
+            // Unsharp is the fast, predictable default; `Deconvolve` (RL on
+            // luma + chroma denoise) is available but slower.
+            sharpen: SharpenMode::Unsharp,
         }
     }
 }
@@ -59,7 +71,7 @@ impl DevelopOptions {
             auto_brightness: false,
             tone_curve: false,
             saturation: false,
-            sharpen: false,
+            sharpen: SharpenMode::Off,
         }
     }
 }
@@ -243,8 +255,10 @@ pub fn develop_srgb(
     if options.saturation {
         saturate(&mut rgb, n, 1.06);
     }
-    if options.sharpen {
-        unsharp_mask_rgb(&mut rgb, w, h);
+    match options.sharpen {
+        SharpenMode::Off => {}
+        SharpenMode::Unsharp => unsharp_mask_rgb(&mut rgb, w, h),
+        SharpenMode::Deconvolve => luma_deconvolve(&mut rgb, w, h),
     }
 
     // 4. Crop to the recommended area, then to 8-bit RGB.
@@ -303,6 +317,78 @@ fn saturate(rgb: &mut [f32], n: usize, amount: f32) {
             rgb[c * n + i] = (l + (v - l) * amount).clamp(0.0, 1.0);
         }
     }
+}
+
+/// Chroma denoise + Richardson–Lucy deconvolution on luminance.
+///
+/// Splitting luma from chroma lets us blur colour noise (chroma is low-detail
+/// anyway) while pushing detail recovery on luma, which is what the eye
+/// perceives as sharpness. Deconvolution also avoids the halos that unsharp
+/// masking creates.
+fn luma_deconvolve(rgb: &mut [f32], w: usize, h: usize) {
+    const ITERS: usize = 6;
+    let n = w * h;
+    let mut y = vec![0.0f32; n];
+    let mut cr = vec![0.0f32; n];
+    let mut cb = vec![0.0f32; n];
+    for i in 0..n {
+        let r = rgb[i];
+        let g = rgb[n + i];
+        let b = rgb[2 * n + i];
+        let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        y[i] = l;
+        cr[i] = r - l;
+        cb[i] = b - l;
+    }
+
+    // Chroma denoise (two passes of a 3-tap blur).
+    cb = blur_plane(&blur_plane(&cb, w, h), w, h);
+    cr = blur_plane(&blur_plane(&cr, w, h), w, h);
+
+    // Richardson–Lucy with a 3x3 Gaussian PSF.
+    let observed = y.clone();
+    for _ in 0..ITERS {
+        let conv = blur_plane(&y, w, h);
+        let mut ratio = vec![0.0f32; n];
+        for i in 0..n {
+            ratio[i] = observed[i] / (conv[i] + 1e-4);
+        }
+        let correction = blur_plane(&ratio, w, h);
+        for i in 0..n {
+            y[i] = (y[i] * correction[i]).clamp(0.0, 1.0);
+        }
+    }
+
+    for i in 0..n {
+        let l = y[i];
+        let r = l + cr[i];
+        let b = l + cb[i];
+        let g = l - (0.2126 * cr[i] + 0.0722 * cb[i]) / 0.7152;
+        rgb[i] = r.clamp(0.0, 1.0);
+        rgb[n + i] = g.clamp(0.0, 1.0);
+        rgb[2 * n + i] = b.clamp(0.0, 1.0);
+    }
+}
+
+/// Separable 3-tap Gaussian blur (`[1,2,1]/4`) of a single plane.
+fn blur_plane(src: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut tmp = vec![0.0f32; w * h];
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let xm = x.saturating_sub(1);
+            let xp = (x + 1).min(w - 1);
+            tmp[y * w + x] = (src[y * w + xm] + 2.0 * src[y * w + x] + src[y * w + xp]) * 0.25;
+        }
+    }
+    for y in 0..h {
+        let ym = y.saturating_sub(1);
+        let yp = (y + 1).min(h - 1);
+        for x in 0..w {
+            out[y * w + x] = (tmp[ym * w + x] + 2.0 * tmp[y * w + x] + tmp[yp * w + x]) * 0.25;
+        }
+    }
+    out
 }
 
 /// Capture sharpening: unsharp mask with a small radius and high amount
