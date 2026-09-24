@@ -93,6 +93,43 @@
     ),
   );
 
+  // --- virtualized grid ----------------------------------------------------
+  // Only the tiles in (and just around) the viewport are rendered, so a folder
+  // with thousands of images stays responsive.
+  let gridEl = $state<HTMLDivElement | undefined>(undefined);
+  let gridScrollTop = $state(0);
+  let gridViewportH = $state(700);
+  let gridW = $state(900);
+
+  const TILE_W = 200;
+  const TILE_GAP = 10;
+  const OVERSCAN_ROWS = 3;
+  /// Thumbnail (4:3) + meta row + gap.
+  const ROW_H = TILE_W * 0.75 + 34 + TILE_GAP;
+
+  const cols = $derived(Math.max(1, Math.floor((gridW + TILE_GAP) / (TILE_W + TILE_GAP))));
+  const rowCount = $derived(Math.max(1, Math.ceil(visible.length / cols)));
+  const firstRow = $derived(Math.max(0, Math.floor(gridScrollTop / ROW_H) - OVERSCAN_ROWS));
+  const lastRow = $derived(
+    Math.min(rowCount - 1, Math.ceil((gridScrollTop + gridViewportH) / ROW_H) + OVERSCAN_ROWS),
+  );
+  const slice = $derived(visible.slice(firstRow * cols, (lastRow + 1) * cols));
+  const topPad = $derived(firstRow * ROW_H);
+  const bottomPad = $derived(Math.max(0, (rowCount - lastRow - 1) * ROW_H));
+
+  $effect(() => {
+    const el = gridEl;
+    if (!el) return;
+    gridW = el.clientWidth;
+    gridViewportH = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      gridW = el.clientWidth;
+      gridViewportH = el.clientHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
 
@@ -548,12 +585,10 @@
     });
   });
 
-  // Lazily fetch thumbnails for the visible tiles, a few at a time. This effect
-  // must NOT read `thumbs`, or every loaded image would re-trigger it and flood
-  // the backend (that is what froze the window).
+  // Load thumbnails for the tiles actually on screen, a few at a time.
   $effect(() => {
     if (!inTauri || activeFolder === null) return;
-    for (const f of visible) enqueueThumb(f.id);
+    for (const f of slice) enqueueThumb(f.id);
     pumpThumbs();
   });
 </script>
@@ -625,19 +660,27 @@
       <button onclick={() => applyLabel("reject")} disabled={selected.size === 0}>Reject</button>
     </div>
 
-    <div class="grid">
+    <div
+      class="grid"
+      bind:this={gridEl}
+      onscroll={() => {
+        if (gridEl) gridScrollTop = gridEl.scrollTop;
+      }}
+    >
       {#if visible.length === 0}
         <div class="empty">
           {activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
         </div>
-      {/if}
-      {#each visible as f (f.id)}
-        <div
-          class="tile"
-          class:selected={selected.has(f.id)}
-          role="button"
-          tabindex="0"
-          onclick={() => toggle(f.id)}
+      {:else}
+        <div style="height:{topPad}px"></div>
+        <div class="grid-row" style="grid-template-columns: repeat({cols}, minmax(0, 1fr))">
+          {#each slice as f (f.id)}
+            <div
+              class="tile"
+              class:selected={selected.has(f.id)}
+              role="button"
+              tabindex="0"
+              onclick={() => toggle(f.id)}
           onkeydown={(e) => onTileKey(e, f.id)}
           ondblclick={() => openReview(f.id)}
         >
@@ -664,7 +707,10 @@
             {/if}
           </div>
         </div>
-      {/each}
+          {/each}
+        </div>
+        <div style="height:{bottomPad}px"></div>
+      {/if}
     </div>
   </main>
 
