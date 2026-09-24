@@ -25,8 +25,12 @@ Early. The headless Rust core is underway (M1 of the plan):
 | `core::analysis::sharpness` — full feature vector (Laplacian, Tenengrad, FFT, local contrast, Brenner, directionality, 3×3 grid, eye heuristic) | ✅ tested |
 | `core::analysis::scorer` — `rules-v1` verdicts + miss-focus penalties | ✅ tested |
 | `core::io::hash` — xxh3 content identity | ✅ tested |
-| `core::data::{db,settings}` — SQLite schema + migrations, score settings | ✅ tested |
-| `core::io::raw`, `core::runtime` (ONNX), `core::pipeline`, species ID | ⏳ next |
+| `core::io::cache` — content-hash-keyed thumbnail cache | ✅ tested |
+| `core::io::decoder` / `core::io::raw` — RAW decode via `rawler` (embedded preview → full → demosaic), generic image decoder | ✅ tested (error paths; needs real-RAW fixtures) |
+| `core::data::{db,library,analysis_store,labels,settings}` — SQLite schema + migrations, scan/re-link, analysis + labels | ✅ tested |
+| `core::pipeline::ingest` — decode → detect → features → verdict, cancel/batching/failure isolation | ✅ tested with fakes |
+| `core::runtime` (ONNX Runtime, YOLO detector) | ⏳ next |
+| Species ID, learning loop, thumbnail encoder | ⏳ next |
 | Tauri desktop shell + Svelte UI | ⏳ next |
 
 ## Layout

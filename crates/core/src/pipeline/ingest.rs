@@ -15,17 +15,9 @@ use crate::data::library;
 use crate::data::settings::ScoreSettings;
 use crate::{CoreError, Result};
 
-/// Decoded half-resolution RGB image handed to the rest of the pipeline.
-#[derive(Debug, Clone)]
-pub struct DecodedImage {
-    pub rgb: Array3<u8>,
-}
-
-/// Turns a file on disk into an RGB image. Implemented for real RAWs by
-/// `core::io::raw`; faked in tests.
-pub trait ImageDecoder: Send + Sync {
-    fn decode(&self, path: &Path) -> Result<DecodedImage>;
-}
+/// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
+/// backends can implement them without depending on the pipeline.
+pub use crate::io::decoder::{DecodedImage, ImageDecoder};
 
 /// Finds subjects (birds) in images. Implemented by the ONNX detector; faked
 /// in tests.
