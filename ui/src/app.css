@@ -424,6 +424,9 @@ input {
   border-radius: 4px;
   user-select: none;
   -webkit-user-drag: none;
+  /* Let the browser resample from the full-resolution bitmap (transform
+     scaling of a small raster is what made zoomed-in previews soft). */
+  image-rendering: auto;
 }
 .box {
   position: absolute;

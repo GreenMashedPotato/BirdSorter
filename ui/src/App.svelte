@@ -719,7 +719,7 @@
             >
               <div
                 class="imgwrap"
-                style="width:{fit.w}px; height:{fit.h}px; transform: translate({tx}px, {ty}px) scale({zoom})"
+                style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
               >
                 <img
                   src={previewUrl}
