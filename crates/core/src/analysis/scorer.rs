@@ -166,6 +166,60 @@ pub fn score_rules(f: &SharpnessFeatures, s: &ScoreSettings) -> ScoreResult {
     ScoreResult::new(score, label, has_bokeh, reason)
 }
 
+// ---------------------------------------------------------------------------
+// Trained-model scorer
+// ---------------------------------------------------------------------------
+
+/// Wraps a trained linear model with the same interface as [`score_rules`].
+pub struct TrainedScorer {
+    model: crate::learning::trainer::LinearModel,
+    bokeh_ratio: f32,
+}
+
+impl TrainedScorer {
+    /// Load a model from disk.
+    pub fn load(path: &std::path::Path) -> crate::Result<Self> {
+        Ok(Self {
+            model: crate::learning::trainer::LinearModel::load(path)?,
+            bokeh_ratio: ScoreSettings::default().bokeh_ratio,
+        })
+    }
+
+    pub fn version(&self) -> &str {
+        &self.model.version
+    }
+
+    pub fn classes(&self) -> &[String] {
+        &self.model.classes
+    }
+
+    /// Score a feature vector. Subjects only — the trained model has no
+    /// `no_subject` class, so those short-circuit to whole-image sharpness.
+    pub fn score_features(&self, f: &SharpnessFeatures) -> ScoreResult {
+        if !f.has_subject {
+            let score = f.tenengrad_full.max(f.laplacian_full);
+            return ScoreResult::new(score, "no_subject", false, None);
+        }
+        let x = features_to_vector(f);
+        let (idx, probs) = self.model.predict(&x);
+        let label = self
+            .model
+            .classes
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "uncertain".to_string());
+        let score = self
+            .model
+            .class_index("sharp")
+            .and_then(|i| probs.get(i).copied())
+            .unwrap_or_else(|| probs.iter().cloned().fold(0.0, f32::max));
+        let mut result = ScoreResult::new(score, &label, false, None);
+        result.has_bokeh = f.subject_to_bg_ratio > self.bokeh_ratio;
+        result.model_version = self.model.version.clone();
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

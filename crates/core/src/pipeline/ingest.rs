@@ -43,6 +43,13 @@ impl VerdictScorer for RulesScorer {
     }
 }
 
+/// The trained-model scorer plugs into the same pipeline seam.
+impl VerdictScorer for crate::analysis::scorer::TrainedScorer {
+    fn score(&self, features: &SharpnessFeatures) -> Result<ScoreResult> {
+        Ok(self.score_features(features))
+    }
+}
+
 /// Cooperative cancellation shared with the UI thread.
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken(Arc<AtomicBool>);
@@ -446,6 +453,28 @@ fn analyze_one(
 /// Convenience helper for callers that only have settings, not a scorer object.
 pub fn rules_scorer(settings: ScoreSettings) -> RulesScorer {
     RulesScorer(settings)
+}
+
+/// Choose the scorer: the latest trained model when one exists and loads,
+/// otherwise the rule-based scorer.
+pub fn scorer_for(conn: &Connection, settings: ScoreSettings) -> Result<Box<dyn VerdictScorer>> {
+    if let Some(row) = crate::data::models::latest_model(conn)? {
+        if let Ok(trained) =
+            crate::analysis::scorer::TrainedScorer::load(std::path::Path::new(&row.path))
+        {
+            return Ok(Box::new(trained));
+        }
+    }
+    Ok(Box::new(RulesScorer(settings)))
+}
+
+/// Recompute verdicts for a folder with `scorer` from stored feature vectors.
+pub fn rescore_folder(
+    conn: &Connection,
+    folder_id: i64,
+    scorer: &dyn VerdictScorer,
+) -> Result<usize> {
+    crate::data::analysis_store::rescore_folder_with(conn, folder_id, |f| scorer.score(f))
 }
 
 /// Map a decode error into a [`CoreError`] (used by real decoders).

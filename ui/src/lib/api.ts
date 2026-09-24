@@ -167,6 +167,18 @@ export async function rescoreFolder(folder: number): Promise<number> {
   return invoke("rescore", { folder });
 }
 
+export interface TrainResult {
+  version: string;
+  nSamples: number;
+  cvAccuracy: number;
+  classes: string[];
+}
+
+/** Train a verdict model from the user's labels (and re-score the folder). */
+export async function train(folder: number | null): Promise<TrainResult> {
+  return invoke("train", { folder });
+}
+
 export async function labelFiles(
   files: number[],
   label: UserLabel,

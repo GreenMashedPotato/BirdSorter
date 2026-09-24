@@ -16,6 +16,7 @@
     getSettings,
     setSettings,
     rescoreFolder,
+    train,
     onProgress,
     onDone,
     onError,
@@ -27,6 +28,7 @@
     type UserLabel,
     type AnalysisDetail,
     type ScoreSettings,
+    type TrainResult,
   } from "./lib/api";
   import Settings from "./lib/Settings.svelte";
 
@@ -122,6 +124,19 @@
       status = `error: ${e}`;
     } finally {
       settingsSaving = false;
+    }
+  }
+
+  async function retrain() {
+    status = "training…";
+    try {
+      const r: TrainResult = await train(activeFolder);
+      status = `trained ${r.version} · ${r.nSamples} labels · ${r.classes.length} classes · CV ${(
+        r.cvAccuracy * 100
+      ).toFixed(1)}%`;
+      await refreshFiles();
+    } catch (e) {
+      status = `retrain: ${e}`;
     }
   }
 
@@ -496,6 +511,7 @@
       <button onclick={cancel} disabled={!busy}>Cancel</button>
       <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
       <button onclick={openSettings} title="Scoring settings">Settings</button>
+      <button onclick={retrain} title="Train a model from your labels">Retrain</button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
     </div>

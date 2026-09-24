@@ -263,13 +263,12 @@ pub fn set_manual_bbox(conn: &Connection, file_id: i64, bbox: BBox) -> Result<()
     })
 }
 
-/// Recompute verdicts for every analyzed file in a folder from its stored
-/// feature vector. Cheap (no decode) and makes score-setting changes take
-/// effect immediately. Returns the number of rows rescored.
-pub fn rescore_folder(
+/// Recompute verdicts for every analyzed file in a folder using `score`.
+/// Cheap (no decode). Returns the number of rows rescored.
+pub fn rescore_folder_with(
     conn: &Connection,
     folder_id: i64,
-    settings: &ScoreSettings,
+    score: impl Fn(&SharpnessFeatures) -> Result<ScoreResult>,
 ) -> Result<usize> {
     let rows: Vec<(i64, String)> = conn
         .prepare(
@@ -285,7 +284,7 @@ pub fn rescore_folder(
     with_tx(conn, || {
         for (file_id, json) in &rows {
             let features = SharpnessFeatures::from_json(json)?;
-            let score = score_rules(&features, settings);
+            let score = score(&features)?;
             conn.execute(
                 "UPDATE analysis
                     SET sharpness_score = ?1, predicted_label = ?2, has_bokeh = ?3,
@@ -305,6 +304,15 @@ pub fn rescore_folder(
         Ok(())
     })?;
     Ok(rescored)
+}
+
+/// Recompute verdicts with the rule-based scorer and the given settings.
+pub fn rescore_folder(
+    conn: &Connection,
+    folder_id: i64,
+    settings: &ScoreSettings,
+) -> Result<usize> {
+    rescore_folder_with(conn, folder_id, |f| Ok(score_rules(f, settings)))
 }
 
 #[cfg(test)]

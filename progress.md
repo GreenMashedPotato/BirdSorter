@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **137 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- **141 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - App runs in release (`cargo run --release -p birdsorter-desktop`)
@@ -24,7 +24,7 @@ detection → sharpness verdict → species ID → grid/review UI).
 | M2 | UI v1 (grid, review, labels, filters) | ✅ done |
 | M3 | Compute tiers + model manager | 🟡 model registry done; download UI pending |
 | M4 | Species ID | ✅ done (ViT, 526 species) |
-| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst core done; UI + learning loop pending |
+| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst core + learning loop done; burst UI + eye model pending |
 | M6 | Release engineering (installers, signing) | ⬜ not started |
 
 ## Done
@@ -43,14 +43,17 @@ detection → sharpness verdict → species ID → grid/review UI).
   bulk labelling, live progress, review view (high-res preview, wheel-zoom +
   pan, YOLO box overlay, species top-4 + manual override), settings panel
   (strictness slider + per-rule advanced sliders, instant re-score).
-- **Species**: ViT-B/16, 526 species, data-driven preprocessing via
-  `bird_species.meta.json`. Verified: egret crop → Snowy Egret 0.39 (Rust) ≈
+- **Species**: ViT-B/16, 526 species (int8, 85 MB), data-driven preprocessing via
+  `bird_species.meta.json`. Verified: egret crop → Snowy Egret 0.37 (Rust) ≈
   0.38 (Python).
+- **Learning loop**: in-process multinomial logistic regression over the 12
+  features (pure Rust, JSON model). Standardization + 5-fold CV; `Retrain` in
+  the UI trains, reports CV accuracy and re-scores the current folder.
 - **Performance**: parallel decode → 1.38 → 4.56 img/s.
 
 ## In progress
 
-- **Learning loop** — in-app retrain over user labels (next).
+- Next up: Model Manager UI, burst UI, packaging (see backlog).
 
 ## Done (continued)
 
@@ -60,18 +63,16 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## TODO / backlog (roughly ordered)
 
-1. **Learning loop** — in-app retrain over user labels, with CV accuracy; use the
-   trained model in the scorer.
-2. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
+1. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
    needs a dialog + hosting decision).
-3. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
-4. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+2. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
+3. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
    detector for small/distant birds.
-5. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
+4. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
    notarization, auto-updater.
-6. **Virtualized grid** for very large folders (currently renders all tiles).
-7. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-8. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+5. **Virtualized grid** for very large folders (currently renders all tiles).
+6. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+7. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
 
 ## Known issues / notes
 

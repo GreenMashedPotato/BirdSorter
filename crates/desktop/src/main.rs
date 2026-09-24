@@ -20,13 +20,17 @@ use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::analysis::yolo::YoloConfig;
+use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
-use birdsorter_core::pipeline::{ingest_folder, CancelToken, IngestContext, RulesScorer};
+use birdsorter_core::learning::trainer;
+use birdsorter_core::pipeline::{
+    ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
+};
 use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -439,7 +443,7 @@ fn run_analysis(
         _ => Box::new(SaliencyDetector::default()),
     };
 
-    let scorer = RulesScorer(ScoreSettings::load_default());
+    let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
     let species = match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
         Ok(s) => s,
         Err(e) => {
@@ -456,7 +460,7 @@ fn run_analysis(
         decode_threads: threads,
         cancel: Some(cancel),
         species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
-        ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
+        ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
     let handle = app.clone();
@@ -502,8 +506,44 @@ async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, Strin
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
-        let settings = ScoreSettings::load_default();
-        analysis_store::rescore_folder(&conn, folder, &settings).map_err(err)
+        let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
+        rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrainResultDto {
+    version: String,
+    n_samples: usize,
+    cv_accuracy: f32,
+    classes: Vec<String>,
+}
+
+/// Train a verdict model from the user's labels, then re-score the folder.
+#[tauri::command]
+async fn train(state: State<'_, AppState>, folder: Option<i64>) -> Result<TrainResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let (ok, why) = trainer::can_train(&conn, trainer::MIN_PER_CLASS).map_err(err)?;
+        if !ok {
+            return Err(why);
+        }
+        let dir = registry::default_model_dir().map_err(err)?;
+        let result = trainer::train(&conn, &dir).map_err(err)?;
+        // Apply the freshly trained model to the current folder immediately.
+        if let Some(folder) = folder {
+            let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
+            let _ = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+        }
+        Ok(TrainResultDto {
+            version: result.version,
+            n_samples: result.n_samples,
+            cv_accuracy: result.cv_accuracy,
+            classes: result.classes,
+        })
     })
     .await
 }
@@ -536,7 +576,8 @@ fn main() {
             cancel_analysis,
             get_settings,
             set_settings,
-            rescore
+            rescore,
+            train
         ])
         .run(tauri::generate_context!())
         .expect("error while running BirdSorter");

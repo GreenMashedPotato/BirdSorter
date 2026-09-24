@@ -8,17 +8,22 @@ use std::process::ExitCode;
 
 use birdsorter_core::analysis::detector::{BBox, NullDetector, SubjectDetector};
 use birdsorter_core::analysis::saliency::SaliencyDetector;
-use birdsorter_core::analysis::scorer::score_rules;
+use birdsorter_core::analysis::scorer::{score_rules, TrainedScorer};
 use birdsorter_core::analysis::sharpness::{compute_features, Subject};
 use birdsorter_core::analysis::species::{SpeciesClassifier, SpeciesPreprocess};
 use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::library;
+use birdsorter_core::data::models;
+use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, library::ScanReport};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
-use birdsorter_core::pipeline::{ingest_folder, IngestContext, IngestProgress, RulesScorer};
+use birdsorter_core::learning::trainer;
+use birdsorter_core::pipeline::{
+    ingest_folder, IngestContext, IngestProgress, RulesScorer, VerdictScorer,
+};
 use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
 use ndarray::Array3;
 
@@ -34,6 +39,7 @@ Commands:
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
+  train [--db <path>]         Train a verdict model from your labels
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
   preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
@@ -50,6 +56,7 @@ fn main() -> ExitCode {
         Some("hash") => cmd_hash(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
+        Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
         Some("preview") => cmd_preview(&args[1..]),
         Some("probe") => cmd_probe(&args[1..]),
@@ -263,6 +270,59 @@ fn cmd_thumb(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Train a verdict model from the user's labels.
+fn cmd_train(args: &[String]) -> ExitCode {
+    let mut db_path = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--db" => db_path = it.next().cloned(),
+            other if other.starts_with("--") => {
+                eprintln!("train: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
+    }
+    match run_train(db_path.as_deref()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("train failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_train(db_path: Option<&str>) -> birdsorter_core::Result<()> {
+    let db_path = match db_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => db::default_db_path()?,
+    };
+    let conn = db::connect(&db_path)?;
+    db::init_schema(&conn)?;
+
+    let (ok, why) = trainer::can_train(&conn, trainer::MIN_PER_CLASS)?;
+    println!("{why}");
+    if !ok {
+        return Err(birdsorter_core::CoreError::Other(
+            "not enough labels to train".into(),
+        ));
+    }
+
+    let models_dir = registry::default_model_dir()?;
+    let r = trainer::train(&conn, &models_dir)?;
+    println!(
+        "trained {} ({} samples, {} classes)",
+        r.version,
+        r.n_samples,
+        r.classes.len()
+    );
+    println!("classes: {}", r.classes.join(", "));
+    println!("cross-validation accuracy: {:.1}%", r.cv_accuracy * 100.0);
+    println!("saved: {}", r.path.display());
+    Ok(())
 }
 
 /// Print each file's verdict, worst score first.
@@ -514,14 +574,31 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         Box::new(RawDecoder::new(Some(2400))),
         Box::new(ImageCrateDecoder::new(Some(2400))),
     ]);
-    let scorer = RulesScorer(ScoreSettings::load_default());
+    let settings = ScoreSettings::load_default();
+    let scorer: Box<dyn VerdictScorer> = match models::latest_model(&conn)? {
+        Some(m) => match TrainedScorer::load(Path::new(&m.path)) {
+            Ok(s) => {
+                println!(
+                    "scorer: trained model {} (cv {:.1}%)",
+                    m.version,
+                    m.cv_accuracy.unwrap_or(0.0) * 100.0
+                );
+                Box::new(s)
+            }
+            Err(e) => {
+                eprintln!("warning: trained model failed to load ({e}); using rules");
+                Box::new(RulesScorer(settings))
+            }
+        },
+        None => Box::new(RulesScorer(settings)),
+    };
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4),
         species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
-        ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
+        ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
     let mut last_line = 0usize;

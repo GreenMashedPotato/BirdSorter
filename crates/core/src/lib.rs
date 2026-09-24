@@ -16,6 +16,7 @@ pub mod analysis;
 pub mod data;
 pub mod error;
 pub mod io;
+pub mod learning;
 pub mod pipeline;
 pub mod runtime;
 

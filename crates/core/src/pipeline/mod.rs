@@ -12,6 +12,6 @@
 pub mod ingest;
 
 pub use ingest::{
-    ingest_folder, rules_scorer, CancelToken, DecodedImage, ImageDecoder, IngestContext,
-    IngestProgress, RulesScorer, SubjectDetector, VerdictScorer,
+    ingest_folder, rescore_folder, rules_scorer, scorer_for, CancelToken, DecodedImage,
+    ImageDecoder, IngestContext, IngestProgress, RulesScorer, SubjectDetector, VerdictScorer,
 };
