@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use base64::Engine as _;
 use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
+use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::registry;
@@ -373,6 +374,39 @@ async fn analysis_detail(
     blocking(move || analysis_detail_impl(&db_path, file)).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BreakdownDto {
+    file_id: i64,
+    stored_label: Option<String>,
+    stored_score: Option<f32>,
+    model_version: Option<String>,
+    explanation: ScoreExplanation,
+}
+
+/// Every intermediate value behind a file's sharpness verdict.
+#[tauri::command]
+async fn score_breakdown(state: State<'_, AppState>, file: i64) -> Result<BreakdownDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+        let Some(a) = analysis else {
+            return Err("file has not been analyzed yet".to_string());
+        };
+        let settings = ScoreSettings::load_default();
+        let explanation = explain_rules(&a.features, &settings);
+        Ok(BreakdownDto {
+            file_id: file,
+            stored_label: Some(a.predicted_label.clone()),
+            stored_score: Some(a.sharpness_score),
+            model_version: Some(a.model_version.clone()),
+            explanation,
+        })
+    })
+    .await
+}
+
 /// Set or clear the species override for a file.
 #[tauri::command]
 fn set_species(
@@ -691,6 +725,7 @@ fn main() {
             thumbnail,
             preview_image,
             analysis_detail,
+            score_breakdown,
             set_species,
             label_files,
             analyze_folder,

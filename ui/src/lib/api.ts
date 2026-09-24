@@ -206,6 +206,37 @@ export async function removeModel(key: string): Promise<number> {
   return invoke("remove_model", { key });
 }
 
+export interface ScoreExplanation {
+  hasSubject: boolean;
+  features: [string, number][];
+  votedSubjectSharp: number;
+  gridCentre: number;
+  gridCrossMedian: number;
+  gridCorrected: number;
+  subjectToBgRatio: number;
+  bokehThreshold: number;
+  hasBokeh: boolean;
+  penalty: string | null;
+  penaltyMultiplier: number | null;
+  adjustedSharpness: number;
+  finalLabel: string;
+  finalScore: number;
+  steps: string[];
+}
+
+export interface ScoreBreakdown {
+  fileId: number;
+  storedLabel: string | null;
+  storedScore: number | null;
+  modelVersion: string | null;
+  explanation: ScoreExplanation;
+}
+
+/** Every intermediate value behind a file's sharpness verdict. */
+export async function scoreBreakdown(file: number): Promise<ScoreBreakdown> {
+  return invoke("score_breakdown", { file });
+}
+
 export async function labelFiles(
   files: number[],
   label: UserLabel,

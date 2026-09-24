@@ -17,6 +17,7 @@
     setSettings,
     rescoreFolder,
     train,
+    scoreBreakdown,
     onProgress,
     onDone,
     onError,
@@ -29,9 +30,11 @@
     type AnalysisDetail,
     type ScoreSettings,
     type TrainResult,
+    type ScoreBreakdown as Breakdown,
   } from "./lib/api";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
+  import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
@@ -98,6 +101,18 @@
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
   let showModels = $state(false);
+  let showBreakdown = $state(false);
+  let breakdown = $state<Breakdown | null>(null);
+
+  async function openBreakdown() {
+    if (reviewFile === null) return;
+    try {
+      breakdown = await scoreBreakdown(reviewFile);
+      showBreakdown = true;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
   let settings = $state<ScoreSettings | null>(null);
   let settingsSaving = $state(false);
 
@@ -604,6 +619,9 @@
         {#if detail?.predicted}
           <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
           <span class="status">score {detail.score?.toFixed(3)}</span>
+          <button class="mini" onclick={openBreakdown} title="How is this score computed?">
+            Why?
+          </button>
         {/if}
         {#if detail?.hasBokeh}<span class="status">· bokeh</span>{/if}
         {#if detail?.missFocusReason}<span class="status">· {detail.missFocusReason}</span>{/if}
@@ -748,5 +766,16 @@
 
   {#if showModels}
     <ModelManager onClose={() => (showModels = false)} />
+  {/if}
+
+  {#if showBreakdown && breakdown}
+    <ScoreBreakdown
+      {breakdown}
+      onClose={() => (showBreakdown = false)}
+      onOpenSettings={async () => {
+        showBreakdown = false;
+        await openSettings();
+      }}
+    />
   {/if}
 </div>

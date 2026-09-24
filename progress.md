@@ -54,6 +54,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   local file** (zip bundle or `.onnx`), remove. Species shipped as an 89 MB zip
   bundle; `tools/pack_models.py` builds it. See `MODELS.md`.
 - **Native folder picker** via the Tauri dialog plugin (typed path still works).
+- **Score breakdown**: `explain_rules` returns every intermediate value + a
+  step-by-step trace (score_rules delegates to it, so verdict and trace never
+  diverge). The review view's **Why?** button opens the breakdown, with a
+  "Tune rules…" jump into Settings.
+- **Detector is bundled** with the app (seeded into the model dir on first run);
+  the app and CLI auto-load installed models.
 
 ## In progress
 
@@ -72,9 +78,6 @@ detection → sharpness verdict → species ID → grid/review UI).
 1. **Higher-resolution preview** — the review preview renders at analysis
    resolution (2400 px). Add a full-resolution render (and/or a 100% subject
    crop) with a loading indicator, and an option to prefer high-res previews.
-2. **Score breakdown / rule editor** — clicking a score shows exactly how it was
-   computed: the feature vector, each rule's contribution, and the final verdict,
-   with the ability to tweak the rules from that panel.
 
 ### Other
 

@@ -297,6 +297,24 @@ input {
   font-size: 11px;
 }
 
+/* --- score breakdown --------------------------------------------------- */
+.steps {
+  margin: 0;
+  padding-left: 18px;
+}
+.steps li {
+  margin: 4px 0;
+}
+.kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  font-variant-numeric: tabular-nums;
+}
+.kv span:nth-child(odd) {
+  color: var(--muted);
+}
+
 /* --- review view ------------------------------------------------------- */
 .review {
   position: fixed;
