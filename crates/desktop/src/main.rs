@@ -426,6 +426,38 @@ async fn score_breakdown(state: State<'_, AppState>, file: i64) -> Result<Breakd
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BurstDto {
+    frames: Vec<i64>,
+    best: i64,
+    size: usize,
+}
+
+/// Burst groups for a folder (by EXIF capture time).
+#[tauri::command]
+async fn bursts(state: State<'_, AppState>, folder: i64) -> Result<Vec<BurstDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let bursts = birdsorter_core::analysis::burst::folder_bursts(
+            &conn,
+            folder,
+            birdsorter_core::analysis::burst::DEFAULT_GAP_SECONDS,
+        )
+        .map_err(err)?;
+        Ok(bursts
+            .into_iter()
+            .map(|b| BurstDto {
+                frames: b.frames,
+                best: b.best,
+                size: b.size,
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Set or clear the species override for a file.
 #[tauri::command]
 fn set_species(
@@ -745,6 +777,7 @@ fn main() {
             preview_image,
             analysis_detail,
             score_breakdown,
+            bursts,
             set_species,
             label_files,
             analyze_folder,

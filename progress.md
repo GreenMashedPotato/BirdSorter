@@ -24,7 +24,7 @@ detection → sharpness verdict → species ID → grid/review UI).
 | M2 | UI v1 (grid, review, labels, filters) | ✅ done |
 | M3 | Compute tiers + model manager | ✅ model registry + Model Manager (download / install from file / remove) |
 | M4 | Species ID | ✅ done (ViT, 526 species) |
-| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst core + learning loop done; burst UI + eye model pending |
+| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst UI + learning loop done; eye model pending |
 | M6 | Release engineering (installers, signing) | ⬜ not started |
 
 ## Done
@@ -63,6 +63,10 @@ detection → sharpness verdict → species ID → grid/review UI).
 - **High-resolution preview**: an opt-in **High-res** toggle in the review bar
   renders the native embedded preview (verified 8192×5464, ~1.4 s, cached
   separately) with a loading spinner; the default stays at analysis resolution.
+- **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
+  it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
+  winner), and a **Burst winners** filter shows only the best frame of each
+  sequence. CLI: `birdsorter bursts <folder>`.
 
 ## In progress
 
@@ -82,14 +86,15 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ### Other
 
-3. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
-4. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+1. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
    detector for small/distant birds.
-5. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
+2. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
    notarization, auto-updater.
-6. **Virtualized grid** for very large folders (currently renders all tiles).
-7. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-8. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+3. **Virtualized grid** for very large folders (currently renders all tiles).
+4. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+5. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+6. **Preview over an asset protocol** — full-res previews currently cross IPC as
+   base64 (~5 MB strings); stream from disk instead.
 
 ## Known issues / notes
 

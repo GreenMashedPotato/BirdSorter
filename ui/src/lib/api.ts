@@ -268,6 +268,7 @@ export const FILTERS = [
   { key: "blurry", label: "Blurry" },
   { key: "no_subject", label: "No subject" },
   { key: "bokeh", label: "Bokeh" },
+  { key: "burst", label: "Burst winners" },
 ] as const;
 
 export type FilterKey = (typeof FILTERS)[number]["key"];
@@ -280,7 +281,20 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return !f.analyzed;
     case "bokeh":
       return f.hasBokeh;
+    case "burst":
+      return true; // handled in the view (needs the burst map)
     default:
       return f.predicted === key;
   }
+}
+
+export interface Burst {
+  frames: number[];
+  best: number;
+  size: number;
+}
+
+/** Burst groups for a folder (by EXIF capture time). */
+export async function bursts(folder: number): Promise<Burst[]> {
+  return invoke("bursts", { folder });
 }

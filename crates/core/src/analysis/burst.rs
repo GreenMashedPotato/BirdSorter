@@ -4,8 +4,11 @@
 //! whose capture times are no more than `gap_seconds` apart. This is what lets
 //! a flight sequence collapse to its sharpest frame.
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+
+use crate::Result;
 
 /// Default maximum gap between frames of the same burst.
 pub const DEFAULT_GAP_SECONDS: i64 = 2;
@@ -96,6 +99,40 @@ pub fn find_bursts(frames: &[Frame], gap_seconds: i64) -> Vec<Burst> {
             }
         })
         .collect()
+}
+
+/// Group the files of a folder into bursts and rank each.
+///
+/// `scores` supplies each file's sharpness (higher = better); files without a
+/// capture time become singletons. Returns bursts newest-last in capture order.
+pub fn folder_bursts(conn: &Connection, folder_id: i64, gap_seconds: i64) -> Result<Vec<Burst>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.captured_at,
+                COALESCE(a.sharpness_score, 0.0) AS score
+           FROM files f
+           LEFT JOIN analysis a ON a.file_id = f.id
+          WHERE f.folder_id = ?1 AND f.trashed_at IS NULL",
+    )?;
+    let rows = stmt.query_map([folder_id], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, f32>(2)?,
+        ))
+    })?;
+
+    let mut frames: Vec<Frame> = Vec::new();
+    for row in rows {
+        let (file_id, captured, score) = row?;
+        frames.push(Frame {
+            file_id,
+            captured_at: captured
+                .as_deref()
+                .and_then(crate::io::exif::parse_capture_time),
+            score,
+        });
+    }
+    Ok(find_bursts(&frames, gap_seconds))
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ Commands:
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
+  bursts <folder> [--db <path>]  Print burst groups (by capture time)
   train [--db <path>]         Train a verdict model from your labels
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
   preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
@@ -56,6 +57,7 @@ fn main() -> ExitCode {
         Some("hash") => cmd_hash(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
+        Some("bursts") => cmd_bursts(&args[1..]),
         Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
         Some("preview") => cmd_preview(&args[1..]),
@@ -274,6 +276,59 @@ fn cmd_thumb(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Print burst groups for a folder.
+fn cmd_bursts(args: &[String]) -> ExitCode {
+    let mut folder = None;
+    let mut db_path = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--db" => db_path = it.next().cloned(),
+            other if other.starts_with("--") => {
+                eprintln!("bursts: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other => folder = Some(other.to_string()),
+        }
+    }
+    let Some(folder) = folder else {
+        eprintln!("bursts: expected a folder path");
+        return ExitCode::FAILURE;
+    };
+    match run_bursts(&folder, db_path.as_deref()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bursts failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()> {
+    use birdsorter_core::analysis::burst;
+    let db_path = match db_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => db::default_db_path()?,
+    };
+    let conn = db::connect(&db_path)?;
+    db::init_schema(&conn)?;
+    let folder_id = library::add_folder(&conn, Path::new(folder))?;
+    let groups = burst::folder_bursts(&conn, folder_id, burst::DEFAULT_GAP_SECONDS)?;
+    let multi = groups.iter().filter(|b| b.size > 1).count();
+    println!(
+        "{} bursts ({} with more than one frame)",
+        groups.len(),
+        multi
+    );
+    for b in groups.iter().filter(|b| b.size > 1) {
+        println!(
+            "  size {:<3} best {:<6} frames {:?}",
+            b.size, b.best, b.frames
+        );
+    }
+    Ok(())
 }
 
 /// Train a verdict model from the user's labels.

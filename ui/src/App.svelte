@@ -18,6 +18,7 @@
     rescoreFolder,
     train,
     scoreBreakdown,
+    bursts,
     onProgress,
     onDone,
     onError,
@@ -86,7 +87,31 @@
   let newPath = $state("");
   let model = $state("");
 
-  const visible = $derived(files.filter((f) => matchesFilter(f, filter)));
+  const visible = $derived(
+    files.filter((f) =>
+      filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+    ),
+  );
+
+  /// Burst membership per file: `{ size, best }`.
+  let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
+
+  async function refreshBursts() {
+    if (!inTauri || activeFolder === null) {
+      burstInfo = {};
+      return;
+    }
+    try {
+      const groups = await bursts(activeFolder);
+      const map: Record<number, { size: number; best: boolean }> = {};
+      for (const g of groups) {
+        for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
+      }
+      burstInfo = map;
+    } catch {
+      burstInfo = {};
+    }
+  }
 
   // --- review view state ---------------------------------------------------
   let reviewFile = $state<number | null>(null);
@@ -367,6 +392,7 @@
       return;
     }
     files = await queryFiles(activeFolder);
+    await refreshBursts();
   }
 
   async function addAndScan() {
@@ -616,6 +642,14 @@
           </div>
           <div class="meta">
             <span class="name" title={f.filename}>{f.filename}</span>
+            {#if burstInfo[f.id]}
+              <span
+                class="badge burst"
+                class:winner={burstInfo[f.id].best}
+                title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
+                >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
+              >
+            {/if}
             {#if f.predicted}
               <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
               <span class="status">{scoreText(f)}</span>

@@ -22,7 +22,7 @@ directories = "5"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
-time = { version = "0.3", features = ["formatting", "macros"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 image = "0.24"
 rawler = "0.6.0"
 sha2 = "0.10"

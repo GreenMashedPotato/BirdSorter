@@ -46,6 +46,8 @@ pub struct FileRow {
     pub format: String,
     pub imported_at: String,
     pub trashed_at: Option<String>,
+    /// EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for burst grouping.
+    pub captured_at: Option<String>,
 }
 
 /// A file row paired with its absolute path on disk.
@@ -107,6 +109,7 @@ fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
         format: r.get("format")?,
         imported_at: r.get("imported_at")?,
         trashed_at: r.get("trashed_at")?,
+        captured_at: r.get("captured_at")?,
     })
 }
 
@@ -181,12 +184,14 @@ enum Pending {
         size: i64,
         mtime: f64,
         format: String,
+        captured_at: Option<String>,
     },
     Update {
         id: i64,
         hash: String,
         size: i64,
         mtime: f64,
+        captured_at: Option<String>,
     },
 }
 
@@ -204,12 +209,13 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                     size,
                     mtime,
                     format,
+                    captured_at,
                 } => {
                     conn.execute(
                         "INSERT INTO files
                            (folder_id, relative_path, filename, content_hash,
-                            filesize, mtime, format, imported_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                            filesize, mtime, format, imported_at, captured_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                         rusqlite::params![
                             folder_id,
                             rel,
@@ -218,7 +224,8 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                             size,
                             mtime,
                             format,
-                            now_iso()
+                            now_iso(),
+                            captured_at
                         ],
                     )?;
                 }
@@ -227,11 +234,13 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                     hash,
                     size,
                     mtime,
+                    captured_at,
                 } => {
                     conn.execute(
-                        "UPDATE files SET content_hash = ?1, filesize = ?2, mtime = ?3
-                          WHERE id = ?4",
-                        rusqlite::params![hash, size, mtime, id],
+                        "UPDATE files
+                            SET content_hash = ?1, filesize = ?2, mtime = ?3, captured_at = ?4
+                          WHERE id = ?5",
+                        rusqlite::params![hash, size, mtime, captured_at, id],
                     )?;
                 }
             }
@@ -263,11 +272,11 @@ pub fn scan_folder_with(
         .ok_or_else(|| CoreError::Other(format!("unknown folder_id {folder_id}")))?;
     let base = PathBuf::from(base);
 
-    // (relative_path -> (id, content_hash, filesize, mtime))
-    let mut existing: HashMap<String, (i64, String, i64, f64)> = HashMap::new();
+    // (relative_path -> (id, content_hash, filesize, mtime, captured_at))
+    let mut existing: HashMap<String, (i64, String, i64, f64, Option<String>)> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, relative_path, content_hash, filesize, mtime
+            "SELECT id, relative_path, content_hash, filesize, mtime, captured_at
                FROM files WHERE folder_id = ?1",
         )?;
         let rows = stmt.query_map([folder_id], |r| {
@@ -278,6 +287,7 @@ pub fn scan_folder_with(
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, f64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
                 ),
             ))
         })?;
@@ -316,18 +326,24 @@ pub fn scan_folder_with(
         let mtime = mtime_secs(&meta);
 
         match existing.get(&rel) {
-            Some((id, _hash, prev_size, prev_mtime))
-                if *prev_size == size && (*prev_mtime - mtime).abs() < 1e-3 =>
+            // Untouched only when the capture time has already been computed
+            // (an empty string means "computed, but no EXIF timestamp"), so a
+            // rescan backfills capture times for older libraries.
+            Some((id, _hash, prev_size, prev_mtime, prev_captured))
+                if *prev_size == size
+                    && (*prev_mtime - mtime).abs() < 1e-3
+                    && prev_captured.is_some() =>
             {
                 report.untouched += 1;
             }
-            Some((id, _hash, _, _)) => {
+            Some((id, _hash, _, _, _)) => {
                 let hash = hash_file(path)?;
                 pending.push(Pending::Update {
                     id: *id,
                     hash,
                     size,
                     mtime,
+                    captured_at: Some(crate::io::exif::capture_time(path).unwrap_or_default()),
                 });
                 report.updated += 1;
             }
@@ -343,6 +359,7 @@ pub fn scan_folder_with(
                     size,
                     mtime,
                     format: detect_format(path),
+                    captured_at: Some(crate::io::exif::capture_time(path).unwrap_or_default()),
                 });
                 report.added += 1;
             }
