@@ -31,6 +31,7 @@
     type TrainResult,
   } from "./lib/api";
   import Settings from "./lib/Settings.svelte";
+  import ModelManager from "./lib/ModelManager.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
@@ -96,6 +97,7 @@
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
+  let showModels = $state(false);
   let settings = $state<ScoreSettings | null>(null);
   let settingsSaving = $state(false);
 
@@ -532,6 +534,7 @@
       <button onclick={cancel} disabled={!busy}>Cancel</button>
       <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
       <button onclick={openSettings} title="Scoring settings">Settings</button>
+      <button onclick={() => (showModels = true)} title="Manage models">Models</button>
       <button onclick={retrain} title="Train a model from your labels">Retrain</button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
@@ -741,5 +744,9 @@
       onSave={saveSettings}
       onClose={() => (showSettings = false)}
     />
+  {/if}
+
+  {#if showModels}
+    <ModelManager onClose={() => (showModels = false)} />
   {/if}
 </div>

@@ -179,6 +179,33 @@ export async function train(folder: number | null): Promise<TrainResult> {
   return invoke("train", { folder });
 }
 
+export interface ModelStatus {
+  key: string;
+  displayName: string;
+  description: string;
+  tier: string;
+  sizeBytes: number;
+  status: string;
+  files: string[];
+  url: string;
+}
+
+export async function modelsStatus(): Promise<ModelStatus[]> {
+  return invoke("models_status");
+}
+
+export async function downloadModel(key: string): Promise<number> {
+  return invoke("download_model", { key });
+}
+
+export async function importModel(key: string, path: string): Promise<number> {
+  return invoke("import_model", { key, path });
+}
+
+export async function removeModel(key: string): Promise<number> {
+  return invoke("remove_model", { key });
+}
+
 export async function labelFiles(
   files: number[],
   label: UserLabel,

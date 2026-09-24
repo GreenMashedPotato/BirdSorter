@@ -27,6 +27,7 @@ image = "0.24"
 rawler = "0.6.0"
 sha2 = "0.10"
 ureq = "3"
+zip = "2"
 
 # --- dev ---
 approx = "0.5"

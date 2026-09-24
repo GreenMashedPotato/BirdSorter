@@ -488,6 +488,79 @@ fn cancel_analysis(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Model manager
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelStatusDto {
+    key: String,
+    display_name: String,
+    description: String,
+    tier: String,
+    size_bytes: u64,
+    status: String,
+    files: Vec<String>,
+    url: String,
+}
+
+#[tauri::command]
+async fn models_status() -> Result<Vec<ModelStatusDto>, String> {
+    blocking(|| {
+        let dir = registry::default_model_dir().map_err(err)?;
+        Ok(registry::builtin_models()
+            .into_iter()
+            .map(|s| {
+                let status = registry::status(&dir, &s);
+                ModelStatusDto {
+                    key: s.key.clone(),
+                    display_name: s.display_name.clone(),
+                    description: s.description.clone(),
+                    tier: format!("{:?}", s.tier).to_lowercase(),
+                    size_bytes: s.size_bytes,
+                    status: format!("{status:?}").to_lowercase(),
+                    files: s.files.clone(),
+                    url: s.url.clone(),
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn download_model(key: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        let paths = registry::download(&dir, &spec, &registry::HttpFetcher).map_err(err)?;
+        Ok(paths.len())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn import_model(key: String, path: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        let paths = registry::import_file(&dir, &spec, std::path::Path::new(&path)).map_err(err)?;
+        Ok(paths.len())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remove_model(key: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        registry::remove(&dir, &spec).map_err(err)
+    })
+    .await
+}
+
 /// Current scoring thresholds.
 #[tauri::command]
 fn get_settings() -> ScoreSettings {
@@ -578,7 +651,11 @@ fn main() {
             get_settings,
             set_settings,
             rescore,
-            train
+            train,
+            models_status,
+            download_model,
+            import_model,
+            remove_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running BirdSorter");

@@ -267,6 +267,36 @@ input {
   font-variant-numeric: tabular-nums;
 }
 
+/* --- model manager ----------------------------------------------------- */
+.model {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.tier {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.files {
+  font-size: 11px;
+}
+
 /* --- review view ------------------------------------------------------- */
 .review {
   position: fixed;

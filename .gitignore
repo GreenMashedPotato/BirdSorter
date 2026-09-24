@@ -22,6 +22,9 @@ venv/
 models/*.onnx
 *.onnx
 
+# Packed model bundles for release (large; build with tools/pack_models.py)
+dist-models/
+
 # OS / editor
 .DS_Store
 Thumbs.db

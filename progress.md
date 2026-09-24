@@ -22,7 +22,7 @@ detection → sharpness verdict → species ID → grid/review UI).
 | M0 | Integration spike (rawler + ort + Tauri on Win/mac) | ✅ rawler verified on real CR3; ort + Tauri build |
 | M1 | Headless core (io, analysis, data, pipeline) | ✅ done, tested |
 | M2 | UI v1 (grid, review, labels, filters) | ✅ done |
-| M3 | Compute tiers + model manager | 🟡 model registry done; download UI pending |
+| M3 | Compute tiers + model manager | ✅ model registry + Model Manager (download / install from file / remove) |
 | M4 | Species ID | ✅ done (ViT, 526 species) |
 | M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst core + learning loop done; burst UI + eye model pending |
 | M6 | Release engineering (installers, signing) | ⬜ not started |
@@ -50,6 +50,10 @@ detection → sharpness verdict → species ID → grid/review UI).
   features (pure Rust, JSON model). Standardization + 5-fold CV; `Retrain` in
   the UI trains, reports CV accuracy and re-scores the current folder.
 - **Performance**: parallel decode → 1.38 → 4.56 img/s.
+- **Model Manager**: list/status, download from a configured URL, **install from a
+  local file** (zip bundle or `.onnx`), remove. Species shipped as an 89 MB zip
+  bundle; `tools/pack_models.py` builds it. See `MODELS.md`.
+- **Native folder picker** via the Tauri dialog plugin (typed path still works).
 
 ## In progress
 
@@ -65,27 +69,23 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ### User-requested (priority)
 
-1. **Native folder picker** — replace the free-text path input with an OS folder
-   picker dialog (Tauri dialog plugin); keep typed input as a fallback.
-2. **Higher-resolution preview** — the review preview renders at analysis
+1. **Higher-resolution preview** — the review preview renders at analysis
    resolution (2400 px). Add a full-resolution render (and/or a 100% subject
    crop) with a loading indicator, and an option to prefer high-res previews.
-3. **Score breakdown / rule editor** — clicking a score shows exactly how it was
+2. **Score breakdown / rule editor** — clicking a score shows exactly how it was
    computed: the feature vector, each rule's contribution, and the final verdict,
    with the ability to tweak the rules from that panel.
 
 ### Other
 
-4. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
-   needs a dialog + hosting decision).
-5. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
-6. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+3. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
+4. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
    detector for small/distant birds.
-7. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
+5. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
    notarization, auto-updater.
-8. **Virtualized grid** for very large folders (currently renders all tiles).
-9. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-10. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+6. **Virtualized grid** for very large folders (currently renders all tiles).
+7. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+8. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
 
 ## Known issues / notes
 

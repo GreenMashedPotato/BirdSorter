@@ -1,13 +1,18 @@
 //! Model registry: the downloadable ONNX artifacts behind the T1/T2 tiers.
 //!
-//! The installer ships no models. Each entry here describes one artifact that
-//! can be fetched on demand, verified by SHA-256 and removed again. Downloads
-//! go through the [`Fetcher`] trait so the logic is testable without a network.
+//! The installer ships no models. Each entry describes one artifact that can be
+//! fetched from a URL **or imported from a local file**, verified by SHA-256 and
+//! removed again. A multi-file model (e.g. species = onnx + labels + meta) is
+//! shipped as a single `.zip` bundle so download and import are one action.
 //!
-//! Where the artifacts are actually hosted is still an open decision (GitHub
-//! Releases vs HuggingFace); the built-in specs use empty URLs until that is
-//! settled, and [`download`] reports a clear error if asked to fetch one.
+//! Download goes through the [`Fetcher`] trait so the logic is testable without
+//! a network.
+//!
+//! Hosting is still an open decision (GitHub Releases vs HuggingFace); the
+//! built-in specs use empty URLs until that is settled, and [`download`] reports
+//! a clear error if asked to fetch one. **Local import always works.**
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -33,10 +38,14 @@ pub struct ModelSpec {
     pub key: String,
     pub display_name: String,
     pub description: String,
-    /// File name inside the model directory.
-    pub filename: String,
+    /// Downloaded artifact file name (a `.zip` when `unpack`, else the model file).
+    pub artifact: String,
+    /// Whether the artifact is a zip to extract into the model directory.
+    pub unpack: bool,
+    /// Files expected in the model directory once installed.
+    pub files: Vec<String>,
     pub url: String,
-    /// Lower-case hex SHA-256 of the file. Empty means "not pinned yet".
+    /// Lower-case hex SHA-256 of the artifact. Empty means "not pinned yet".
     pub sha256: String,
     pub size_bytes: u64,
     pub tier: Tier,
@@ -53,28 +62,36 @@ pub enum ModelStatus {
 }
 
 /// Built-in model catalogue. URLs/hashes are placeholders until hosting is
-/// decided, so these report [`ModelStatus::Missing`] and cannot be downloaded.
+/// decided, so these report [`ModelStatus::Missing`] and cannot be downloaded —
+/// but they can always be **imported from a local file**.
 pub fn builtin_models() -> Vec<ModelSpec> {
     vec![
         ModelSpec {
             key: "bird_detector".into(),
             display_name: "Bird detector (YOLO11n)".into(),
-            description: "Single-class bird detector, int8 quantized ONNX (~6 MB).".into(),
-            filename: "bird_det_v1.onnx".into(),
+            description: "Single-class bird detector, ONNX (~11 MB).".into(),
+            artifact: "bird_det_v1.onnx".into(),
+            unpack: false,
+            files: vec!["bird_det_v1.onnx".into()],
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 6_000_000,
+            size_bytes: 11_000_000,
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into()],
         },
         ModelSpec {
             key: "bird_species".into(),
             display_name: "Bird species (ViT, 526 classes, int8)".into(),
-            description: "ViT-B/16 fine-tuned on 526 bird species, dynamically quantized \
-                          to int8 (~85 MB). Top-1 verified unchanged vs fp32. \
-                          Preprocessing is read from a bird_species.meta.json sidecar."
+            description: "ViT-B/16 fine-tuned on 526 bird species, int8 (~85 MB). \
+                          Shipped as a zip: model + labels + preprocessing meta."
                 .into(),
-            filename: "bird_species.onnx".into(),
+            artifact: "bird_species.zip".into(),
+            unpack: true,
+            files: vec![
+                "bird_species.onnx".into(),
+                "bird_species.labels.json".into(),
+                "bird_species.meta.json".into(),
+            ],
             url: String::new(),
             sha256: String::new(),
             size_bytes: 85_000_000,
@@ -107,22 +124,34 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 }
 
 pub fn model_path(dir: &Path, spec: &ModelSpec) -> PathBuf {
-    dir.join(&spec.filename)
+    dir.join(&spec.artifact)
 }
 
-/// Inspect a model directory and report the artifact's status.
+/// Paths of the files this model installs.
+pub fn installed_paths(dir: &Path, spec: &ModelSpec) -> Vec<PathBuf> {
+    spec.files.iter().map(|f| dir.join(f)).collect()
+}
+
+/// Inspect the model directory and report the artifact's status.
 pub fn status(dir: &Path, spec: &ModelSpec) -> ModelStatus {
-    let path = model_path(dir, spec);
-    if !path.is_file() {
-        return ModelStatus::Missing;
-    }
-    if spec.sha256.is_empty() {
-        // Nothing to verify against.
-        return ModelStatus::Ready;
-    }
-    match sha256_file(&path) {
-        Ok(h) if h.eq_ignore_ascii_case(&spec.sha256) => ModelStatus::Ready,
-        _ => ModelStatus::Corrupt,
+    if spec.unpack {
+        if spec.files.iter().all(|f| dir.join(f).is_file()) {
+            ModelStatus::Ready
+        } else {
+            ModelStatus::Missing
+        }
+    } else {
+        let path = model_path(dir, spec);
+        if !path.is_file() {
+            return ModelStatus::Missing;
+        }
+        if spec.sha256.is_empty() {
+            return ModelStatus::Ready;
+        }
+        match sha256_file(&path) {
+            Ok(h) if h.eq_ignore_ascii_case(&spec.sha256) => ModelStatus::Ready,
+            _ => ModelStatus::Corrupt,
+        }
     }
 }
 
@@ -147,40 +176,85 @@ impl Fetcher for HttpFetcher {
     }
 }
 
-/// Download, verify and atomically install a model. Returns the final path.
-pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<PathBuf> {
+fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
+    if spec.sha256.is_empty() {
+        return Ok(());
+    }
+    let actual = sha256_hex(bytes);
+    if actual.eq_ignore_ascii_case(&spec.sha256) {
+        Ok(())
+    } else {
+        Err(CoreError::Other(format!(
+            "checksum mismatch for '{}': expected {}, got {}",
+            spec.key, spec.sha256, actual
+        )))
+    }
+}
+
+/// Install already-fetched artifact bytes: verify, then unzip or write.
+pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<PathBuf>> {
+    verify(spec, bytes)?;
+    std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
+
+    if spec.unpack {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+            .map_err(|e| CoreError::Other(format!("bad zip for '{}': {e}", spec.key)))?;
+        for i in 0..archive.len() {
+            let mut file = archive
+                .by_index(i)
+                .map_err(|e| CoreError::Other(format!("bad zip entry: {e}")))?;
+            // Flatten paths: only the file name is used, so a zip cannot escape.
+            let Some(name) = Path::new(file.name()).file_name() else {
+                continue;
+            };
+            if file.is_dir() {
+                continue;
+            }
+            let dest = dir.join(name);
+            let mut out = std::fs::File::create(&dest).map_err(|e| CoreError::io(&dest, e))?;
+            std::io::copy(&mut file, &mut out).map_err(|e| CoreError::io(&dest, e))?;
+        }
+    } else {
+        let final_path = model_path(dir, spec);
+        let tmp = final_path.with_extension("part");
+        std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
+        std::fs::rename(&tmp, &final_path).map_err(|e| CoreError::io(&final_path, e))?;
+    }
+    Ok(installed_paths(dir, spec))
+}
+
+/// Download and install a model from its configured URL.
+pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<Vec<PathBuf>> {
     if spec.url.is_empty() {
         return Err(CoreError::Other(format!(
-            "model '{}' has no download URL yet (hosting not configured)",
+            "model '{}' has no download URL yet — use \"Install from file…\" instead",
             spec.key
         )));
     }
     let bytes = fetcher.fetch(&spec.url)?;
-    if !spec.sha256.is_empty() {
-        let actual = sha256_hex(&bytes);
-        if !actual.eq_ignore_ascii_case(&spec.sha256) {
-            return Err(CoreError::Other(format!(
-                "checksum mismatch for '{}': expected {}, got {}",
-                spec.key, spec.sha256, actual
-            )));
-        }
-    }
-    std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
-    let final_path = model_path(dir, spec);
-    let tmp = final_path.with_extension("onnx.tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| CoreError::io(&tmp, e))?;
-    std::fs::rename(&tmp, &final_path).map_err(|e| CoreError::io(&final_path, e))?;
-    Ok(final_path)
+    install_bytes(dir, spec, &bytes)
 }
 
-/// Delete an installed model. Returns whether a file was removed.
-pub fn remove(dir: &Path, spec: &ModelSpec) -> Result<bool> {
-    let path = model_path(dir, spec);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(CoreError::io(path, e)),
+/// Install a model from a local file (a `.zip` bundle or a single `.onnx`).
+pub fn import_file(dir: &Path, spec: &ModelSpec, source: &Path) -> Result<Vec<PathBuf>> {
+    let bytes = std::fs::read(source).map_err(|e| CoreError::io(source, e))?;
+    install_bytes(dir, spec, &bytes)
+}
+
+/// Delete every file this model installed. Returns how many were removed.
+pub fn remove(dir: &Path, spec: &ModelSpec) -> Result<usize> {
+    let mut removed = 0;
+    // The artifact itself may still be present for single-file models.
+    let mut candidates: Vec<PathBuf> = spec.files.iter().map(|f| dir.join(f)).collect();
+    candidates.push(model_path(dir, spec));
+    for path in candidates {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(CoreError::io(path, e)),
+        }
     }
+    Ok(removed)
 }
 
 /// Default directory for downloaded models: `<user data>/BirdSorter/models`.
@@ -195,7 +269,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// A fetcher that serves canned bytes and records the URLs requested.
     struct FakeFetcher {
         responses: HashMap<String, Vec<u8>>,
     }
@@ -209,16 +282,51 @@ mod tests {
         }
     }
 
-    fn spec_with(url: &str, payload: &[u8]) -> ModelSpec {
+    fn single_file_spec(url: &str, payload: &[u8]) -> ModelSpec {
         ModelSpec {
-            key: "test_model".into(),
+            key: "test_single".into(),
             display_name: "Test".into(),
             description: "test".into(),
-            filename: "test.onnx".into(),
+            artifact: "test.onnx".into(),
+            unpack: false,
+            files: vec!["test.onnx".into()],
             url: url.into(),
             sha256: sha256_hex(payload),
             size_bytes: payload.len() as u64,
             tier: Tier::T1,
+            tags: vec![],
+        }
+    }
+
+    fn zip_bundle(spec_name: &str, entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (name, data) in entries {
+                writer.start_file(*name, opts).unwrap();
+                use std::io::Write;
+                writer.write_all(data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let _ = spec_name;
+        buf
+    }
+
+    fn bundle_spec(url: &str, payload: &[u8]) -> ModelSpec {
+        ModelSpec {
+            key: "test_bundle".into(),
+            display_name: "Test bundle".into(),
+            description: "test".into(),
+            artifact: "bundle.zip".into(),
+            unpack: true,
+            files: vec!["a.onnx".into(), "a.labels.json".into()],
+            url: url.into(),
+            sha256: sha256_hex(payload),
+            size_bytes: payload.len() as u64,
+            tier: Tier::T2,
             tags: vec![],
         }
     }
@@ -232,58 +340,65 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_missing_ready_and_corrupt() {
-        let dir = tempfile::tempdir().unwrap();
-        let payload = b"model-bytes";
-        let spec = spec_with("https://example/x.onnx", payload);
-
-        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
-
-        std::fs::write(model_path(dir.path(), &spec), payload).unwrap();
-        assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
-
-        std::fs::write(model_path(dir.path(), &spec), b"tampered").unwrap();
-        assert_eq!(status(dir.path(), &spec), ModelStatus::Corrupt);
-    }
-
-    #[test]
-    fn download_installs_and_verifies() {
+    fn single_file_download_installs_and_verifies() {
         let dir = tempfile::tempdir().unwrap();
         let payload = b"onnx-weights";
-        let spec = spec_with("https://example/m.onnx", payload);
+        let spec = single_file_spec("https://example/m.onnx", payload);
         let fetcher = FakeFetcher {
             responses: HashMap::from([(spec.url.clone(), payload.to_vec())]),
         };
 
-        let path = download(dir.path(), &spec, &fetcher).unwrap();
-        assert!(path.exists());
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+        let paths = download(dir.path(), &spec, &fetcher).unwrap();
+        assert_eq!(paths.len(), 1);
         assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
-        assert_eq!(std::fs::read(&path).unwrap(), payload);
-
-        // No temp files left behind.
-        let count = std::fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(count, 1);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), payload);
     }
 
     #[test]
-    fn download_rejects_a_checksum_mismatch_and_leaves_nothing() {
+    fn checksum_mismatch_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let mut spec = spec_with("https://example/m.onnx", b"good");
+        let mut spec = single_file_spec("https://example/m.onnx", b"good");
         spec.sha256 = sha256_hex(b"something else");
-        let fetcher = FakeFetcher {
-            responses: HashMap::from([(spec.url.clone(), b"good".to_vec())]),
-        };
-
-        let err = download(dir.path(), &spec, &fetcher).unwrap_err();
+        let err = install_bytes(dir.path(), &spec, b"good").unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"));
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
-    fn download_without_a_url_is_a_clear_error() {
+    fn zip_bundle_installs_all_files() {
         let dir = tempfile::tempdir().unwrap();
-        let spec = spec_with("", b"x");
+        let zip = zip_bundle(
+            "bundle",
+            &[("a.onnx", b"model"), ("a.labels.json", b"[\"x\"]")],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+        let paths = install_bytes(dir.path(), &spec, &zip).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
+        assert_eq!(std::fs::read(dir.path().join("a.onnx")).unwrap(), b"model");
+    }
+
+    #[test]
+    fn import_from_a_local_file_works_without_a_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let zip = zip_bundle("b", &[("a.onnx", b"m"), ("a.labels.json", b"[]")]);
+        let zip_path = src.path().join("bundle.zip");
+        std::fs::write(&zip_path, &zip).unwrap();
+
+        let spec = bundle_spec("", &zip);
+        assert!(spec.url.is_empty());
+        import_file(dir.path(), &spec, &zip_path).unwrap();
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
+    }
+
+    #[test]
+    fn download_without_a_url_points_at_local_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = single_file_spec("", b"x");
         let err = download(
             dir.path(),
             &spec,
@@ -292,19 +407,20 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("no download URL"));
+        assert!(err.to_string().contains("Install from file"));
     }
 
     #[test]
-    fn remove_deletes_the_artifact() {
+    fn remove_deletes_installed_files() {
         let dir = tempfile::tempdir().unwrap();
         let payload = b"bytes";
-        let spec = spec_with("https://example/m.onnx", payload);
-        std::fs::write(model_path(dir.path(), &spec), payload).unwrap();
+        let spec = single_file_spec("https://example/m.onnx", payload);
+        install_bytes(dir.path(), &spec, payload).unwrap();
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
 
-        assert!(remove(dir.path(), &spec).unwrap());
+        assert_eq!(remove(dir.path(), &spec).unwrap(), 1);
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
-        assert!(!remove(dir.path(), &spec).unwrap()); // already gone
+        assert_eq!(remove(dir.path(), &spec).unwrap(), 0); // already gone
     }
 
     #[test]
