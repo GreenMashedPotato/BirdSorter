@@ -136,9 +136,10 @@ export async function getThumbnail(file: number): Promise<string> {
   return invoke("thumbnail", { file });
 }
 
-/** Higher-resolution preview for the review view. */
-export async function previewImage(file: number): Promise<string> {
-  return invoke("preview_image", { file });
+/** Higher-resolution preview for the review view. `full` renders at native
+ *  resolution (slower, cached separately); otherwise analysis resolution. */
+export async function previewImage(file: number, full = false): Promise<string> {
+  return invoke("preview_image", { file, full });
 }
 
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {

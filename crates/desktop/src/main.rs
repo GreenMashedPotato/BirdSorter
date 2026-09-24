@@ -226,24 +226,38 @@ fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
-/// High-resolution preview for the review view. Decoded with the *same* decoder
-/// and resolution as analysis, so detection boxes line up 1:1 with the image.
-fn preview_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
+/// Preview for the review view.
+///
+/// `full = false` decodes with the *same* decoder and resolution as analysis
+/// (2400 px), so detection boxes line up 1:1. `full = true` decodes the largest
+/// embedded preview at native resolution for pixel-level inspection (bigger and
+/// slower, so it is opt-in and cached separately).
+fn preview_impl(
+    cache_root: &Path,
+    db_path: &Path,
+    file: i64,
+    full: bool,
+) -> Result<String, String> {
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
     drop(conn);
 
+    let max = if full { None } else { Some(ANALYSIS_LONG_SIDE) };
+    // Cache key: 0 means "native resolution".
+    let key = render_key(
+        &lf.file.content_hash,
+        if full { 0 } else { ANALYSIS_LONG_SIDE },
+    );
     let cache = ThumbCache::new(cache_root.to_path_buf());
-    let key = render_key(&lf.file.content_hash, ANALYSIS_LONG_SIDE);
     let bytes = cached(&cache, &key, || {
         let decoder = CompositeDecoder::new(vec![
-            Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-            Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+            Box::new(RawDecoder::new(max)),
+            Box::new(ImageCrateDecoder::new(max)),
         ]);
         let img = decoder.decode(&lf.absolute_path)?;
-        encode_rgb_jpeg(&img.rgb, 85)
+        encode_rgb_jpeg(&img.rgb, if full { 92 } else { 85 })
     })
     .map_err(err)?;
 
@@ -358,10 +372,15 @@ async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, Stri
 
 /// Higher-resolution preview for the review view, as a data URL.
 #[tauri::command]
-async fn preview_image(state: State<'_, AppState>, file: i64) -> Result<String, String> {
+async fn preview_image(
+    state: State<'_, AppState>,
+    file: i64,
+    full: Option<bool>,
+) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
-    blocking(move || preview_impl(&cache_root, &db_path, file)).await
+    let full = full.unwrap_or(false);
+    blocking(move || preview_impl(&cache_root, &db_path, file, full)).await
 }
 
 /// Full analysis detail (verdict, boxes, species) for the review view.

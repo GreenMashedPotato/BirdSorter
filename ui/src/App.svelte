@@ -97,6 +97,8 @@
   let selectedBox = $state(0);
   let speciesInput = $state("");
   let previewLoading = $state(false);
+  /// Render previews at native resolution (opt-in: bigger and slower).
+  let previewFull = $state(false);
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
@@ -250,19 +252,33 @@
     previewUrl = "";
     selectedBox = 0;
     speciesInput = "";
-    previewLoading = true;
     zoom = 1;
     tx = 0;
     ty = 0;
     try {
-      const [d, url] = await Promise.all([analysisDetail(id), previewImage(id)]);
-      detail = d;
-      previewUrl = url;
+      detail = await analysisDetail(id);
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+    await renderPreview();
+  }
+
+  /// (Re)render the preview for the current file at the current resolution mode.
+  async function renderPreview() {
+    if (reviewFile === null) return;
+    previewLoading = true;
+    try {
+      previewUrl = await previewImage(reviewFile, previewFull);
     } catch (e) {
       status = `error: ${e}`;
     } finally {
       previewLoading = false;
     }
+  }
+
+  async function toggleFullPreview() {
+    previewFull = !previewFull;
+    await renderPreview();
   }
 
   function closeReview() {
@@ -632,6 +648,10 @@
         <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
         <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
         <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
+        <label class="toggle" title="Render at native resolution (slower)">
+          <input type="checkbox" checked={previewFull} onchange={toggleFullPreview} />
+          High-res
+        </label>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
         <button onclick={closeReview}>Close (Esc)</button>
@@ -639,9 +659,7 @@
 
       <div class="review-body">
         <div class="preview">
-          {#if !previewUrl}
-            <div class="empty">rendering preview…</div>
-          {:else}
+          {#if previewUrl}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="stage"
@@ -688,6 +706,13 @@
                   </div>
                 {/each}
               </div>
+            </div>
+          {/if}
+
+          {#if previewLoading}
+            <div class="loading">
+              <div class="spinner"></div>
+              <span>rendering{previewFull ? " full-resolution" : ""} preview…</span>
             </div>
           {/if}
         </div>

@@ -60,6 +60,9 @@ detection → sharpness verdict → species ID → grid/review UI).
   "Tune rules…" jump into Settings.
 - **Detector is bundled** with the app (seeded into the model dir on first run);
   the app and CLI auto-load installed models.
+- **High-resolution preview**: an opt-in **High-res** toggle in the review bar
+  renders the native embedded preview (verified 8192×5464, ~1.4 s, cached
+  separately) with a loading spinner; the default stays at analysis resolution.
 
 ## In progress
 
@@ -75,9 +78,7 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ### User-requested (priority)
 
-1. **Higher-resolution preview** — the review preview renders at analysis
-   resolution (2400 px). Add a full-resolution render (and/or a 100% subject
-   crop) with a loading indicator, and an option to prefer high-res previews.
+- _(none outstanding — folder picker, high-res preview and score breakdown are done)_
 
 ### Other
 
