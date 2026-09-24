@@ -40,6 +40,9 @@ pub struct AnalysisRecord {
     pub species_confidence: Option<f32>,
     pub species_top5: Vec<(String, f32)>,
     pub subject_species: Vec<SubjectSpecies>,
+    /// Dimensions of the image the features (and boxes) were computed on.
+    pub image_width: Option<u32>,
+    pub image_height: Option<u32>,
 }
 
 /// A read-back analysis row.
@@ -60,6 +63,8 @@ pub struct AnalysisRow {
     pub miss_focus_reason: Option<String>,
     /// Per-subject identification results, parallel to `bboxes`.
     pub subject_species: Vec<SubjectSpecies>,
+    pub image_width: Option<u32>,
+    pub image_height: Option<u32>,
 }
 
 fn boxes_json(record: &AnalysisRecord) -> Result<Option<String>> {
@@ -100,8 +105,9 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 subject_class, has_bokeh, predicted_label, analyzed_at,
                 model_version, species_name, species_confidence,
                 species_top5_json, edge_sharpness_grid, eye_sharpness_worst,
-                center_edge_ratio, miss_focus_reason, subject_species_json
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                center_edge_ratio, miss_focus_reason, subject_species_json,
+                image_width, image_height
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
              ON CONFLICT(file_id) DO UPDATE SET
                 features_json        = excluded.features_json,
                 sharpness_score      = excluded.sharpness_score,
@@ -118,7 +124,9 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 eye_sharpness_worst  = excluded.eye_sharpness_worst,
                 center_edge_ratio    = excluded.center_edge_ratio,
                 miss_focus_reason    = excluded.miss_focus_reason,
-                subject_species_json = excluded.subject_species_json",
+                subject_species_json = excluded.subject_species_json,
+                image_width          = excluded.image_width,
+                image_height         = excluded.image_height",
             rusqlite::params![
                 record.file_id,
                 record.features.to_json(),
@@ -137,6 +145,8 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 record.features.center_edge_ratio,
                 record.score.miss_focus_reason,
                 subj_species_json,
+                record.image_width,
+                record.image_height,
             ],
         )?;
         Ok(())
@@ -180,6 +190,8 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     r.get::<_, Option<String>>("species_top5_json")?,
                     r.get::<_, Option<String>>("miss_focus_reason")?,
                     r.get::<_, Option<String>>("subject_species_json")?,
+                    r.get::<_, Option<i64>>("image_width")?,
+                    r.get::<_, Option<i64>>("image_height")?,
                 ))
             },
         )
@@ -199,6 +211,8 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         top5_json,
         miss_focus_reason,
         subj_species_json,
+        image_width,
+        image_height,
     )) = row
     else {
         return Ok(None);
@@ -219,6 +233,8 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         species_top5: parse_top5(top5_json)?,
         miss_focus_reason,
         subject_species: parse_subject_species(subj_species_json)?,
+        image_width: image_width.map(|v| v as u32),
+        image_height: image_height.map(|v| v as u32),
     }))
 }
 
@@ -364,6 +380,7 @@ mod tests {
                 top5: vec![("Pycnonotus goiavier".into(), 0.87)],
                 class: Some("bird".into()),
             }],
+            ..Default::default()
         }
     }
 

@@ -375,6 +375,8 @@ fn analyze_one(
 
     let score = scorer.score(&features)?;
 
+    let (img_h, img_w, _) = item.rgb.dim();
+
     // Species identification for each detected bird subject.
     let mut subject_species: Vec<SubjectSpecies> = Vec::new();
     let mut species_name: Option<String> = None;
@@ -447,6 +449,8 @@ fn analyze_one(
         species_confidence,
         species_top5,
         subject_species,
+        image_width: Some(img_w as u32),
+        image_height: Some(img_h as u32),
     })
 }
 

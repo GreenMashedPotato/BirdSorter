@@ -25,8 +25,10 @@ use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
-use birdsorter_core::io::raw::RawDecoder;
+use birdsorter_core::io::decoder::{
+    dynamic_to_rgb, CompositeDecoder, ImageCrateDecoder, ImageDecoder,
+};
+use birdsorter_core::io::raw::{load_developed, RawDecoder};
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
@@ -148,6 +150,9 @@ struct AnalysisDetailDto {
     top5: Vec<(String, f32)>,
     boxes: Vec<BoxDto>,
     model_version: Option<String>,
+    /// Dimensions of the image the boxes are expressed in.
+    image_width: Option<u32>,
+    image_height: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,17 +231,20 @@ fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
-/// Preview for the review view.
+/// A deferred, cache-miss render: produces encoded JPEG bytes.
+type RenderFn = Box<dyn FnOnce() -> birdsorter_core::Result<Vec<u8>>>;
+
+/// Preview for the review view. Modes:
+/// - `"fast"` (default): analysis resolution (2400 px) — boxes align 1:1.
+/// - `"full"`: the largest embedded preview at native resolution (fast, ~1.4 s).
+/// - `"develop"`: full RAW demosaic (slow, ~2.5 s) — maximum real detail.
 ///
-/// `full = false` decodes with the *same* decoder and resolution as analysis
-/// (2400 px), so detection boxes line up 1:1. `full = true` decodes the largest
-/// embedded preview at native resolution for pixel-level inspection (bigger and
-/// slower, so it is opt-in and cached separately).
+/// Each mode is cached separately.
 fn preview_impl(
     cache_root: &Path,
     db_path: &Path,
     file: i64,
-    full: bool,
+    mode: &str,
 ) -> Result<String, String> {
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
@@ -244,23 +252,44 @@ fn preview_impl(
         .ok_or_else(|| "file not found".to_string())?;
     drop(conn);
 
-    let max = if full { None } else { Some(ANALYSIS_LONG_SIDE) };
-    // Cache key: 0 means "native resolution".
-    let key = render_key(
-        &lf.file.content_hash,
-        if full { 0 } else { ANALYSIS_LONG_SIDE },
-    );
     let cache = ThumbCache::new(cache_root.to_path_buf());
-    let bytes = cached(&cache, &key, || {
-        let decoder = CompositeDecoder::new(vec![
-            Box::new(RawDecoder::new(max)),
-            Box::new(ImageCrateDecoder::new(max)),
-        ]);
-        let img = decoder.decode(&lf.absolute_path)?;
-        encode_rgb_jpeg(&img.rgb, if full { 92 } else { 85 })
-    })
-    .map_err(err)?;
+    let hash = lf.file.content_hash.clone();
+    let path = lf.absolute_path.clone();
 
+    let (key, render): (String, RenderFn) = match mode {
+        "develop" => (
+            render_key(&hash, 1),
+            Box::new(move || {
+                let img = load_developed(&path)?;
+                let rgb = dynamic_to_rgb(&img, None);
+                encode_rgb_jpeg(&rgb, 88)
+            }),
+        ),
+        "full" => (
+            render_key(&hash, 0),
+            Box::new(move || {
+                let decoder = CompositeDecoder::new(vec![
+                    Box::new(RawDecoder::new(None)),
+                    Box::new(ImageCrateDecoder::new(None)),
+                ]);
+                let img = decoder.decode(&path)?;
+                encode_rgb_jpeg(&img.rgb, 92)
+            }),
+        ),
+        _ => (
+            render_key(&hash, ANALYSIS_LONG_SIDE),
+            Box::new(move || {
+                let decoder = CompositeDecoder::new(vec![
+                    Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+                    Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+                ]);
+                let img = decoder.decode(&path)?;
+                encode_rgb_jpeg(&img.rgb, 85)
+            }),
+        ),
+    };
+
+    let bytes = cached(&cache, &key, render).map_err(err)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
@@ -289,6 +318,8 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
             top5: Vec::new(),
             boxes: Vec::new(),
             model_version: None,
+            image_width: None,
+            image_height: None,
         });
     };
 
@@ -331,6 +362,8 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         top5: a.species_top5.clone(),
         boxes,
         model_version: Some(a.model_version.clone()),
+        image_width: a.image_width,
+        image_height: a.image_height,
     })
 }
 
@@ -375,12 +408,12 @@ async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, Stri
 async fn preview_image(
     state: State<'_, AppState>,
     file: i64,
-    full: Option<bool>,
+    mode: Option<String>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
-    let full = full.unwrap_or(false);
-    blocking(move || preview_impl(&cache_root, &db_path, file, full)).await
+    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    blocking(move || preview_impl(&cache_root, &db_path, file, &mode)).await
 }
 
 /// Full analysis detail (verdict, boxes, species) for the review view.

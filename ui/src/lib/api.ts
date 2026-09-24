@@ -67,6 +67,8 @@ export interface AnalysisDetail {
   top5: [string, number][];
   boxes: Box[];
   modelVersion: string | null;
+  imageWidth: number | null;
+  imageHeight: number | null;
 }
 
 /** Scoring thresholds (mirrors `birdsorter_core::data::settings::ScoreSettings`). */
@@ -136,10 +138,10 @@ export async function getThumbnail(file: number): Promise<string> {
   return invoke("thumbnail", { file });
 }
 
-/** Higher-resolution preview for the review view. `full` renders at native
- *  resolution (slower, cached separately); otherwise analysis resolution. */
-export async function previewImage(file: number, full = false): Promise<string> {
-  return invoke("preview_image", { file, full });
+/** Preview for the review view. `mode`: "fast" (analysis res), "full"
+ *  (native embedded preview) or "develop" (full RAW demosaic, slow). */
+export async function previewImage(file: number, mode = "fast"): Promise<string> {
+  return invoke("preview_image", { file, mode });
 }
 
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {

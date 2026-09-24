@@ -110,6 +110,34 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
+    if args.iter().any(|a| a == "--develop") {
+        // Full RAW demosaic (slow) for maximum detail.
+        let img = match birdsorter_core::io::raw::load_developed(Path::new(src)) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("preview --develop failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let rgb = birdsorter_core::io::decoder::dynamic_to_rgb(&img, None);
+        let (h, w, _) = rgb.dim();
+        return match birdsorter_core::io::thumb::encode_rgb_jpeg(&rgb, 92) {
+            Ok(bytes) => match std::fs::write(out, &bytes) {
+                Ok(()) => {
+                    println!("wrote {out} ({w}x{h}, {} KB)", bytes.len() / 1024);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("preview: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(e) => {
+                eprintln!("preview: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(max))),
         Box::new(ImageCrateDecoder::new(Some(max))),

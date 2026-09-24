@@ -60,9 +60,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   "Tune rules…" jump into Settings.
 - **Detector is bundled** with the app (seeded into the model dir on first run);
   the app and CLI auto-load installed models.
-- **High-resolution preview**: an opt-in **High-res** toggle in the review bar
-  renders the native embedded preview (verified 8192×5464, ~1.4 s, cached
-  separately) with a loading spinner; the default stays at analysis resolution.
+- **Preview modes**: a selector in the review bar — **Fast** (analysis res),
+  **High-res** (native embedded preview, ~1.4 s) and **Developed** (full RAW
+  demosaic via rawler, ~2.5 s, maximum detail). Each mode is cached separately
+  and a spinner shows while rendering. Detection boxes are positioned against
+  the **stored analysis dimensions** (schema v8), so they stay aligned at any
+  preview resolution.
 - **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each

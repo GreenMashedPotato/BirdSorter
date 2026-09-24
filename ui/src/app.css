@@ -361,6 +361,13 @@ input {
 .toggle input {
   accent-color: var(--accent);
 }
+.modesel {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
 
 /* --- review view ------------------------------------------------------- */
 .review {

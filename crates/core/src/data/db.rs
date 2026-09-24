@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -55,7 +55,9 @@ const DDL: &[&str] = &[
         eye_sharpness_worst REAL,
         center_edge_ratio   REAL,
         miss_focus_reason   TEXT,
-        subject_species_json TEXT
+        subject_species_json TEXT,
+        image_width         INTEGER,
+        image_height        INTEGER
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -183,6 +185,14 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
     if from < 7 {
         // v6 -> v7: EXIF capture time, for burst grouping.
         conn.execute_batch("ALTER TABLE files ADD COLUMN captured_at TEXT;")?;
+    }
+    if from < 8 {
+        // v7 -> v8: dimensions of the image the analysis (and its boxes) ran on,
+        // so detection boxes can be positioned on previews of any resolution.
+        conn.execute_batch(
+            "ALTER TABLE analysis ADD COLUMN image_width INTEGER;
+             ALTER TABLE analysis ADD COLUMN image_height INTEGER;",
+        )?;
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())

@@ -122,8 +122,9 @@
   let selectedBox = $state(0);
   let speciesInput = $state("");
   let previewLoading = $state(false);
-  /// Render previews at native resolution (opt-in: bigger and slower).
-  let previewFull = $state(false);
+  /// Preview render mode: fast (analysis res), full (native preview) or
+  /// develop (full RAW demosaic, slow but maximum detail).
+  let previewMode = $state<"fast" | "full" | "develop">("fast");
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
@@ -268,6 +269,17 @@
     const box = detail.boxes[selectedBox];
     return box && box.top5.length > 0 ? box.top5 : detail.top5;
   });
+  // Boxes are in analysis coordinates; position them against those dims so they
+  // stay correct on previews of any resolution. Older rows have no stored dims,
+  // so assume the analysis long side was 2400 (its normal value).
+  const assumedAnalysis = $derived.by(() => {
+    const long = Math.max(natural.w, natural.h) || 1;
+    const s = 2400 / long;
+    return { w: natural.w * s, h: natural.h * s };
+  });
+  const boxW = $derived(detail?.imageWidth ?? assumedAnalysis.w);
+  const boxH = $derived(detail?.imageHeight ?? assumedAnalysis.h);
+
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
 
@@ -293,17 +305,12 @@
     if (reviewFile === null) return;
     previewLoading = true;
     try {
-      previewUrl = await previewImage(reviewFile, previewFull);
+      previewUrl = await previewImage(reviewFile, previewMode);
     } catch (e) {
       status = `error: ${e}`;
     } finally {
       previewLoading = false;
     }
-  }
-
-  async function toggleFullPreview() {
-    previewFull = !previewFull;
-    await renderPreview();
   }
 
   function closeReview() {
@@ -682,10 +689,16 @@
         <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
         <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
         <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
-        <label class="toggle" title="Render at native resolution (slower)">
-          <input type="checkbox" checked={previewFull} onchange={toggleFullPreview} />
-          High-res
-        </label>
+        <select
+          class="modesel"
+          bind:value={previewMode}
+          onchange={renderPreview}
+          title="Preview resolution"
+        >
+          <option value="fast">Fast</option>
+          <option value="full">High-res</option>
+          <option value="develop">Developed</option>
+        </select>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
         <button onclick={closeReview}>Close (Esc)</button>
@@ -726,7 +739,7 @@
                   <div
                     class="box"
                     class:sel={i === selectedBox}
-                    style="left:{(b.x / natural.w) * 100}%; top:{(b.y / natural.h) * 100}%; width:{(b.w / natural.w) * 100}%; height:{(b.h / natural.h) * 100}%"
+                    style="left:{(b.x / boxW) * 100}%; top:{(b.y / boxH) * 100}%; width:{(b.w / boxW) * 100}%; height:{(b.h / boxH) * 100}%"
                     role="button"
                     tabindex="0"
                     onclick={() => (selectedBox = i)}
@@ -746,7 +759,13 @@
           {#if previewLoading}
             <div class="loading">
               <div class="spinner"></div>
-              <span>rendering{previewFull ? " full-resolution" : ""} preview…</span>
+              <span
+                >rendering{previewMode === "develop"
+                  ? " developed"
+                  : previewMode === "full"
+                    ? " full-resolution"
+                    : ""} preview…</span
+              >
             </div>
           {/if}
         </div>
