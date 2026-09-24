@@ -1,0 +1,29 @@
+# Rust / Cargo
+/target
+**/*.rs.bk
+*.pdb
+
+# Node / frontend
+node_modules/
+ui/dist/
+ui/.vite/
+
+# Tauri build output
+crates/desktop/target/
+crates/desktop/gen/
+
+# Python dev tooling (model export)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Model artifacts (downloaded at runtime, never committed)
+models/*.onnx
+*.onnx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

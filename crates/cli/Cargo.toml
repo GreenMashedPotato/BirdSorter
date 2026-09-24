@@ -1,0 +1,17 @@
+[package]
+name = "birdsorter-cli"
+description = "BirdSorter headless CLI: hashing, analysis and CI self-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "birdsorter"
+path = "src/main.rs"
+
+[dependencies]
+birdsorter-core = { path = "../core" }
+ndarray.workspace = true
+serde_json.workspace = true
