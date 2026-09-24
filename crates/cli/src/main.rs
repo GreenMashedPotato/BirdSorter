@@ -121,7 +121,13 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         } else {
             birdsorter_core::io::develop::DemosaicAlgorithm::Ahd
         };
-        let sharpen = !args.iter().any(|a| a == "--no-sharpen");
+        let sharpen = if args.iter().any(|a| a == "--no-sharpen") {
+            birdsorter_core::io::develop::SharpenMode::Off
+        } else if args.iter().any(|a| a == "--unsharp") {
+            birdsorter_core::io::develop::SharpenMode::Unsharp
+        } else {
+            birdsorter_core::io::develop::SharpenMode::Deconvolve
+        };
         let options = if args.iter().any(|a| a == "--linear") {
             birdsorter_core::io::develop::DevelopOptions::linear()
         } else {
