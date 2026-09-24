@@ -136,10 +136,13 @@ input {
 .grid {
   overflow: auto;
   padding: 12px;
+  display: block;
+  flex: 1;
+  min-height: 0;
+}
+.grid-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 10px;
-  align-content: start;
 }
 
 .tile {
