@@ -86,6 +86,83 @@
   let speciesInput = $state("");
   let previewLoading = $state(false);
 
+  // --- zoom / pan state ----------------------------------------------------
+  let stageEl = $state<HTMLDivElement | undefined>(undefined);
+  let zoom = $state(1);
+  let tx = $state(0);
+  let ty = $state(0);
+  let fit = $state({ w: 1, h: 1 });
+  let panning = false;
+  let panStart = { x: 0, y: 0, tx: 0, ty: 0 };
+
+  const ZOOM_MIN = 1;
+  const ZOOM_MAX = 8;
+
+  /** Fit the image inside the stage (centred, scale 1) and optionally reset. */
+  function computeFit(reset = true) {
+    if (!stageEl) return;
+    const rect = stageEl.getBoundingClientRect();
+    const pad = 24;
+    const availW = Math.max(50, rect.width - pad);
+    const availH = Math.max(50, rect.height - pad);
+    const s = Math.min(availW / natural.w, availH / natural.h);
+    fit = { w: natural.w * s, h: natural.h * s };
+    if (reset) {
+      zoom = 1;
+      tx = (rect.width - fit.w) / 2;
+      ty = (rect.height - fit.h) / 2;
+    }
+  }
+
+  /** Zoom about a point in stage coordinates, keeping that point fixed. */
+  function zoomAt(px: number, py: number, factor: number) {
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor));
+    if (next === zoom) return;
+    const cx = (px - tx) / zoom;
+    const cy = (py - ty) / zoom;
+    zoom = next;
+    tx = px - cx * next;
+    ty = py - cy * next;
+  }
+
+  function zoomByFactor(factor: number) {
+    if (!stageEl) return;
+    const r = stageEl.getBoundingClientRect();
+    zoomAt(r.width / 2, r.height / 2, factor);
+  }
+
+  function resetZoom() {
+    computeFit(true);
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!stageEl) return;
+    e.preventDefault(); // never scroll the page behind the overlay
+    const rect = stageEl.getBoundingClientRect();
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015));
+  }
+
+  function onPanStart(e: PointerEvent) {
+    if (!stageEl) return;
+    panning = true;
+    panStart = { x: e.clientX, y: e.clientY, tx, ty };
+    stageEl.setPointerCapture(e.pointerId);
+  }
+
+  function onPanMove(e: PointerEvent) {
+    if (!panning) return;
+    tx = panStart.tx + (e.clientX - panStart.x);
+    ty = panStart.ty + (e.clientY - panStart.y);
+  }
+
+  function onPanEnd(e: PointerEvent) {
+    if (!panning) return;
+    panning = false;
+    if (stageEl?.hasPointerCapture(e.pointerId)) {
+      stageEl.releasePointerCapture(e.pointerId);
+    }
+  }
+
   // Species picks for the selected box, falling back to the file-level top-5.
   const activeTop5 = $derived.by(() => {
     if (!detail) return [] as [string, number][];
@@ -102,6 +179,9 @@
     selectedBox = 0;
     speciesInput = "";
     previewLoading = true;
+    zoom = 1;
+    tx = 0;
+    ty = 0;
     try {
       const [d, url] = await Promise.all([analysisDetail(id), previewImage(id)]);
       detail = d;
@@ -271,12 +351,26 @@
   }
 
   onMount(async () => {
-    // Review-view keyboard shortcuts (J/K navigate, Esc closes).
+    // Review-view keyboard shortcuts (J/K navigate, Esc closes, +/-/0 zoom).
     window.addEventListener("keydown", (e) => {
       if (reviewFile === null) return;
       if (e.key === "Escape") closeReview();
       else if (e.key === "j" || e.key === "ArrowRight") nav(1);
       else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
+      else if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        zoomByFactor(1.25);
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        zoomByFactor(1 / 1.25);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        resetZoom();
+      }
+    });
+
+    window.addEventListener("resize", () => {
+      if (reviewFile !== null) computeFit(true);
     });
 
     if (!inTauri) {
@@ -327,7 +421,7 @@
   });
 </script>
 
-<div class="app">
+<div class="app" class:review-open={reviewFile !== null}>
   <aside class="sidebar">
     <h1>🐦 BirdSorter</h1>
 
@@ -436,6 +530,10 @@
         {#if previewLoading}<span class="status">· rendering preview…</span>{/if}
         <div class="spacer"></div>
         <span class="status">{visible.findIndex((f) => f.id === reviewFile) + 1} / {visible.length}</span>
+        <button onclick={() => zoomByFactor(1 / 1.25)} title="Zoom out (-)">−</button>
+        <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
+        <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
+        <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
         <button onclick={closeReview}>Close (Esc)</button>
@@ -446,31 +544,52 @@
           {#if !previewUrl}
             <div class="empty">rendering preview…</div>
           {:else}
-            <div class="imgwrap">
-              <img
-                src={previewUrl}
-                alt={detail?.filename ?? ""}
-                bind:this={previewEl}
-                onload={() => {
-                  if (previewEl)
-                    natural = { w: previewEl.naturalWidth || 1, h: previewEl.naturalHeight || 1 };
-                }}
-              />
-              {#each detail?.boxes ?? [] as b, i (i)}
-                <div
-                  class="box"
-                  class:sel={i === selectedBox}
-                  style="left:{(b.x / natural.w) * 100}%; top:{(b.y / natural.h) * 100}%; width:{(b.w / natural.w) * 100}%; height:{(b.h / natural.h) * 100}%"
-                  role="button"
-                  tabindex="0"
-                  onclick={() => (selectedBox = i)}
-                  onkeydown={(e) => e.key === "Enter" && (selectedBox = i)}
-                >
-                  <span class="boxtag"
-                    >{b.class}{b.confidence ? ` ${(b.confidence * 100).toFixed(0)}%` : ""}</span
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="stage"
+              bind:this={stageEl}
+              onwheel={onWheel}
+              onpointerdown={onPanStart}
+              onpointermove={onPanMove}
+              onpointerup={onPanEnd}
+              onpointercancel={onPanEnd}
+            >
+              <div
+                class="imgwrap"
+                style="width:{fit.w}px; height:{fit.h}px; transform: translate({tx}px, {ty}px) scale({zoom})"
+              >
+                <img
+                  src={previewUrl}
+                  alt={detail?.filename ?? ""}
+                  bind:this={previewEl}
+                  draggable="false"
+                  onload={() => {
+                    if (previewEl)
+                      natural = {
+                        w: previewEl.naturalWidth || 1,
+                        h: previewEl.naturalHeight || 1,
+                      };
+                    computeFit(true);
+                  }}
+                />
+                {#each detail?.boxes ?? [] as b, i (i)}
+                  <div
+                    class="box"
+                    class:sel={i === selectedBox}
+                    style="left:{(b.x / natural.w) * 100}%; top:{(b.y / natural.h) * 100}%; width:{(b.w / natural.w) * 100}%; height:{(b.h / natural.h) * 100}%"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => (selectedBox = i)}
+                    onkeydown={(e) => e.key === "Enter" && (selectedBox = i)}
                   >
-                </div>
-              {/each}
+                    <span class="boxtag"
+                      >{b.class}{b.confidence
+                        ? ` ${(b.confidence * 100).toFixed(0)}%`
+                        : ""}</span
+                    >
+                  </div>
+                {/each}
+              </div>
             </div>
           {/if}
         </div>
