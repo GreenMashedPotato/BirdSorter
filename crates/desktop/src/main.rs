@@ -435,12 +435,17 @@ fn run_analysis(
         Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
     ]);
 
-    let detector: Box<dyn SubjectDetector> = match model {
-        Some(m) if !m.trim().is_empty() => Box::new(
+    let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => Box::new(
             OnnxDetector::from_file(Path::new(m), YoloConfig::default(), DevicePreference::Auto)
                 .map_err(err)?,
         ),
-        _ => Box::new(SaliencyDetector::default()),
+        None => match OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)
+            .map_err(err)?
+        {
+            Some(d) => Box::new(d),
+            None => Box::new(SaliencyDetector::default()),
+        },
     };
 
     let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;

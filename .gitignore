@@ -18,12 +18,15 @@ __pycache__/
 .venv/
 venv/
 
-# Model artifacts (downloaded at runtime, never committed)
-models/*.onnx
-*.onnx
-
 # Packed model bundles for release (large; build with tools/pack_models.py)
 dist-models/
+
+# Model artifacts are normally downloaded at runtime, not committed...
+models/*.onnx
+*.onnx
+# ...except the small detector, which ships in the repo so it can be downloaded
+# from a raw URL without hosting (re-include wins because it comes last).
+!models/bird_det_v1.onnx
 
 # OS / editor
 .DS_Store

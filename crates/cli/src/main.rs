@@ -180,12 +180,16 @@ fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_cor
 
     let detector: Box<dyn SubjectDetector> = if no_detect {
         Box::new(NullDetector)
-    } else if let Some(m) = model {
+    } else if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
         Box::new(OnnxDetector::from_file(
             Path::new(m),
             YoloConfig::default(),
             DevicePreference::Auto,
         )?)
+    } else if let Some(d) =
+        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
+    {
+        Box::new(d)
     } else {
         Box::new(SaliencyDetector::default())
     };
@@ -526,18 +530,28 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     } = library::scan_folder(&conn, folder_id)?;
     println!("scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged)");
 
-    // Detector selection: explicit model > saliency fallback > none.
+    // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {
         Box::new(NullDetector)
-    } else if let Some(model) = &args.model {
-        println!("using ONNX detector: {model}");
+    } else if let Some(m) = args
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        println!("using ONNX detector: {m}");
         Box::new(OnnxDetector::from_file(
-            Path::new(model),
+            Path::new(m),
             YoloConfig::default(),
             DevicePreference::Auto,
         )?)
+    } else if let Some(d) =
+        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
+    {
+        println!("using installed detector (model manager)");
+        Box::new(d)
     } else {
-        println!("no model given — using the zero-download saliency detector");
+        println!("no detector installed — using the zero-download saliency detector");
         Box::new(SaliencyDetector::default())
     };
 

@@ -39,6 +39,9 @@ fn intra_threads() -> usize {
         .unwrap_or(4)
 }
 
+/// File name the model manager installs the detector as.
+pub const DETECTOR_ONNX: &str = "bird_det_v1.onnx";
+
 /// Build an ONNX Runtime session, applying the GPU execution provider when the
 /// build enables one. Shared by the detector and the species classifier.
 pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Session> {
@@ -109,6 +112,19 @@ impl OnnxDetector {
 
     pub fn config(&self) -> &YoloConfig {
         &self.config
+    }
+
+    /// Load the detector installed in the default model directory, if present.
+    /// This is what makes "Download" in the Model Manager actually take effect.
+    pub fn load_default(config: YoloConfig, device: DevicePreference) -> Result<Option<Self>> {
+        let Ok(dir) = crate::data::registry::default_model_dir() else {
+            return Ok(None);
+        };
+        let path = dir.join(DETECTOR_ONNX);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(Self::from_file(&path, config, device)?))
     }
 
     fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
