@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{db::with_tx, now_iso};
 use crate::analysis::detector::BBox;
-use crate::analysis::scorer::ScoreResult;
+use crate::analysis::scorer::{score_rules, ScoreResult};
 use crate::analysis::sharpness::SharpnessFeatures;
+use crate::data::settings::ScoreSettings;
 use crate::Result;
 
 /// Per-subject species identification result, parallel to `all_bboxes`.
@@ -262,6 +263,50 @@ pub fn set_manual_bbox(conn: &Connection, file_id: i64, bbox: BBox) -> Result<()
     })
 }
 
+/// Recompute verdicts for every analyzed file in a folder from its stored
+/// feature vector. Cheap (no decode) and makes score-setting changes take
+/// effect immediately. Returns the number of rows rescored.
+pub fn rescore_folder(
+    conn: &Connection,
+    folder_id: i64,
+    settings: &ScoreSettings,
+) -> Result<usize> {
+    let rows: Vec<(i64, String)> = conn
+        .prepare(
+            "SELECT a.file_id, a.features_json
+               FROM analysis a
+               JOIN files f ON f.id = a.file_id
+              WHERE f.folder_id = ?1",
+        )?
+        .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut rescored = 0usize;
+    with_tx(conn, || {
+        for (file_id, json) in &rows {
+            let features = SharpnessFeatures::from_json(json)?;
+            let score = score_rules(&features, settings);
+            conn.execute(
+                "UPDATE analysis
+                    SET sharpness_score = ?1, predicted_label = ?2, has_bokeh = ?3,
+                        miss_focus_reason = ?4, model_version = ?5
+                  WHERE file_id = ?6",
+                rusqlite::params![
+                    score.score,
+                    score.label,
+                    score.has_bokeh as i32,
+                    score.miss_focus_reason,
+                    score.model_version,
+                    file_id
+                ],
+            )?;
+            rescored += 1;
+        }
+        Ok(())
+    })?;
+    Ok(rescored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +477,53 @@ mod tests {
         let conn = connect_in_memory().unwrap();
         init_schema(&conn).unwrap();
         assert!(get_analysis(&conn, 123).unwrap().is_none());
+    }
+
+    #[test]
+    fn rescore_applies_new_settings_without_redecoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let folder_id = crate::data::library::list_folders(&conn).unwrap()[0].id;
+
+        // Features that land in "uncertain" under the default thresholds.
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.3,
+            laplacian_subject: 0.3,
+            fft_high_freq_subject: 0.3,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let score = score_rules(&features, &ScoreSettings::default());
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: fid,
+                features,
+                score,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            get_analysis(&conn, fid).unwrap().unwrap().predicted_label,
+            "uncertain"
+        );
+
+        // Stricter thresholds -> "blurry", without touching the features.
+        let strict = ScoreSettings {
+            sharp_threshold: 0.9,
+            uncertain_threshold: 0.9,
+            ..Default::default()
+        };
+        assert_eq!(rescore_folder(&conn, folder_id, &strict).unwrap(), 1);
+        assert_eq!(
+            get_analysis(&conn, fid).unwrap().unwrap().predicted_label,
+            "blurry"
+        );
     }
 
     #[test]

@@ -203,6 +203,70 @@ input {
   overflow: hidden;
 }
 
+/* --- settings modal ---------------------------------------------------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(8, 10, 14, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sheet {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: min(720px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.sheet-body {
+  padding: 14px;
+  overflow: auto;
+}
+.sheet-body section {
+  margin-bottom: 14px;
+}
+.sheet-body h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.sheet-body details summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin: 8px 0 12px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 220px 1fr 56px;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0;
+}
+.row label {
+  color: var(--text);
+}
+.row input[type="range"] {
+  width: 100%;
+}
+.val {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- review view ------------------------------------------------------- */
 .review {
   position: fixed;

@@ -13,7 +13,7 @@ use ort::value::Tensor;
 
 use crate::analysis::species::{
     load_labels, preprocess_crop, top_k, SpeciesClassifier, SpeciesId, SpeciesPreprocess,
-    SPECIES_LABELS, SPECIES_ONNX,
+    SPECIES_LABELS, SPECIES_META, SPECIES_ONNX,
 };
 use crate::data::registry::default_model_dir;
 use crate::runtime::detector::{build_session, DevicePreference};
@@ -81,12 +81,13 @@ impl OnnxSpeciesClassifier {
                 size
             );
         }
-        Ok(Some(Self::from_files(
-            &model,
-            &labels,
-            SpeciesPreprocess::default(),
-            device,
-        )?))
+        // Preprocessing is data-driven: a sidecar lets us swap models without
+        // touching code. Falls back to the EfficientNet defaults.
+        let preprocess = std::fs::read_to_string(dir.join(SPECIES_META))
+            .ok()
+            .and_then(|text| serde_json::from_str::<SpeciesPreprocess>(&text).ok())
+            .unwrap_or_default();
+        Ok(Some(Self::from_files(&model, &labels, preprocess, device)?))
     }
 
     pub fn labels(&self) -> &[String] {

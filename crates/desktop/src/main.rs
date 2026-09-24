@@ -439,7 +439,7 @@ fn run_analysis(
         _ => Box::new(SaliencyDetector::default()),
     };
 
-    let scorer = RulesScorer(ScoreSettings::default());
+    let scorer = RulesScorer(ScoreSettings::load_default());
     let species = match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
         Ok(s) => s,
         Err(e) => {
@@ -484,6 +484,30 @@ fn cancel_analysis(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Current scoring thresholds.
+#[tauri::command]
+fn get_settings() -> ScoreSettings {
+    ScoreSettings::load_default()
+}
+
+/// Persist scoring thresholds.
+#[tauri::command]
+async fn set_settings(settings: ScoreSettings) -> Result<(), String> {
+    blocking(move || settings.save_default().map_err(err)).await
+}
+
+/// Recompute verdicts for a folder from stored features (no re-decode).
+#[tauri::command]
+async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let settings = ScoreSettings::load_default();
+        analysis_store::rescore_folder(&conn, folder, &settings).map_err(err)
+    })
+    .await
+}
+
 fn main() {
     let db_path = db::default_db_path().unwrap_or_else(|_| PathBuf::from("birdsorter.db"));
     let cache = ThumbCache::open_default()
@@ -509,7 +533,10 @@ fn main() {
             set_species,
             label_files,
             analyze_folder,
-            cancel_analysis
+            cancel_analysis,
+            get_settings,
+            set_settings,
+            rescore
         ])
         .run(tauri::generate_context!())
         .expect("error while running BirdSorter");

@@ -69,6 +69,42 @@ export interface AnalysisDetail {
   modelVersion: string | null;
 }
 
+/** Scoring thresholds (mirrors `birdsorter_core::data::settings::ScoreSettings`). */
+export interface ScoreSettings {
+  sharp_threshold: number;
+  uncertain_threshold: number;
+  bokeh_ratio: number;
+  edge_blur_ratio: number;
+  edge_blur_penalty: number;
+  eye_soft_critical: number;
+  eye_soft_mild: number;
+  eye_soft_penalty: number;
+  motion_blur_enabled: number;
+  motion_directionality_threshold: number;
+  motion_blur_penalty: number;
+  off_frame_enabled: number;
+  off_frame_threshold: number;
+  off_frame_penalty: number;
+}
+
+/** Must match the Rust `ScoreSettings::default()`. */
+export const DEFAULT_SETTINGS: ScoreSettings = {
+  sharp_threshold: 0.35,
+  uncertain_threshold: 0.15,
+  bokeh_ratio: 2.5,
+  edge_blur_ratio: 2.5,
+  edge_blur_penalty: 0.7,
+  eye_soft_critical: 0.05,
+  eye_soft_mild: 0.1,
+  eye_soft_penalty: 0.7,
+  motion_blur_enabled: 1.0,
+  motion_directionality_threshold: 0.45,
+  motion_blur_penalty: 0.5,
+  off_frame_enabled: 1.0,
+  off_frame_threshold: 0.01,
+  off_frame_penalty: 0.7,
+};
+
 export async function listFolders(): Promise<FolderInfo[]> {
   return invoke("list_folders");
 }
@@ -116,6 +152,19 @@ export async function setSpecies(
   confidence?: number,
 ): Promise<void> {
   return invoke("set_species", { file, species, confidence: confidence ?? null });
+}
+
+export async function getSettings(): Promise<ScoreSettings> {
+  return invoke("get_settings");
+}
+
+export async function setSettings(settings: ScoreSettings): Promise<void> {
+  return invoke("set_settings", { settings });
+}
+
+/** Recompute verdicts for a folder from stored features (no re-decode). */
+export async function rescoreFolder(folder: number): Promise<number> {
+  return invoke("rescore", { folder });
 }
 
 export async function labelFiles(

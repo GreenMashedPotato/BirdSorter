@@ -514,7 +514,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         Box::new(RawDecoder::new(Some(2400))),
         Box::new(ImageCrateDecoder::new(Some(2400))),
     ]);
-    let scorer = RulesScorer(ScoreSettings::default());
+    let scorer = RulesScorer(ScoreSettings::load_default());
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: std::thread::available_parallelism()

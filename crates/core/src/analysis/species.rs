@@ -60,7 +60,7 @@ impl SpeciesClassifier for NoSpecies {
 }
 
 /// Image preprocessing parameters for a classifier.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpeciesPreprocess {
     /// Square input side length.
     pub size: u32,
@@ -84,6 +84,8 @@ impl Default for SpeciesPreprocess {
 /// File names used inside the model directory.
 pub const SPECIES_ONNX: &str = "bird_species.onnx";
 pub const SPECIES_LABELS: &str = "bird_species.labels.json";
+/// Optional preprocessing sidecar (`{"size":260,"mean":[...],"std":[...]}`).
+pub const SPECIES_META: &str = "bird_species.meta.json";
 
 /// Crop a box out of an RGB image, clamped to the image bounds.
 pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {

@@ -13,6 +13,9 @@
     analysisDetail,
     setSpecies,
     labelFiles,
+    getSettings,
+    setSettings,
+    rescoreFolder,
     onProgress,
     onDone,
     onError,
@@ -23,7 +26,9 @@
     type FilterKey,
     type UserLabel,
     type AnalysisDetail,
+    type ScoreSettings,
   } from "./lib/api";
+  import Settings from "./lib/Settings.svelte";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
@@ -85,6 +90,40 @@
   let selectedBox = $state(0);
   let speciesInput = $state("");
   let previewLoading = $state(false);
+
+  // --- settings ------------------------------------------------------------
+  let showSettings = $state(false);
+  let settings = $state<ScoreSettings | null>(null);
+  let settingsSaving = $state(false);
+
+  async function openSettings() {
+    try {
+      settings = await getSettings();
+      showSettings = true;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  async function saveSettings(next: ScoreSettings) {
+    settingsSaving = true;
+    try {
+      await setSettings(next);
+      settings = next;
+      if (activeFolder !== null) {
+        const n = await rescoreFolder(activeFolder);
+        status = `settings saved · re-scored ${n} files`;
+        await refreshFiles();
+      } else {
+        status = "settings saved";
+      }
+      showSettings = false;
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      settingsSaving = false;
+    }
+  }
 
   // --- zoom / pan state ----------------------------------------------------
   let stageEl = $state<HTMLDivElement | undefined>(undefined);
@@ -456,6 +495,7 @@
       </button>
       <button onclick={cancel} disabled={!busy}>Cancel</button>
       <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
+      <button onclick={openSettings} title="Scoring settings">Settings</button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
     </div>
@@ -655,5 +695,14 @@
         </aside>
       </div>
     </div>
+  {/if}
+
+  {#if showSettings && settings}
+    <Settings
+      {settings}
+      saving={settingsSaving}
+      onSave={saveSettings}
+      onClose={() => (showSettings = false)}
+    />
   {/if}
 </div>
