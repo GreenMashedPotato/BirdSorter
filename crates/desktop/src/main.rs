@@ -3,6 +3,12 @@
 //! A deliberately thin Tauri v2 shell: every piece of real logic lives in
 //! `birdsorter-core`, which is headless and unit-tested. This crate only wires
 //! commands, events and the app state together.
+//!
+//! Responsiveness rules:
+//! - Anything that touches disk or CPU (scan, query, thumbnail) runs on a
+//!   blocking worker via `spawn_blocking`, never on the IPC/main thread.
+//! - Analysis decode parallelism is capped so a big shoot cannot saturate the
+//!   machine.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -29,6 +35,9 @@ use tauri::{AppHandle, Emitter, State};
 const ANALYSIS_LONG_SIDE: u32 = 2400;
 /// Long side of grid thumbnails.
 const THUMB_LONG_SIDE: u32 = 512;
+/// Upper bound on parallel decode workers during analysis, so the desktop stays
+/// responsive on high-core-count machines.
+const MAX_DECODE_THREADS: usize = 8;
 
 struct AppState {
     db_path: PathBuf,
@@ -36,16 +45,21 @@ struct AppState {
     cancel: Mutex<Option<CancelToken>>,
 }
 
-impl AppState {
-    fn conn(&self) -> Result<Connection, String> {
-        let conn = db::connect(&self.db_path).map_err(err)?;
-        db::init_schema(&conn).map_err(err)?;
-        Ok(conn)
-    }
-}
-
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+fn open(db_path: &Path) -> Result<Connection, String> {
+    let conn = db::connect(db_path).map_err(err)?;
+    db::init_schema(&conn).map_err(err)?;
+    Ok(conn)
+}
+
+/// Run `f` on the blocking thread pool so the webview/IPC thread never stalls.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
 // ---------------------------------------------------------------------------
@@ -97,14 +111,13 @@ struct ProgressDto {
 }
 
 // ---------------------------------------------------------------------------
-// Commands
+// Blocking implementations
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-fn list_folders(state: State<AppState>) -> Result<Vec<FolderDto>, String> {
-    let conn = state.conn()?;
-    let folders = library::list_folders(&conn).map_err(err)?;
-    Ok(folders
+fn list_folders_impl(db_path: &Path) -> Result<Vec<FolderDto>, String> {
+    let conn = open(db_path)?;
+    Ok(library::list_folders(&conn)
+        .map_err(err)?
         .into_iter()
         .map(|f| FolderDto {
             id: f.id,
@@ -115,15 +128,13 @@ fn list_folders(state: State<AppState>) -> Result<Vec<FolderDto>, String> {
         .collect())
 }
 
-#[tauri::command]
-fn add_folder(state: State<AppState>, path: String) -> Result<i64, String> {
-    let conn = state.conn()?;
-    library::add_folder(&conn, Path::new(&path)).map_err(err)
+fn add_folder_impl(db_path: &Path, path: &str) -> Result<i64, String> {
+    let conn = open(db_path)?;
+    library::add_folder(&conn, Path::new(path)).map_err(err)
 }
 
-#[tauri::command]
-fn scan_folder(state: State<AppState>, folder: i64) -> Result<ScanReportDto, String> {
-    let conn = state.conn()?;
+fn scan_folder_impl(db_path: &Path, folder: i64) -> Result<ScanReportDto, String> {
+    let conn = open(db_path)?;
     let r = library::scan_folder(&conn, folder).map_err(err)?;
     Ok(ScanReportDto {
         seen: r.seen,
@@ -133,10 +144,9 @@ fn scan_folder(state: State<AppState>, folder: i64) -> Result<ScanReportDto, Str
     })
 }
 
-#[tauri::command]
-fn query_files(state: State<AppState>, folder: i64) -> Result<Vec<FileDto>, String> {
-    let conn = state.conn()?;
-    // Worst score first, so the culling targets are at the top.
+fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String> {
+    let conn = open(db_path)?;
+    // Worst score first, so culling targets are at the top.
     let files = library::list_files(&conn, folder, false, true).map_err(err)?;
     let mut out = Vec::with_capacity(files.len());
     for lf in files {
@@ -159,15 +169,14 @@ fn query_files(state: State<AppState>, folder: i64) -> Result<Vec<FileDto>, Stri
     Ok(out)
 }
 
-/// Grid thumbnail as a data URL (generated on demand and cached on disk).
-#[tauri::command]
-fn thumbnail(state: State<AppState>, file: i64) -> Result<String, String> {
-    let conn = state.conn()?;
+fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
+    let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
+    let cache = ThumbCache::new(cache_root.to_path_buf());
     let bytes = thumbnail_cached(
-        &state.cache,
+        &cache,
         &lf.absolute_path,
         &lf.file.content_hash,
         THUMB_LONG_SIDE,
@@ -177,10 +186,46 @@ fn thumbnail(state: State<AppState>, file: i64) -> Result<String, String> {
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || list_folders_impl(&db_path)).await
+}
+
+#[tauri::command]
+async fn add_folder(state: State<'_, AppState>, path: String) -> Result<i64, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || add_folder_impl(&db_path, &path)).await
+}
+
+#[tauri::command]
+async fn scan_folder(state: State<'_, AppState>, folder: i64) -> Result<ScanReportDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || scan_folder_impl(&db_path, folder)).await
+}
+
+#[tauri::command]
+async fn query_files(state: State<'_, AppState>, folder: i64) -> Result<Vec<FileDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || query_files_impl(&db_path, folder)).await
+}
+
+/// Grid thumbnail as a data URL (generated on demand and cached on disk).
+#[tauri::command]
+async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    blocking(move || thumbnail_impl(&cache_root, &db_path, file)).await
+}
+
 #[tauri::command]
 fn label_files(state: State<AppState>, files: Vec<i64>, label: String) -> Result<usize, String> {
     let label: labels::UserLabel = label.parse().map_err(err)?;
-    let conn = state.conn()?;
+    let conn = open(&state.db_path)?;
     labels::add_labels_bulk(&conn, &files, label).map_err(err)
 }
 
@@ -197,8 +242,7 @@ fn analyze_folder(
     *state.cancel.lock().map_err(err)? = Some(cancel.clone());
 
     std::thread::spawn(move || {
-        let result = run_analysis(&app, &db_path, folder, model.as_deref(), &cancel);
-        match result {
+        match run_analysis(&app, &db_path, folder, model.as_deref(), &cancel) {
             Ok(()) => {
                 let _ = app.emit("analysis-done", ());
             }
@@ -217,8 +261,7 @@ fn run_analysis(
     model: Option<&str>,
     cancel: &CancelToken,
 ) -> Result<(), String> {
-    let conn = db::connect(db_path).map_err(err)?;
-    db::init_schema(&conn).map_err(err)?;
+    let conn = open(db_path)?;
 
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
@@ -236,7 +279,8 @@ fn run_analysis(
     let scorer = RulesScorer(ScoreSettings::default());
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4);
+        .unwrap_or(4)
+        .min(MAX_DECODE_THREADS);
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: threads,
@@ -275,9 +319,7 @@ fn main() {
         .unwrap_or_else(|_| ThumbCache::new(std::env::temp_dir().join("birdsorter-thumbs")));
 
     // Fail fast on a broken schema, but do not prevent the window from opening.
-    if let Ok(conn) = db::connect(&db_path) {
-        let _ = db::init_schema(&conn);
-    }
+    let _ = open(&db_path);
 
     tauri::Builder::default()
         .manage(AppState {

@@ -96,8 +96,9 @@ frontend in `ui/`. It needs the frontend built first (Tauri embeds `ui/dist`):
 
 ```bash
 cd ui && npm install && npm run build && cd ..
-# dev: run the window against the Vite dev server
-cargo run -p birdsorter-desktop
+# Always use --release: RAW decode (rawler) and image ops are ~10x slower in a
+# debug build, which makes the window appear to hang.
+cargo run --release -p birdsorter-desktop
 # or from the ui/ folder: `npm run dev` for a browser preview with mock data
 ```
 

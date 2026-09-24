@@ -27,6 +27,44 @@
   let filter = $state<FilterKey>("all");
   let selected = $state<Set<number>>(new Set());
   let thumbs = $state<Record<number, string>>({});
+
+  // Thumbnail loading: deduplicated, queued, and limited to a few in flight.
+  // Without this the grid fires one request per tile (and re-fires on every
+  // state change), which floods the backend and freezes the window.
+  const requested = new Set<number>();
+  const thumbQueue: number[] = [];
+  let inflight = 0;
+  const MAX_INFLIGHT = 4;
+
+  function pumpThumbs() {
+    while (inflight < MAX_INFLIGHT && thumbQueue.length > 0) {
+      const id = thumbQueue.shift()!;
+      inflight++;
+      getThumbnail(id)
+        .then((url) => {
+          thumbs = { ...thumbs, [id]: url };
+        })
+        .catch(() => {
+          requested.delete(id); // allow a later retry
+        })
+        .finally(() => {
+          inflight--;
+          pumpThumbs();
+        });
+    }
+  }
+
+  function enqueueThumb(id: number) {
+    if (requested.has(id)) return;
+    requested.add(id);
+    thumbQueue.push(id);
+  }
+
+  function resetThumbs() {
+    thumbs = {};
+    requested.clear();
+    thumbQueue.length = 0;
+  }
   let status = $state("");
   let busy = $state(false);
   let newPath = $state("");
@@ -48,6 +86,7 @@
   async function selectFolder(id: number) {
     activeFolder = id;
     setSelected(new Set());
+    resetThumbs();
     await refreshFiles();
   }
 
@@ -181,18 +220,13 @@
     });
   });
 
-  // Lazily fetch thumbnails for visible tiles.
+  // Lazily fetch thumbnails for the visible tiles, a few at a time. This effect
+  // must NOT read `thumbs`, or every loaded image would re-trigger it and flood
+  // the backend (that is what froze the window).
   $effect(() => {
     if (!inTauri || activeFolder === null) return;
-    for (const f of visible) {
-      if (thumbs[f.id]) continue;
-      const id = f.id;
-      getThumbnail(id)
-        .then((url) => {
-          thumbs = { ...thumbs, [id]: url };
-        })
-        .catch(() => {});
-    }
+    for (const f of visible) enqueueThumb(f.id);
+    pumpThumbs();
   });
 </script>
 
