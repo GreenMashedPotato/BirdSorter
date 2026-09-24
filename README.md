@@ -94,12 +94,29 @@ The GUI is a Tauri v2 shell (`crates/desktop`) over the same core, with a Svelte
 frontend in `ui/`. It needs the frontend built first (Tauri embeds `ui/dist`):
 
 ```bash
-cd ui && npm install && npm run build && cd ..
 # Always use --release: RAW decode (rawler) and image ops are ~10x slower in a
 # debug build, which makes the window appear to hang.
 cargo run --release -p birdsorter-desktop
 # or from the ui/ folder: `npm run dev` for a browser preview with mock data
 ```
+
+### Building installers
+
+The Tauri CLI builds `.msi`/`.exe` (Windows) and `.dmg`/`.app` (macOS):
+
+```bash
+cd ui && npm install && npm run build && cd ..   # frontend first (Tauri embeds ui/dist)
+cd crates/desktop
+../../ui/node_modules/.bin/tauri build           # add --no-bundle for just the binary
+```
+
+Output goes to `target/release/bundle/` (verified: NSIS setup 18 MB, MSI 32 MB).
+The bundled YOLO detector ships as a resource (`target/release/models/…`) and is
+seeded into the model directory on first run.
+
+Releases are built by `.github/workflows/release.yml` (Windows x64, macOS arm64
+and x64). Signing/notarization is not set up yet — macOS Gatekeeper will require
+right-click → Open for now, and Windows may show a SmartScreen warning.
 
 The window provides a folder sidebar, a worst-first thumbnail grid with filter
 chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
