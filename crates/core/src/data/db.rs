@@ -192,6 +192,25 @@ pub fn schema_version(conn: &Connection) -> Result<Option<i64>> {
         .optional()?)
 }
 
+/// Run `f` inside a transaction on a shared connection.
+///
+/// Uses rusqlite's unchecked transaction so callers that only hold
+/// `&Connection` (the normal case — connections are shared across threads
+/// behind a lock) can still group writes atomically. Rolls back on error.
+pub fn with_tx<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let tx = conn.unchecked_transaction()?;
+    match f() {
+        Ok(v) => {
+            tx.commit()?;
+            Ok(v)
+        }
+        Err(e) => {
+            drop(tx); // implicit rollback
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

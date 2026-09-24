@@ -39,6 +39,16 @@ impl BBox {
         i64::from(self.w.max(0)) * i64::from(self.h.max(0))
     }
 
+    /// Compact `[x, y, w, h]` form used in stored JSON.
+    pub fn to_array(self) -> [i32; 4] {
+        [self.x, self.y, self.w, self.h]
+    }
+
+    /// Inverse of [`BBox::to_array`].
+    pub fn from_array(a: [i32; 4]) -> Self {
+        BBox::new(a[0], a[1], a[2], a[3])
+    }
+
     /// Clip to an image of `w`x`h`. Returns `None` when nothing is left.
     pub fn clamp_to(&self, w: i32, h: i32) -> Option<BBox> {
         let x0 = self.x.max(0).min(w);

@@ -17,6 +17,8 @@ serde_json.workspace = true
 directories.workspace = true
 xxhash-rust.workspace = true
 rusqlite.workspace = true
+walkdir.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

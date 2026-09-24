@@ -34,7 +34,7 @@ pub const MISS_FOCUS_MOTION_BLUR: &str = "motion_blur";
 pub const MISS_FOCUS_OFF_FRAME: &str = "off_frame";
 
 /// A verdict for one image.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScoreResult {
     /// `0..1`, higher = sharper.
     pub score: f32,
