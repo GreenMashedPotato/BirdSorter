@@ -69,17 +69,22 @@ pub fn builtin_models() -> Vec<ModelSpec> {
         },
         ModelSpec {
             key: "bird_species".into(),
-            display_name: "Bird species (ViT, 526 classes)".into(),
-            description: "ViT-B/16 classifier fine-tuned on 526 bird species (~330 MB fp32; \
-                          int8 quantization planned). Preprocessing is read from a \
-                          bird_species.meta.json sidecar."
+            display_name: "Bird species (ViT, 526 classes, int8)".into(),
+            description: "ViT-B/16 fine-tuned on 526 bird species, dynamically quantized \
+                          to int8 (~85 MB). Top-1 verified unchanged vs fp32. \
+                          Preprocessing is read from a bird_species.meta.json sidecar."
                 .into(),
             filename: "bird_species.onnx".into(),
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 345_000_000,
+            size_bytes: 85_000_000,
             tier: Tier::T2,
-            tags: vec!["species".into(), "birds".into(), "vit".into()],
+            tags: vec![
+                "species".into(),
+                "birds".into(),
+                "vit".into(),
+                "int8".into(),
+            ],
         },
     ]
 }

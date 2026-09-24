@@ -1,0 +1,115 @@
+# Progress
+
+Living status doc for BirdSorter. See `plan.md` for the architecture and roadmap.
+
+_Last updated: 2026-09-24_
+
+## Where we are
+
+A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte UI.
+Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
+detection → sharpness verdict → species ID → grid/review UI).
+
+- **137 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- `svelte-check`: 0 errors / 0 warnings
+- CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
+- App runs in release (`cargo run --release -p birdsorter-desktop`)
+
+## Milestones
+
+| # | Milestone | State |
+|---|---|---|
+| M0 | Integration spike (rawler + ort + Tauri on Win/mac) | ✅ rawler verified on real CR3; ort + Tauri build |
+| M1 | Headless core (io, analysis, data, pipeline) | ✅ done, tested |
+| M2 | UI v1 (grid, review, labels, filters) | ✅ done |
+| M3 | Compute tiers + model manager | 🟡 model registry done; download UI pending |
+| M4 | Species ID | ✅ done (ViT, 526 species) |
+| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst core done; UI + learning loop pending |
+| M6 | Release engineering (installers, signing) | ⬜ not started |
+
+## Done
+
+- **Core**: RAW decode (`rawler`, embedded-preview fast path), image + composite
+  decoder, thumbnail/preview cache, xxh3 identity, SQLite schema + migrations,
+  library scan/re-link, analysis store, labels, burst grouping, saliency
+  fallback detector, YOLO pre/post-processing, rule scorer, species classifier.
+- **Pipeline**: decode → detect → features → verdict → species → store, with
+  parallel decode, bounded queues, cancellation, per-file failure isolation.
+- **Runtime**: ONNX Runtime via `ort`; detector + species classifier; GPU EPs
+  behind `gpu-directml` / `gpu-coreml` / `gpu-cuda` features (off by default).
+- **CLI**: `hash`, `analyze`, `list`, `thumb`, `preview`, `probe`, `genimage`,
+  `selftest`.
+- **Desktop/UI**: folder sidebar, worst-first grid + thumbnails, filter chips,
+  bulk labelling, live progress, review view (high-res preview, wheel-zoom +
+  pan, YOLO box overlay, species top-4 + manual override), settings panel
+  (strictness slider + per-rule advanced sliders, instant re-score).
+- **Species**: ViT-B/16, 526 species, data-driven preprocessing via
+  `bird_species.meta.json`. Verified: egret crop → Snowy Egret 0.39 (Rust) ≈
+  0.38 (Python).
+- **Performance**: parallel decode → 1.38 → 4.56 img/s.
+
+## In progress
+
+- **Learning loop** — in-app retrain over user labels (next).
+
+## Done (continued)
+
+- **int8 quantization** of the species model: 345 MB → **85 MB**, top-1
+  unchanged (Snowy Egret 0.373 vs 0.385). Quantized only MatMul weights, since
+  ORT's CPU EP cannot run `ConvInteger` (the patch-embed Conv is left fp32).
+
+## TODO / backlog (roughly ordered)
+
+1. **Learning loop** — in-app retrain over user labels, with CV accuracy; use the
+   trained model in the scorer.
+2. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
+   needs a dialog + hosting decision).
+3. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
+4. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+   detector for small/distant birds.
+5. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
+   notarization, auto-updater.
+6. **Virtualized grid** for very large folders (currently renders all tiles).
+7. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+8. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+
+## Known issues / notes
+
+- **EfficientNet ONNX collapses in `ort`**: the bundled ONNX Runtime returns
+  constant logits for the EfficientNet bird classifier, while the same file is
+  correct under `onnxruntime` 1.23.2 and PyTorch. **Workaround: use the ViT
+  classifier** (works). Revisit if `ort` ships a newer ONNX Runtime.
+- Species model is **330 MB fp32** — quantization is the next step for the
+  "lightweight on non-NVIDIA machines" goal.
+- Debug builds are ~10× slower for RAW decode; **always run the app with
+  `--release`**.
+- Analysis resolution is fixed at long-side 2400; the grid thumbnails are 512.
+
+## Decisions
+
+- **Tauri v2 + Svelte** over PySide6 (performance, bundle size) — see `plan.md`.
+- **ONNX Runtime** as the single inference engine; **CPU-first**, GPU opt-in.
+- **ViT species classifier** chosen because it runs correctly on the bundled ORT.
+- **rawler** for RAW decode (LGPL-2.1) behind the `ImageDecoder` trait so it can
+  be swapped for libraw FFI if needed.
+- Provisional licence: **AGPL-3.0-or-later**.
+
+## Verification recipes
+
+```bash
+# tests + lint
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+# real-photo smoke (hard links avoid copying; originals untouched)
+birdsorter analyze <folder> --model yolo11n.onnx
+birdsorter list <folder>
+birdsorter probe <one.cr3> --model yolo11n.onnx   # detections + features + species
+
+# desktop app (release!)
+cd ui && npm install && npm run build && cd ..
+cargo run --release -p birdsorter-desktop
+```
+
+Model directory: `%APPDATA%\BirdSorter\data\models\` (`bird_species.onnx`,
+`bird_species.labels.json`, `bird_species.meta.json`).
