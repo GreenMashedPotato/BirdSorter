@@ -25,7 +25,7 @@ detection → sharpness verdict → species ID → grid/review UI).
 | M3 | Compute tiers + model manager | ✅ model registry + Model Manager (download / install from file / remove) |
 | M4 | Species ID | ✅ done (ViT, 526 species) |
 | M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst UI + learning loop done; eye model pending |
-| M6 | Release engineering (installers, signing) | ⬜ not started |
+| M6 | Release engineering (installers, signing) | 🟡 installers build (unsigned); signing/notarization pending |
 
 ## Done
 
@@ -72,6 +72,11 @@ detection → sharpness verdict → species ID → grid/review UI).
     future work — RL deconvolution, chroma denoise, lens corrections.
 - **Zoom is sharp**: the preview element is sized to `fit × zoom` so the browser
   resamples from the full-resolution bitmap instead of magnifying a small raster.
+- **Virtualized grid**: only the on-screen rows (plus overscan) are rendered, so
+  folders with thousands of images stay responsive.
+- **Packaging**: `tauri build` produces an NSIS setup (18 MB) and an MSI (32 MB);
+  the detector ships as a bundled resource. Release workflow added for Windows
+  x64 + macOS arm64/x64. Unsigned for now.
 - **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each
@@ -95,16 +100,16 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ### Other
 
-1. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
-   detector for small/distant birds.
-2. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
-   notarization, auto-updater.
-3. **Virtualized grid** for very large folders (currently renders all tiles).
-4. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-5. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
-6. **Preview over an asset protocol** — previews cross IPC as base64; stream from
-   disk instead.
-7. **Developed preview, round 2** (if wanted) — RL deconvolution sharpening,
+1. **Signing / notarization** — macOS Developer ID + notarization ($99/yr) and a
+   Windows code-signing cert, so installers open without SmartScreen/Gatekeeper
+   warnings. Auto-updater (tauri-plugin-updater) after that.
+2. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+   detector for small/distant birds (needs a labelled dataset + training).
+3. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+4. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+5. **Asset protocol for previews** — only worth it if very large previews return;
+   the current 3.7 MB embedded preview over base64 is fine.
+6. **Developed preview, round 2** (if wanted) — RL deconvolution sharpening,
    chroma denoise, lens corrections, better demosaic (LibRaw DHT/DCB).
 
 ## Known issues / notes
