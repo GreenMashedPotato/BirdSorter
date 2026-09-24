@@ -20,6 +20,12 @@ use crate::{CoreError, Result};
 /// Extensions we treat as RAW photographs.
 pub const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"];
 
+/// Extensions the scanner picks up: RAW plus common JPEG. (Birders sometimes
+/// shoot JPEG, and it makes the pipeline easy to exercise in tests.)
+pub const PHOTO_EXTENSIONS: &[&str] = &[
+    "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng", "jpg", "jpeg",
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRow {
     pub id: i64,
@@ -295,7 +301,7 @@ pub fn scan_folder_with(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !RAW_EXTENSIONS.contains(&ext.as_str()) {
+        if !PHOTO_EXTENSIONS.contains(&ext.as_str()) {
             continue;
         }
 

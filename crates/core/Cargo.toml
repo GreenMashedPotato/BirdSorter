@@ -21,8 +21,17 @@ walkdir.workspace = true
 time.workspace = true
 image.workspace = true
 rawler = "0.6.0"
+ort = { version = "2.0.0-rc.9", features = ["ndarray", "download-binaries"] }
 
 [dev-dependencies]
 approx.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+
+[features]
+default = []
+# Optional GPU execution providers. Off by default: the CPU build is smaller and
+# runs everywhere, which is the project's core requirement.
+gpu-directml = ["ort/directml"]
+gpu-coreml = ["ort/coreml"]
+gpu-cuda = ["ort/cuda"]

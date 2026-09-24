@@ -89,6 +89,34 @@ pub fn dynamic_to_rgb(img: &DynamicImage, max_long_side: Option<u32>) -> Array3<
     })
 }
 
+/// Try several decoders in order, returning the first success. The last error
+/// is reported when every backend fails.
+#[derive(Default)]
+pub struct CompositeDecoder {
+    pub decoders: Vec<Box<dyn ImageDecoder>>,
+}
+
+impl CompositeDecoder {
+    pub fn new(decoders: Vec<Box<dyn ImageDecoder>>) -> Self {
+        Self { decoders }
+    }
+}
+
+impl ImageDecoder for CompositeDecoder {
+    fn decode(&self, path: &Path) -> Result<DecodedImage> {
+        let mut last: Option<CoreError> = None;
+        for decoder in &self.decoders {
+            match decoder.decode(path) {
+                Ok(img) => return Ok(img),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            CoreError::Other(format!("no decoder could handle {}", path.display()))
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

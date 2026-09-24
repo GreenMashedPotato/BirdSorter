@@ -29,7 +29,10 @@ Early. The headless Rust core is underway (M1 of the plan):
 | `core::io::decoder` / `core::io::raw` — RAW decode via `rawler` (embedded preview → full → demosaic), generic image decoder | ✅ tested (error paths; needs real-RAW fixtures) |
 | `core::data::{db,library,analysis_store,labels,settings}` — SQLite schema + migrations, scan/re-link, analysis + labels | ✅ tested |
 | `core::pipeline::ingest` — decode → detect → features → verdict, cancel/batching/failure isolation | ✅ tested with fakes |
-| `core::runtime` (ONNX Runtime, YOLO detector) | ⏳ next |
+| `core::analysis::saliency` — zero-download fallback detector | ✅ tested |
+| `core::analysis::yolo` — YOLO letterbox pre-processing + output decoding/NMS | ✅ tested with synthetic tensors |
+| `core::runtime` — ONNX Runtime (`ort`) YOLO detector, CPU by default, GPU EPs behind features | ✅ builds; model-gated test |
+| `birdsorter` CLI — `hash`, `analyze`, `list`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos |
 | Species ID, learning loop, thumbnail encoder | ⏳ next |
 | Tauri desktop shell + Svelte UI | ⏳ next |
 
@@ -48,10 +51,25 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 47 unit tests
+cargo test --workspace          # 103 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p birdsorter-cli -- selftest   # headless pipeline smoke test
+cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
+
+# end-to-end on a synthetic photo (no RAW needed):
+cargo run -p birdsorter-cli -- genimage /tmp/shoot/shot1.jpg
+cargo run -p birdsorter-cli -- analyze /tmp/shoot --no-detect
+cargo run -p birdsorter-cli -- list /tmp/shoot
+
+# with a real detector (needs a YOLO ONNX export):
+cargo run -p birdsorter-cli -- analyze /tmp/shoot --model yolo11n.onnx
+```
+
+GPU execution providers are opt-in at build time:
+
+```bash
+cargo build -p birdsorter-cli --features birdsorter-core/gpu-directml   # Windows
+cargo build -p birdsorter-cli --features birdsorter-core/gpu-coreml     # macOS
 ```
 
 ## Licence

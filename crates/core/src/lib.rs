@@ -17,5 +17,6 @@ pub mod data;
 pub mod error;
 pub mod io;
 pub mod pipeline;
+pub mod runtime;
 
 pub use error::{CoreError, Result};

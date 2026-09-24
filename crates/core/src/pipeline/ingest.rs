@@ -19,12 +19,9 @@ use crate::{CoreError, Result};
 /// backends can implement them without depending on the pipeline.
 pub use crate::io::decoder::{DecodedImage, ImageDecoder};
 
-/// Finds subjects (birds) in images. Implemented by the ONNX detector; faked
-/// in tests.
-pub trait SubjectDetector: Send + Sync {
-    /// One list of detections per input image, in order.
-    fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>>;
-}
+/// The subject-detector trait lives in `analysis::detector` alongside
+/// `Detection` so both detectors and the pipeline can depend on it.
+pub use crate::analysis::detector::SubjectDetector;
 
 /// Turns a feature vector into a verdict. Implemented by the rule scorer and,
 /// later, the trained model.

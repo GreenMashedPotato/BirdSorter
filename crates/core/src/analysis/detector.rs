@@ -8,7 +8,10 @@
 //! No model runtime is involved here — it is pure geometry, so it is tested
 //! exhaustively with synthetic boxes.
 
+use ndarray::Array3;
 use serde::{Deserialize, Serialize};
+
+use crate::Result;
 
 /// Axis-aligned box in image pixel coordinates: top-left `(x, y)` + size `(w, h)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +96,26 @@ impl Detection {
     pub fn clipped(mut self, w: i32, h: i32) -> Option<Self> {
         self.bbox = self.bbox.clamp_to(w, h)?;
         Some(self)
+    }
+}
+
+/// Finds subjects (birds) in images.
+///
+/// Implemented by the ONNX detector and by the zero-download saliency fallback;
+/// faked in pipeline tests.
+pub trait SubjectDetector: Send + Sync {
+    /// One list of detections per input image, in order.
+    fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>>;
+}
+
+/// A detector that never finds anything. Useful for whole-image scoring (the
+/// `--no-detect` mode) and as a neutral default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullDetector;
+
+impl SubjectDetector for NullDetector {
+    fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>> {
+        Ok(vec![Vec::new(); images.len()])
     }
 }
 
@@ -345,6 +368,15 @@ mod tests {
         let square = Letterbox::new(3000, 3000, 640);
         assert_eq!((square.new_w, square.new_h), (640, 640));
         assert_eq!((square.pad_x, square.pad_y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn null_detector_returns_empty_lists() {
+        let detector = NullDetector;
+        let img = Array3::<u8>::zeros((4, 4, 3));
+        let out = detector.detect_batch(&[&img, &img]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|d| d.is_empty()));
     }
 
     proptest! {
