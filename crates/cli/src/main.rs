@@ -122,8 +122,16 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             birdsorter_core::io::develop::DemosaicAlgorithm::Ahd
         };
         let sharpen = !args.iter().any(|a| a == "--no-sharpen");
-        eprintln!("develop: algo={algo:?} sharpen={sharpen}");
-        let rgb = match birdsorter_core::io::develop::develop_srgb(Path::new(src), algo, sharpen) {
+        let options = if args.iter().any(|a| a == "--linear") {
+            birdsorter_core::io::develop::DevelopOptions::linear()
+        } else {
+            birdsorter_core::io::develop::DevelopOptions {
+                sharpen,
+                ..Default::default()
+            }
+        };
+        eprintln!("develop: algo={algo:?} options={options:?}");
+        let rgb = match birdsorter_core::io::develop::develop_srgb(Path::new(src), algo, options) {
             Ok(rgb) => rgb,
             Err(e) => {
                 eprintln!("preview --develop failed: {e}");

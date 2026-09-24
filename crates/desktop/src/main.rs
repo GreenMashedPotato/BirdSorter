@@ -26,7 +26,7 @@ use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
-use birdsorter_core::io::develop::develop_default;
+use birdsorter_core::io::develop::develop_preview;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::learning::trainer;
@@ -44,6 +44,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const ANALYSIS_LONG_SIDE: u32 = 2400;
 /// Long side of grid thumbnails.
 const THUMB_LONG_SIDE: u32 = 512;
+/// Long side of the "Developed" preview (full demosaic is 45 MP / ~60 MB JPEG).
+const DEVELOP_MAX_LONG_SIDE: u32 = 6000;
 /// Upper bound on parallel decode workers during analysis, so the desktop stays
 /// responsive on high-core-count machines.
 const MAX_DECODE_THREADS: usize = 8;
@@ -259,8 +261,8 @@ fn preview_impl(
         "develop" => (
             render_key(&hash, 1),
             Box::new(move || {
-                let rgb = develop_default(&path)?;
-                encode_rgb_jpeg(&rgb, 95)
+                let rgb = develop_preview(&path, DEVELOP_MAX_LONG_SIDE)?;
+                encode_rgb_jpeg(&rgb, 92)
             }),
         ),
         "full" => (

@@ -61,11 +61,18 @@ detection → sharpness verdict → species ID → grid/review UI).
 - **Detector is bundled** with the app (seeded into the model dir on first run);
   the app and CLI auto-load installed models.
 - **Preview modes**: a selector in the review bar — **Fast** (analysis res),
-  **High-res** (native embedded preview, ~1.4 s) and **Developed** (full RAW
-  demosaic via rawler, ~2.5 s, maximum detail). Each mode is cached separately
-  and a spinner shows while rendering. Detection boxes are positioned against
-  the **stored analysis dimensions** (schema v8), so they stay aligned at any
+  **High-res** (native embedded preview, ~1.4 s) and **Developed** (AHD demosaic
+  + camera look, ~3 s, capped at 6000 px). Each mode is cached separately and a
+  spinner shows while rendering. Detection boxes are positioned against the
+  **stored analysis dimensions** (schema v8), so they stay aligned at any
   preview resolution.
+- **Developed look** (matching DPP/Lightroom): AHD demosaic → white balance →
+  camera→sRGB → median-targeted auto exposure → **ACES filmic tone curve**
+  (highlight rolloff, so a white bird keeps detail) → slight saturation →
+  capture sharpening. Verified on a real CR3: mean 105 (camera preview 108),
+  p99.9 = 245 (no clipping).
+- **Zoom is sharp**: the preview element is sized to `fit × zoom` so the browser
+  resamples from the full-resolution bitmap instead of magnifying a small raster.
 - **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each
