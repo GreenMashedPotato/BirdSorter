@@ -63,16 +63,29 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## TODO / backlog (roughly ordered)
 
-1. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
+### User-requested (priority)
+
+1. **Native folder picker** — replace the free-text path input with an OS folder
+   picker dialog (Tauri dialog plugin); keep typed input as a fallback.
+2. **Higher-resolution preview** — the review preview renders at analysis
+   resolution (2400 px). Add a full-resolution render (and/or a 100% subject
+   crop) with a loading indicator, and an option to prefer high-res previews.
+3. **Score breakdown / rule editor** — clicking a score shows exactly how it was
+   computed: the feature vector, each rule's contribution, and the final verdict,
+   with the ability to tweak the rules from that panel.
+
+### Other
+
+4. **Model Manager UI** — download/verify/remove models (registry + fetcher exist;
    needs a dialog + hosting decision).
-2. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
-3. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
+5. **Burst UI** — show burst groups, "burst winners only" filter, best-of-burst.
+6. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
    detector for small/distant birds.
-4. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
+7. **Packaging (M6)** — `tauri build`, NSIS `.exe` + `.dmg`, code signing /
    notarization, auto-updater.
-5. **Virtualized grid** for very large folders (currently renders all tiles).
-6. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-7. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+8. **Virtualized grid** for very large folders (currently renders all tiles).
+9. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
+10. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
 
 ## Known issues / notes
 
