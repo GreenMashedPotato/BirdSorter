@@ -31,10 +31,12 @@ use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
 };
-use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
+use birdsorter_core::runtime::{
+    DevicePreference, OnnxDetector, OnnxSpeciesClassifier, DETECTOR_ONNX,
+};
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Long side used for analysis decodes.
 const ANALYSIS_LONG_SIDE: u32 = 2400;
@@ -626,6 +628,42 @@ async fn train(state: State<'_, AppState>, folder: Option<i64>) -> Result<TrainR
     .await
 }
 
+/// Copy the bundled detector into the model directory on first run, so the app
+/// has subject detection without any download. Species models stay on-demand.
+fn seed_bundled_models(app: &AppHandle) {
+    let Ok(dir) = registry::default_model_dir() else {
+        return;
+    };
+    let dest = dir.join(DETECTOR_ONNX);
+    if dest.is_file() {
+        return;
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(res) = app.path().resolve(
+        format!("models/{DETECTOR_ONNX}"),
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        candidates.push(res);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("models").join(DETECTOR_ONNX));
+            candidates.push(parent.join(DETECTOR_ONNX));
+        }
+    }
+    candidates.push(PathBuf::from("models").join(DETECTOR_ONNX));
+
+    for src in candidates {
+        if src.is_file()
+            && std::fs::create_dir_all(&dir).is_ok()
+            && std::fs::copy(&src, &dest).is_ok()
+        {
+            return;
+        }
+    }
+}
+
 fn main() {
     let db_path = db::default_db_path().unwrap_or_else(|_| PathBuf::from("birdsorter.db"));
     let cache = ThumbCache::open_default()
@@ -636,6 +674,10 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            seed_bundled_models(app.handle());
+            Ok(())
+        })
         .manage(AppState {
             db_path,
             cache,

@@ -8,5 +8,5 @@
 pub mod detector;
 pub mod species;
 
-pub use detector::{DevicePreference, OnnxDetector};
+pub use detector::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
 pub use species::OnnxSpeciesClassifier;

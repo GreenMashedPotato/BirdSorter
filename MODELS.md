@@ -14,10 +14,14 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 
 ## Catalogue
 
-| Key | Tier | Artifact | Installs |
+| Key | Tier | Source | Installs |
 |---|---|---|---|
-| `bird_detector` | T1 | `bird_det_v1.onnx` | `bird_det_v1.onnx` |
-| `bird_species` | T2 | `bird_species.zip` | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
+| `bird_detector` | T1 | **bundled with the app** (no download) | `bird_det_v1.onnx` |
+| `bird_species` | T2 | local file (or a release asset once hosted) | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
+
+The detector ships inside the app and is copied into the model directory on first
+run, so subject detection works out of the box with no download. "Install from
+file…" can override it.
 
 The species model is a **zip bundle** so download and local import are a single
 action. `bird_species.meta.json` carries the preprocessing
@@ -35,26 +39,26 @@ The source directory must contain `bird_species.onnx`,
 
 ## Hosting — recommendation
 
-**Recommended: GitHub Releases** on this repo.
+The detector needs no hosting (it is bundled). The species model is optional and
+can always be installed from a local file.
 
-- Free, versioned, and needs no extra account beyond GitHub.
-- Direct asset URLs work with the existing `HttpFetcher`.
-- Plays nicely with the planned auto-updater (same release pipeline).
+**This repo is currently private**, so `raw.githubusercontent.com` and Release
+assets are not reachable by the app (or by end users) without a token. To offer
+in-app downloads, either:
 
-Steps once the bundle exists:
+- **make the repo public**, then upload `dist-models/bird_species.zip` as a
+  GitHub Release asset and set the spec's `url` + `sha256`; or
+- **host the bundle on a public service** such as a Hugging Face repo (good CDN
+  and versioning) and set `url` + `sha256` accordingly.
 
-1. Create a release (e.g. `models-v1`) and upload `bird_species.zip` (and
-   `bird_det_v1.onnx`).
-2. Compute the checksum: `sha256sum bird_species.zip` (or PowerShell
-   `Get-FileHash`).
-3. In `crates/core/src/data/registry.rs`, set the spec's `url` to the asset URL
-   and `sha256` to that hash. Downloads are then verified automatically.
+Either way, keep **"Install from file…"** — it is the offline path, the escape
+hatch for new regions/species, and how power users supply their own models.
 
-**Alternative: a Hugging Face repo.** Better CDN and versioning if the catalogue
-grows large or you want per-model pages; slightly more setup than Releases.
+Steps once a public URL exists:
 
-**Always keep "Install from file…"** — it is the offline path, the escape hatch
-for new cameras/regions, and how power users supply their own models.
+1. `sha256sum dist-models/bird_species.zip` (or PowerShell `Get-FileHash`).
+2. Set `url` and `sha256` on the `bird_species` spec in
+   `crates/core/src/data/registry.rs`. Downloads are then verified automatically.
 
 ## The detector model
 

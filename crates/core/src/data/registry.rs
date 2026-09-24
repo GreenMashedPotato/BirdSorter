@@ -69,14 +69,14 @@ pub fn builtin_models() -> Vec<ModelSpec> {
         ModelSpec {
             key: "bird_detector".into(),
             display_name: "Bird detector (YOLO11n)".into(),
-            description: "Single-class bird detector, ONNX (~11 MB). Served from this repo's \
-                          models/ directory; also installable from a local .onnx."
+            description: "Single-class bird detector, ONNX (~11 MB). Bundled with the app, so \
+                          no download is needed; install from file to override."
                 .into(),
             artifact: "bird_det_v1.onnx".into(),
             unpack: false,
             files: vec!["bird_det_v1.onnx".into()],
-            url: "https://raw.githubusercontent.com/GreenMashedPotato/raw-sorter-app/main/models/bird_det_v1.onnx".into(),
-            sha256: "58b3655e1fef99e9a584c79483d93f0681c429d4a83ff60992db917b74e7e5da".into(),
+            url: String::new(),
+            sha256: String::new(),
             size_bytes: 10_700_000,
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into()],
