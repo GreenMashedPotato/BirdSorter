@@ -12,6 +12,7 @@ use crate::analysis::scorer::{score_rules, ScoreResult};
 use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
 use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
 use crate::data::library;
+use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
 use crate::{CoreError, Result};
 
@@ -83,6 +84,9 @@ pub struct IngestContext<'a> {
     pub cancel: Option<&'a CancelToken>,
     /// Images per detector call.
     pub batch_size: usize,
+    /// Worker threads used to decode ahead of analysis. `1` decodes inline
+    /// (deterministic; used in tests).
+    pub decode_threads: usize,
 }
 
 impl<'a> IngestContext<'a> {
@@ -97,7 +101,14 @@ impl<'a> IngestContext<'a> {
             scorer,
             cancel: None,
             batch_size: 8,
+            decode_threads: 1,
         }
+    }
+
+    /// Number of parallel decode workers (clamped to at least 1).
+    pub fn with_decode_threads(mut self, threads: usize) -> Self {
+        self.decode_threads = threads.max(1);
+        self
     }
 
     fn cancelled(&self) -> bool {
@@ -131,6 +142,24 @@ pub fn ingest_folder(
         return Ok(progress);
     }
 
+    if ctx.decode_threads <= 1 {
+        run_sequential(conn, pending, ctx, &mut progress, &mut on_progress)?;
+    } else {
+        run_parallel(conn, pending, ctx, &mut progress, &mut on_progress)?;
+    }
+    on_progress(&progress);
+    Ok(progress)
+}
+
+/// Decode and analyse one file at a time (deterministic; used in tests and on
+/// single-core machines).
+fn run_sequential(
+    conn: &Connection,
+    pending: Vec<LibraryFile>,
+    ctx: &IngestContext<'_>,
+    progress: &mut IngestProgress,
+    on_progress: &mut dyn FnMut(&IngestProgress),
+) -> Result<()> {
     let batch_size = ctx.batch_size.max(1);
     let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
 
@@ -158,18 +187,105 @@ pub fn ingest_folder(
         }
 
         if batch.len() >= batch_size {
-            flush_batch(conn, ctx, &mut batch, &mut progress)?;
+            flush_batch(conn, ctx, &mut batch, progress)?;
         }
-        on_progress(&progress);
+        on_progress(progress);
     }
 
     if !ctx.cancelled() {
-        flush_batch(conn, ctx, &mut batch, &mut progress)?;
+        flush_batch(conn, ctx, &mut batch, progress)?;
     } else {
         batch.clear();
     }
-    on_progress(&progress);
-    Ok(progress)
+    Ok(())
+}
+
+/// Parallel decode with a bounded queue, so decoding (the CPU bottleneck, and
+/// the only stage that cannot be batched) overlaps with detection and feature
+/// extraction on the calling thread.
+///
+/// Decode order is not preserved; results are analysed as they arrive, batched
+/// for the detector.
+fn run_parallel(
+    conn: &Connection,
+    pending: Vec<LibraryFile>,
+    ctx: &IngestContext<'_>,
+    progress: &mut IngestProgress,
+    on_progress: &mut dyn FnMut(&IngestProgress),
+) -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::sync_channel;
+
+    let batch_size = ctx.batch_size.max(1);
+    let bound = (ctx.decode_threads * 2).max(1);
+    let (tx, rx) = sync_channel::<(usize, std::result::Result<DecodedImage, CoreError>)>(bound);
+    let next_index = AtomicUsize::new(0);
+    let total = pending.len();
+    let queue = pending;
+
+    std::thread::scope(|scope| -> Result<()> {
+        for _ in 0..ctx.decode_threads {
+            let tx = tx.clone();
+            let queue = &queue;
+            let next_index = &next_index;
+            let cancel = ctx.cancel.cloned();
+            let decoder = ctx.decoder;
+            scope.spawn(move || loop {
+                if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
+                    break;
+                }
+                let i = next_index.fetch_add(1, Ordering::SeqCst);
+                if i >= queue.len() {
+                    break;
+                }
+                let lf = &queue[i];
+                let res = decoder.decode(&lf.absolute_path);
+                // Blocking send: backpressure keeps peak memory bounded.
+                if tx.send((i, res)).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+
+        let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
+        let mut received = 0usize;
+        while received < total {
+            let Ok((i, res)) = rx.recv() else { break };
+            received += 1;
+            let lf = &queue[i];
+            progress.current_file = lf.file.filename.clone();
+            match res {
+                Ok(img) => {
+                    progress.decoded += 1;
+                    batch.push(PendingItem {
+                        file_id: lf.file.id,
+                        name: lf.file.filename.clone(),
+                        rgb: img.rgb,
+                    });
+                }
+                Err(e) => {
+                    progress.failed += 1;
+                    progress
+                        .failures
+                        .push((lf.file.filename.clone(), format!("decode: {e}")));
+                }
+            }
+            if batch.len() >= batch_size {
+                flush_batch(conn, ctx, &mut batch, progress)?;
+            }
+            on_progress(progress);
+            if ctx.cancelled() {
+                break;
+            }
+        }
+        if !ctx.cancelled() {
+            flush_batch(conn, ctx, &mut batch, progress)?;
+        } else {
+            batch.clear();
+        }
+        Ok(())
+    })
 }
 
 fn flush_batch(
@@ -544,6 +660,27 @@ mod tests {
         let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
         assert_eq!((progress.total, progress.analyzed), (0, 0));
         assert!(!progress.is_finished());
+    }
+
+    #[test]
+    fn parallel_decode_analyses_all_files() {
+        let (_dir, conn) = setup(6);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext {
+            batch_size: 2,
+            ..IngestContext::new(&decoder, &detector, &scorer).with_decode_threads(3)
+        };
+
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!(progress.total, 6);
+        assert_eq!(progress.analyzed, 6);
+        assert_eq!(progress.failed, 0);
+        assert!(library::files_needing_analysis(&conn, fid)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

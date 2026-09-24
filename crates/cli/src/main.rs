@@ -14,7 +14,7 @@ use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::library;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, library::ScanReport};
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder};
+use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::pipeline::{ingest_folder, IngestContext, IngestProgress, RulesScorer};
@@ -31,6 +31,8 @@ Commands:
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
+  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
+  probe <raw> [--model <onnx>]  Decode one file and print detections + features
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
   version                     Print version
@@ -44,6 +46,8 @@ fn main() -> ExitCode {
         Some("hash") => cmd_hash(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
+        Some("thumb") => cmd_thumb(&args[1..]),
+        Some("probe") => cmd_probe(&args[1..]),
         Some("genimage") => cmd_genimage(&args[1..]),
         Some("selftest") => cmd_selftest(),
         Some("version") => {
@@ -81,6 +85,118 @@ fn cmd_hash(paths: &[String]) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Decode one file and print detections + full verdict (debugging real photos).
+fn cmd_probe(args: &[String]) -> ExitCode {
+    let mut file = None;
+    let mut model = None;
+    let mut no_detect = false;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--model" => model = it.next().cloned(),
+            "--no-detect" => no_detect = true,
+            other if other.starts_with("--") => {
+                eprintln!("probe: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other => file = Some(other.to_string()),
+        }
+    }
+    let Some(file) = file else {
+        eprintln!("probe: usage: probe <raw> [--model <onnx>] [--no-detect]");
+        return ExitCode::FAILURE;
+    };
+    match run_probe(&file, model.as_deref(), no_detect) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("probe failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_core::Result<()> {
+    let decoder = CompositeDecoder::new(vec![
+        Box::new(RawDecoder::new(Some(2400))),
+        Box::new(ImageCrateDecoder::new(Some(2400))),
+    ]);
+    let img = decoder.decode(Path::new(file))?;
+    let (w, h) = img.dimensions();
+    println!("decoded: {w}x{h}");
+
+    let detector: Box<dyn SubjectDetector> = if no_detect {
+        Box::new(NullDetector)
+    } else if let Some(m) = model {
+        Box::new(OnnxDetector::from_file(
+            Path::new(m),
+            YoloConfig::default(),
+            DevicePreference::Auto,
+        )?)
+    } else {
+        Box::new(SaliencyDetector::default())
+    };
+    let dets = detector
+        .detect_batch(&[&img.rgb])?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    println!("detections: {}", dets.len());
+    for d in &dets {
+        println!(
+            "  {:<8} conf={:.2}  bbox=({}, {}, {}, {})",
+            d.class_name, d.confidence, d.bbox.x, d.bbox.y, d.bbox.w, d.bbox.h
+        );
+    }
+
+    let subject = dets.first().map(|d| Subject {
+        bbox: d.bbox,
+        area_px: d.area_px,
+    });
+    let features = compute_features(&img.rgb, subject);
+    let verdict = score_rules(&features, &ScoreSettings::default());
+    println!(
+        "verdict: {} score={:.3} bokeh={} reason={:?}",
+        verdict.label, verdict.score, verdict.has_bokeh, verdict.miss_focus_reason
+    );
+    println!(
+        "features: lap_sub={:.3} ten_sub={:.3} ratio={:.2} area={:.3} eye={:.3} center_edge={:.2} edge_dist={:.2} motion={:.2}",
+        features.laplacian_subject,
+        features.tenengrad_subject,
+        features.subject_to_bg_ratio,
+        features.subject_area_fraction,
+        features.eye_sharpness_worst,
+        features.center_edge_ratio,
+        features.subject_edge_distance,
+        features.motion_directionality
+    );
+    Ok(())
+}
+
+/// Extract a RAW's embedded preview as a JPEG (for inspection / the grid).
+fn cmd_thumb(args: &[String]) -> ExitCode {
+    let (Some(src), Some(out)) = (args.first(), args.get(1)) else {
+        eprintln!("thumb: usage: thumb <raw> <out.jpg> [max_dim]");
+        return ExitCode::FAILURE;
+    };
+    let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1024);
+    match birdsorter_core::io::raw::encode_thumbnail(Path::new(src), max) {
+        Ok(bytes) => match std::fs::write(out, &bytes) {
+            Ok(()) => {
+                println!("wrote {out} ({} KB)", bytes.len() / 1024);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("thumb: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Err(e) => {
+            eprintln!("thumb failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -295,6 +411,9 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     let scorer = RulesScorer(ScoreSettings::default());
     let ctx = IngestContext {
         batch_size: 8,
+        decode_threads: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
         ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
     };
 
