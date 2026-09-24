@@ -122,9 +122,8 @@
   let selectedBox = $state(0);
   let speciesInput = $state("");
   let previewLoading = $state(false);
-  /// Preview render mode: fast (analysis res), full (native preview) or
-  /// develop (full RAW demosaic, slow but maximum detail).
-  let previewMode = $state<"fast" | "full" | "develop">("fast");
+  /// Preview render mode: fast (analysis res) or full (native camera preview).
+  let previewMode = $state<"fast" | "full">("fast");
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
@@ -697,7 +696,6 @@
         >
           <option value="fast">Fast</option>
           <option value="full">High-res</option>
-          <option value="develop">Developed</option>
         </select>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
@@ -759,13 +757,7 @@
           {#if previewLoading}
             <div class="loading">
               <div class="spinner"></div>
-              <span
-                >rendering{previewMode === "develop"
-                  ? " developed"
-                  : previewMode === "full"
-                    ? " full-resolution"
-                    : ""} preview…</span
-              >
+              <span>rendering{previewMode === "full" ? " full-resolution" : ""} preview…</span>
             </div>
           {/if}
         </div>
