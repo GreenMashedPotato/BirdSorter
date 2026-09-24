@@ -197,3 +197,127 @@ input {
   text-align: center;
   grid-column: 1 / -1;
 }
+
+/* --- review view ------------------------------------------------------- */
+.review {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 10, 14, 0.94);
+}
+.review-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+.review-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  min-height: 0;
+}
+.preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  min-height: 0;
+}
+.imgwrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.imgwrap img {
+  max-width: 100%;
+  max-height: calc(100vh - 120px);
+  display: block;
+  border-radius: 4px;
+}
+.box {
+  position: absolute;
+  border: 2px solid rgba(76, 141, 255, 0.85);
+  cursor: pointer;
+}
+.box.sel {
+  border-color: #ffd166;
+  border-width: 3px;
+}
+.boxtag {
+  position: absolute;
+  top: -20px;
+  left: -2px;
+  background: rgba(76, 141, 255, 0.92);
+  color: #06121f;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.box.sel .boxtag {
+  background: #ffd166;
+}
+.side {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 14px;
+  overflow: auto;
+}
+.side h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+.side h3:first-child {
+  margin-top: 0;
+}
+.pill {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.picks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pick {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  width: 100%;
+}
+.pick .pickname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick .conf {
+  color: var(--muted);
+}
+.pick.blank {
+  opacity: 0.35;
+}
+.other {
+  display: flex;
+  gap: 6px;
+}
+.other input {
+  flex: 1;
+}
+.mini {
+  font-size: 12px;
+  padding: 4px 8px;
+}

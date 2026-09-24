@@ -66,7 +66,7 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 120 unit tests
+cargo test --workspace          # 123 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -104,8 +104,16 @@ cargo run --release -p birdsorter-desktop
 
 The window provides a folder sidebar, a worst-first thumbnail grid with filter
 chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
-progress. All logic stays in `birdsorter-core`; the shell only wires commands
-and events.
+progress. **Double-click a tile** to open the review view:
+
+- high-resolution preview (rendered on demand at analysis resolution and cached,
+  so it is sharper than the grid thumbnail),
+- **YOLO subject boxes overlaid** on the image — click a box to select a subject,
+- per-subject species with the **top-4 predictions plus a blank field** to set
+  the actual species (or clear it),
+- J/K to step through files, Esc to close.
+
+All logic stays in `birdsorter-core`; the shell only wires commands and events.
 
 ## Licence
 

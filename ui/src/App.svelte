@@ -9,6 +9,9 @@
     cancelAnalysis,
     queryFiles,
     getThumbnail,
+    previewImage,
+    analysisDetail,
+    setSpecies,
     labelFiles,
     onProgress,
     onDone,
@@ -19,6 +22,7 @@
     type FileEntry,
     type FilterKey,
     type UserLabel,
+    type AnalysisDetail,
   } from "./lib/api";
 
   let folders = $state<FolderInfo[]>([]);
@@ -71,6 +75,91 @@
   let model = $state("");
 
   const visible = $derived(files.filter((f) => matchesFilter(f, filter)));
+
+  // --- review view state ---------------------------------------------------
+  let reviewFile = $state<number | null>(null);
+  let detail = $state<AnalysisDetail | null>(null);
+  let previewUrl = $state("");
+  let previewEl = $state<HTMLImageElement | undefined>(undefined);
+  let natural = $state({ w: 1, h: 1 });
+  let selectedBox = $state(0);
+  let speciesInput = $state("");
+  let previewLoading = $state(false);
+
+  // Species picks for the selected box, falling back to the file-level top-5.
+  const activeTop5 = $derived.by(() => {
+    if (!detail) return [] as [string, number][];
+    const box = detail.boxes[selectedBox];
+    return box && box.top5.length > 0 ? box.top5 : detail.top5;
+  });
+  const picks = $derived(activeTop5.slice(0, 4));
+  const blanks = $derived(Math.max(0, 4 - picks.length));
+
+  async function openReview(id: number) {
+    reviewFile = id;
+    detail = null;
+    previewUrl = "";
+    selectedBox = 0;
+    speciesInput = "";
+    previewLoading = true;
+    try {
+      const [d, url] = await Promise.all([analysisDetail(id), previewImage(id)]);
+      detail = d;
+      previewUrl = url;
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      previewLoading = false;
+    }
+  }
+
+  function closeReview() {
+    reviewFile = null;
+    detail = null;
+    previewUrl = "";
+  }
+
+  async function nav(delta: number) {
+    if (reviewFile === null) return;
+    const idx = visible.findIndex((f) => f.id === reviewFile);
+    if (idx < 0) return;
+    const next = idx + delta;
+    if (next < 0 || next >= visible.length) return;
+    await openReview(visible[next].id);
+  }
+
+  async function refreshDetail() {
+    if (reviewFile !== null) detail = await analysisDetail(reviewFile);
+  }
+
+  async function chooseSpecies(name: string | null, conf?: number) {
+    if (reviewFile === null) return;
+    try {
+      await setSpecies(reviewFile, name, conf);
+      await refreshDetail();
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  async function submitBlank() {
+    const name = speciesInput.trim();
+    if (!name) return;
+    speciesInput = "";
+    await chooseSpecies(name, 1.0);
+  }
+
+  async function applyLabelToReview(label: UserLabel) {
+    if (reviewFile === null) return;
+    try {
+      await labelFiles([reviewFile], label);
+      await refreshDetail();
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
 
   function setSelected(next: Set<number>) {
     selected = next;
@@ -182,6 +271,14 @@
   }
 
   onMount(async () => {
+    // Review-view keyboard shortcuts (J/K navigate, Esc closes).
+    window.addEventListener("keydown", (e) => {
+      if (reviewFile === null) return;
+      if (e.key === "Escape") closeReview();
+      else if (e.key === "j" || e.key === "ArrowRight") nav(1);
+      else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
+    });
+
     if (!inTauri) {
       // Browser dev preview with sample data.
       folders = [{ id: 1, path: "D:\\shoots\\demo", addedAt: "", lastScannedAt: null }];
@@ -305,6 +402,7 @@
           tabindex="0"
           onclick={() => toggle(f.id)}
           onkeydown={(e) => onTileKey(e, f.id)}
+          ondblclick={() => openReview(f.id)}
         >
           <div class="thumb">
             {#if thumbs[f.id]}
@@ -324,4 +422,119 @@
       {/each}
     </div>
   </main>
+
+  {#if reviewFile !== null}
+    <div class="review">
+      <div class="review-bar">
+        <strong>{detail?.filename ?? "loading…"}</strong>
+        {#if detail?.predicted}
+          <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
+          <span class="status">score {detail.score?.toFixed(3)}</span>
+        {/if}
+        {#if detail?.hasBokeh}<span class="status">· bokeh</span>{/if}
+        {#if detail?.missFocusReason}<span class="status">· {detail.missFocusReason}</span>{/if}
+        {#if previewLoading}<span class="status">· rendering preview…</span>{/if}
+        <div class="spacer"></div>
+        <span class="status">{visible.findIndex((f) => f.id === reviewFile) + 1} / {visible.length}</span>
+        <button onclick={() => nav(-1)}>‹ K</button>
+        <button onclick={() => nav(1)}>J ›</button>
+        <button onclick={closeReview}>Close (Esc)</button>
+      </div>
+
+      <div class="review-body">
+        <div class="preview">
+          {#if !previewUrl}
+            <div class="empty">rendering preview…</div>
+          {:else}
+            <div class="imgwrap">
+              <img
+                src={previewUrl}
+                alt={detail?.filename ?? ""}
+                bind:this={previewEl}
+                onload={() => {
+                  if (previewEl)
+                    natural = { w: previewEl.naturalWidth || 1, h: previewEl.naturalHeight || 1 };
+                }}
+              />
+              {#each detail?.boxes ?? [] as b, i (i)}
+                <div
+                  class="box"
+                  class:sel={i === selectedBox}
+                  style="left:{(b.x / natural.w) * 100}%; top:{(b.y / natural.h) * 100}%; width:{(b.w / natural.w) * 100}%; height:{(b.h / natural.h) * 100}%"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => (selectedBox = i)}
+                  onkeydown={(e) => e.key === "Enter" && (selectedBox = i)}
+                >
+                  <span class="boxtag"
+                    >{b.class}{b.confidence ? ` ${(b.confidence * 100).toFixed(0)}%` : ""}</span
+                  >
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <aside class="side">
+          <h3>Subject</h3>
+          {#if (detail?.boxes?.length ?? 0) === 0}
+            <p class="status">No subject box (whole-image score).</p>
+          {:else}
+            <p class="status">
+              Box {selectedBox + 1} of {detail?.boxes.length} — click a box to select
+            </p>
+          {/if}
+
+          <h3>Species</h3>
+          {#if detail?.species}
+            <p>
+              <span class="pill"
+                >{detail.species}{detail.speciesConfidence
+                  ? ` · ${(detail.speciesConfidence * 100).toFixed(0)}%`
+                  : ""}</span
+              >
+            </p>
+          {:else}
+            <p class="status">Not identified — pick a prediction or set the actual species:</p>
+          {/if}
+
+          <div class="picks">
+            {#each picks as pick, i (i)}
+              <button
+                class="pick"
+                onclick={() => chooseSpecies(pick[0], pick[1])}
+                title="confidence {(pick[1] * 100).toFixed(1)}%"
+              >
+                <span class="pickname">{pick[0]}</span>
+                <span class="conf">{(pick[1] * 100).toFixed(0)}%</span>
+              </button>
+            {/each}
+            {#each Array.from({ length: blanks }) as _, i (i)}
+              <button class="pick blank" disabled>pick {picks.length + i + 1}</button>
+            {/each}
+            <div class="other">
+              <input
+                placeholder="actual species…"
+                bind:value={speciesInput}
+                onkeydown={(e) => e.key === "Enter" && submitBlank()}
+              />
+              <button onclick={submitBlank} disabled={!speciesInput.trim()}>Set</button>
+            </div>
+            {#if detail?.species}
+              <button class="mini" onclick={() => chooseSpecies(null)}>Clear ID</button>
+            {/if}
+          </div>
+
+          <h3>Your label</h3>
+          <div class="picks">
+            <button class="pick" onclick={() => applyLabelToReview("sharp")}>Sharp</button>
+            <button class="pick" onclick={() => applyLabelToReview("blurry")}>Blurry</button>
+            <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")}>Bokeh OK</button>
+            <button class="pick" onclick={() => applyLabelToReview("reject")}>Reject</button>
+          </div>
+          {#if detail?.label}<p class="status">current: {detail.label}</p>{/if}
+        </aside>
+      </div>
+    </div>
+  {/if}
 </div>

@@ -43,6 +43,32 @@ export interface Progress {
 
 export type UserLabel = "sharp" | "blurry" | "bokeh_ok" | "reject";
 
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  class: string;
+  species: string | null;
+  confidence: number | null;
+  top5: [string, number][];
+}
+
+export interface AnalysisDetail {
+  fileId: number;
+  filename: string;
+  label: string | null;
+  predicted: string | null;
+  score: number | null;
+  hasBokeh: boolean;
+  missFocusReason: string | null;
+  species: string | null;
+  speciesConfidence: number | null;
+  top5: [string, number][];
+  boxes: Box[];
+  modelVersion: string | null;
+}
+
 export async function listFolders(): Promise<FolderInfo[]> {
   return invoke("list_folders");
 }
@@ -72,6 +98,24 @@ export async function queryFiles(folder: number): Promise<FileEntry[]> {
 
 export async function getThumbnail(file: number): Promise<string> {
   return invoke("thumbnail", { file });
+}
+
+/** Higher-resolution preview for the review view. */
+export async function previewImage(file: number): Promise<string> {
+  return invoke("preview_image", { file });
+}
+
+export async function analysisDetail(file: number): Promise<AnalysisDetail> {
+  return invoke("analysis_detail", { file });
+}
+
+/** Set (or clear, with `null`) the species override for a file. */
+export async function setSpecies(
+  file: number,
+  species: string | null,
+  confidence?: number,
+): Promise<void> {
+  return invoke("set_species", { file, species, confidence: confidence ?? null });
 }
 
 export async function labelFiles(

@@ -32,6 +32,7 @@ Commands:
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
+  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
@@ -47,6 +48,7 @@ fn main() -> ExitCode {
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
+        Some("preview") => cmd_preview(&args[1..]),
         Some("probe") => cmd_probe(&args[1..]),
         Some("genimage") => cmd_genimage(&args[1..]),
         Some("selftest") => cmd_selftest(),
@@ -85,6 +87,45 @@ fn cmd_hash(paths: &[String]) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Render the analysis-resolution preview for one file (same decode path the
+/// review view uses, so detection boxes align 1:1).
+fn cmd_preview(args: &[String]) -> ExitCode {
+    let (Some(src), Some(out)) = (args.first(), args.get(1)) else {
+        eprintln!("preview: usage: preview <raw> <out.jpg> [max_long_side]");
+        return ExitCode::FAILURE;
+    };
+    let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
+    let decoder = CompositeDecoder::new(vec![
+        Box::new(RawDecoder::new(Some(max))),
+        Box::new(ImageCrateDecoder::new(Some(max))),
+    ]);
+    match decoder.decode(Path::new(src)) {
+        Ok(img) => {
+            let (w, h) = img.dimensions();
+            match birdsorter_core::io::thumb::encode_rgb_jpeg(&img.rgb, 85) {
+                Ok(bytes) => match std::fs::write(out, &bytes) {
+                    Ok(()) => {
+                        println!("wrote {out} ({w}x{h}, {} KB)", bytes.len() / 1024);
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("preview: {e}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(e) => {
+                    eprintln!("preview: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("preview failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -8,6 +8,7 @@ use std::path::Path;
 
 use image::imageops::FilterType;
 use image::ImageOutputFormat;
+use ndarray::Array3;
 
 use super::cache::ThumbCache;
 use crate::{CoreError, Result};
@@ -40,20 +41,52 @@ fn encode_jpeg(img: &image::DynamicImage, max_dim: u32) -> Result<Vec<u8>> {
 }
 
 /// Like [`thumbnail_bytes`], but consults the disk cache first (keyed by the
-/// file's content hash) and stores new results.
+/// file's content hash and size) and stores new results.
 pub fn thumbnail_cached(
     cache: &ThumbCache,
     path: &Path,
     hash: &str,
     max_dim: u32,
 ) -> Result<Vec<u8>> {
-    if let Some(hit) = cache.get(hash) {
+    cached(cache, &render_key(hash, max_dim), || {
+        thumbnail_bytes(path, max_dim)
+    })
+}
+
+/// Cache key for a rendering of `hash` at `max_dim` (thumbnails and previews
+/// share one cache without colliding).
+pub fn render_key(hash: &str, max_dim: u32) -> String {
+    format!("{hash}@{max_dim}")
+}
+
+/// Generic "render once, cache by key" helper.
+pub fn cached(
+    cache: &ThumbCache,
+    key: &str,
+    render: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if let Some(hit) = cache.get(key) {
         return Ok(hit);
     }
-    let bytes = thumbnail_bytes(path, max_dim)?;
-    // A cache write failure must not fail the request.
-    let _ = cache.put(hash, &bytes);
+    let bytes = render()?;
+    let _ = cache.put(key, &bytes);
     Ok(bytes)
+}
+
+/// JPEG-encode an already-decoded RGB image (`H x W x 3`).
+pub fn encode_rgb_jpeg(rgb: &Array3<u8>, quality: u8) -> Result<Vec<u8>> {
+    let (h, w, _) = rgb.dim();
+    let raw: Vec<u8> = rgb.iter().copied().collect();
+    let img = image::RgbImage::from_raw(w as u32, h as u32, raw)
+        .ok_or_else(|| CoreError::Other("rgb buffer size mismatch".into()))?;
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
+            .map_err(|e| CoreError::Other(format!("jpeg encode: {e}")))?;
+    }
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -99,7 +132,7 @@ mod tests {
         let cache = ThumbCache::new(dir.path().join("cache"));
 
         let first = thumbnail_cached(&cache, &path, "hash1", 128).unwrap();
-        assert!(cache.get("hash1").is_some());
+        assert!(cache.get(&render_key("hash1", 128)).is_some());
 
         // Delete the source: the cached copy must still be served.
         std::fs::remove_file(&path).unwrap();
@@ -116,5 +149,20 @@ mod tests {
             thumbnail_bytes(&path, 256),
             Err(CoreError::RawDecode { .. })
         ));
+    }
+
+    #[test]
+    fn encode_rgb_jpeg_round_trips() {
+        let rgb = ndarray::Array3::<u8>::from_shape_fn((40, 60, 3), |(y, x, c)| {
+            ((x + y + c) % 256) as u8
+        });
+        let bytes = encode_rgb_jpeg(&rgb, 90).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((img.width(), img.height()), (60, 40));
+    }
+
+    #[test]
+    fn render_key_distinguishes_sizes() {
+        assert_ne!(render_key("abc", 512), render_key("abc", 2400));
     }
 }

@@ -22,9 +22,9 @@ use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder};
+use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::raw::RawDecoder;
-use birdsorter_core::io::thumb::thumbnail_cached;
+use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::pipeline::{ingest_folder, CancelToken, IngestContext, RulesScorer};
 use birdsorter_core::runtime::{DevicePreference, OnnxDetector};
 use rusqlite::Connection;
@@ -110,6 +110,38 @@ struct ProgressDto {
     current_file: String,
 }
 
+/// A detected subject box, bound to its (optional) species identification.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoxDto {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    class: String,
+    species: Option<String>,
+    confidence: Option<f32>,
+    top5: Vec<(String, f32)>,
+}
+
+/// Everything the review view needs for one file.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisDetailDto {
+    file_id: i64,
+    filename: String,
+    label: Option<String>,
+    predicted: Option<String>,
+    score: Option<f32>,
+    has_bokeh: bool,
+    miss_focus_reason: Option<String>,
+    species: Option<String>,
+    species_confidence: Option<f32>,
+    top5: Vec<(String, f32)>,
+    boxes: Vec<BoxDto>,
+    model_version: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Blocking implementations
 // ---------------------------------------------------------------------------
@@ -186,6 +218,100 @@ fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
+/// High-resolution preview for the review view. Decoded with the *same* decoder
+/// and resolution as analysis, so detection boxes line up 1:1 with the image.
+fn preview_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
+    let conn = open(db_path)?;
+    let lf = library::get_file(&conn, file)
+        .map_err(err)?
+        .ok_or_else(|| "file not found".to_string())?;
+    drop(conn);
+
+    let cache = ThumbCache::new(cache_root.to_path_buf());
+    let key = render_key(&lf.file.content_hash, ANALYSIS_LONG_SIDE);
+    let bytes = cached(&cache, &key, || {
+        let decoder = CompositeDecoder::new(vec![
+            Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+            Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+        ]);
+        let img = decoder.decode(&lf.absolute_path)?;
+        encode_rgb_jpeg(&img.rgb, 85)
+    })
+    .map_err(err)?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:image/jpeg;base64,{b64}"))
+}
+
+fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, String> {
+    let conn = open(db_path)?;
+    let lf = library::get_file(&conn, file)
+        .map_err(err)?
+        .ok_or_else(|| "file not found".to_string())?;
+    let label = labels::latest_label(&conn, file)
+        .map_err(err)?
+        .map(|l| l.as_str().to_string());
+    let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+
+    let Some(a) = analysis else {
+        return Ok(AnalysisDetailDto {
+            file_id: file,
+            filename: lf.file.filename,
+            label,
+            predicted: None,
+            score: None,
+            has_bokeh: false,
+            miss_focus_reason: None,
+            species: None,
+            species_confidence: None,
+            top5: Vec::new(),
+            boxes: Vec::new(),
+            model_version: None,
+        });
+    };
+
+    let fallback_class = a
+        .subject_class
+        .clone()
+        .unwrap_or_else(|| "subject".to_string());
+    // Boxes are stored best-first; per-subject species are parallel to them.
+    let boxes = a
+        .bboxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let ss = a.subject_species.get(i);
+            BoxDto {
+                x: b.x,
+                y: b.y,
+                w: b.w,
+                h: b.h,
+                class: ss
+                    .and_then(|s| s.class.clone())
+                    .unwrap_or_else(|| fallback_class.clone()),
+                species: ss.and_then(|s| s.species.clone()),
+                confidence: ss.and_then(|s| s.confidence),
+                top5: ss.map(|s| s.top5.clone()).unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    Ok(AnalysisDetailDto {
+        file_id: file,
+        filename: lf.file.filename,
+        label,
+        predicted: Some(a.predicted_label.clone()),
+        score: Some(a.sharpness_score),
+        has_bokeh: a.has_bokeh,
+        miss_focus_reason: a.miss_focus_reason.clone(),
+        species: a.species_name.clone(),
+        species_confidence: a.species_confidence,
+        top5: a.species_top5.clone(),
+        boxes,
+        model_version: Some(a.model_version.clone()),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -220,6 +346,42 @@ async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, Stri
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     blocking(move || thumbnail_impl(&cache_root, &db_path, file)).await
+}
+
+/// Higher-resolution preview for the review view, as a data URL.
+#[tauri::command]
+async fn preview_image(state: State<'_, AppState>, file: i64) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    blocking(move || preview_impl(&cache_root, &db_path, file)).await
+}
+
+/// Full analysis detail (verdict, boxes, species) for the review view.
+#[tauri::command]
+async fn analysis_detail(
+    state: State<'_, AppState>,
+    file: i64,
+) -> Result<AnalysisDetailDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || analysis_detail_impl(&db_path, file)).await
+}
+
+/// Set or clear the species override for a file.
+#[tauri::command]
+fn set_species(
+    state: State<AppState>,
+    file: i64,
+    species: Option<String>,
+    confidence: Option<f32>,
+) -> Result<(), String> {
+    let conn = open(&state.db_path)?;
+    match species.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            analysis_store::set_species_override(&conn, file, s, confidence.unwrap_or(1.0))
+                .map_err(err)
+        }
+        _ => analysis_store::clear_species_override(&conn, file).map_err(err),
+    }
 }
 
 #[tauri::command]
@@ -333,6 +495,9 @@ fn main() {
             scan_folder,
             query_files,
             thumbnail,
+            preview_image,
+            analysis_detail,
+            set_species,
             label_files,
             analyze_folder,
             cancel_analysis
