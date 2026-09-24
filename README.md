@@ -33,8 +33,10 @@ Early. The headless Rust core is underway (M1 of the plan):
 | `core::analysis::yolo` — YOLO letterbox pre-processing + output decoding/NMS | ✅ tested with synthetic tensors |
 | `core::runtime` — ONNX Runtime (`ort`) YOLO detector, CPU by default, GPU EPs behind features | ✅ builds; model-gated test |
 | `birdsorter` CLI — `hash`, `analyze`, `list`, `thumb`, `probe`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos **and real Canon R5 CR3 files** |
-| Species ID, learning loop, thumbnail encoder | ⏳ next |
-| Tauri desktop shell + Svelte UI | ⏳ next |
+| `core::analysis::burst` — capture-time burst grouping + best-of-burst | ✅ tested |
+| `ui/` — Svelte 5 + Vite frontend (virtualized grid, filters, labelling) | ✅ builds |
+| `crates/desktop` — Tauri v2 shell (commands + progress events) | ✅ builds |
+| Species ID, learning loop | ⏳ next |
 
 ### Validated on real RAW files
 
@@ -64,7 +66,7 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 111 unit tests
+cargo test --workspace          # 120 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -86,6 +88,23 @@ GPU execution providers are opt-in at build time:
 cargo build -p birdsorter-cli --features birdsorter-core/gpu-directml   # Windows
 cargo build -p birdsorter-cli --features birdsorter-core/gpu-coreml     # macOS
 ```
+
+## Desktop app
+
+The GUI is a Tauri v2 shell (`crates/desktop`) over the same core, with a Svelte
+frontend in `ui/`. It needs the frontend built first (Tauri embeds `ui/dist`):
+
+```bash
+cd ui && npm install && npm run build && cd ..
+# dev: run the window against the Vite dev server
+cargo run -p birdsorter-desktop
+# or from the ui/ folder: `npm run dev` for a browser preview with mock data
+```
+
+The window provides a folder sidebar, a worst-first thumbnail grid with filter
+chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
+progress. All logic stays in `birdsorter-core`; the shell only wires commands
+and events.
 
 ## Licence
 
