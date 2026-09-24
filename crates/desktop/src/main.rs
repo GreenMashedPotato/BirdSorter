@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use base64::Engine as _;
 use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
+use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
@@ -26,7 +27,7 @@ use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDec
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::pipeline::{ingest_folder, CancelToken, IngestContext, RulesScorer};
-use birdsorter_core::runtime::{DevicePreference, OnnxDetector};
+use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -439,6 +440,13 @@ fn run_analysis(
     };
 
     let scorer = RulesScorer(ScoreSettings::default());
+    let species = match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("species model could not be loaded: {e}");
+            None
+        }
+    };
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -447,6 +455,7 @@ fn run_analysis(
         batch_size: 8,
         decode_threads: threads,
         cancel: Some(cancel),
+        species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
         ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
     };
 

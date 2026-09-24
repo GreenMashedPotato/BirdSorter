@@ -6,4 +6,5 @@ pub mod detector;
 pub mod saliency;
 pub mod scorer;
 pub mod sharpness;
+pub mod species;
 pub mod yolo;

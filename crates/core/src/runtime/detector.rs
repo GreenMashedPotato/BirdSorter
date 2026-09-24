@@ -39,6 +39,46 @@ fn intra_threads() -> usize {
         .unwrap_or(4)
 }
 
+/// Build an ONNX Runtime session, applying the GPU execution provider when the
+/// build enables one. Shared by the detector and the species classifier.
+pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Session> {
+    #[allow(unused_mut)]
+    let mut builder = Session::builder()
+        .map_err(ort_err)?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(ort_err)?
+        .with_intra_threads(intra_threads())
+        .map_err(ort_err)?;
+
+    if matches!(device, DevicePreference::Auto | DevicePreference::Gpu) {
+        #[cfg(feature = "gpu-directml")]
+        {
+            builder = builder
+                .with_execution_providers([ort::ep::DirectML::default().build()])
+                .map_err(ort_err)?;
+        }
+        #[cfg(feature = "gpu-coreml")]
+        {
+            builder = builder
+                .with_execution_providers([ort::ep::CoreML::default().build()])
+                .map_err(ort_err)?;
+        }
+        #[cfg(feature = "gpu-cuda")]
+        {
+            builder = builder
+                .with_execution_providers([ort::ep::CUDA::default().build()])
+                .map_err(ort_err)?;
+        }
+    }
+
+    builder.commit_from_file(model).map_err(|e| {
+        CoreError::Other(format!(
+            "failed to load ONNX model {}: {e}",
+            model.display()
+        ))
+    })
+}
+
 /// A YOLO model session implementing [`SubjectDetector`].
 ///
 /// `Session::run` needs `&mut`, so the session lives behind a mutex. This keeps
@@ -53,40 +93,7 @@ impl OnnxDetector {
     /// Load an ONNX model from disk.
     pub fn from_file(model: &Path, config: YoloConfig, device: DevicePreference) -> Result<Self> {
         #[allow(unused_mut)]
-        let mut builder = Session::builder()
-            .map_err(ort_err)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(ort_err)?
-            .with_intra_threads(intra_threads())
-            .map_err(ort_err)?;
-
-        if matches!(device, DevicePreference::Auto | DevicePreference::Gpu) {
-            #[cfg(feature = "gpu-directml")]
-            {
-                builder = builder
-                    .with_execution_providers([ort::ep::DirectML::default().build()])
-                    .map_err(ort_err)?;
-            }
-            #[cfg(feature = "gpu-coreml")]
-            {
-                builder = builder
-                    .with_execution_providers([ort::ep::CoreML::default().build()])
-                    .map_err(ort_err)?;
-            }
-            #[cfg(feature = "gpu-cuda")]
-            {
-                builder = builder
-                    .with_execution_providers([ort::ep::CUDA::default().build()])
-                    .map_err(ort_err)?;
-            }
-        }
-
-        let session = builder.commit_from_file(model).map_err(|e| {
-            CoreError::Other(format!(
-                "failed to load ONNX model {}: {e}",
-                model.display()
-            ))
-        })?;
+        let session = build_session(model, device)?;
         let input_name = session
             .inputs()
             .first()

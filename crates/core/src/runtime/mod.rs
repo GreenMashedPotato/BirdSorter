@@ -6,5 +6,7 @@
 //! and functional on every machine, which is the whole point of the project.
 
 pub mod detector;
+pub mod species;
 
 pub use detector::{DevicePreference, OnnxDetector};
+pub use species::OnnxSpeciesClassifier;

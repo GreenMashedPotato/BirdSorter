@@ -10,11 +10,15 @@ use rusqlite::Connection;
 use crate::analysis::detector::{BBox, Detection};
 use crate::analysis::scorer::{score_rules, ScoreResult};
 use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
-use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+use crate::analysis::species::{crop_rgb, SpeciesClassifier};
+use crate::data::analysis_store::{upsert_analysis, AnalysisRecord, SubjectSpecies};
 use crate::data::library;
 use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
 use crate::{CoreError, Result};
+
+/// Minimum bird-box side length worth classifying.
+const MIN_SPECIES_CROP: i32 = 24;
 
 /// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
 /// backends can implement them without depending on the pipeline.
@@ -87,6 +91,8 @@ pub struct IngestContext<'a> {
     /// Worker threads used to decode ahead of analysis. `1` decodes inline
     /// (deterministic; used in tests).
     pub decode_threads: usize,
+    /// Optional species classifier; `None` disables identification.
+    pub species: Option<&'a dyn SpeciesClassifier>,
 }
 
 impl<'a> IngestContext<'a> {
@@ -102,6 +108,7 @@ impl<'a> IngestContext<'a> {
             cancel: None,
             batch_size: 8,
             decode_threads: 1,
+            species: None,
         }
     }
 
@@ -306,7 +313,7 @@ fn flush_batch(
     };
 
     for (item, dets) in batch.iter().zip(detections) {
-        let record = match analyze_one(item, dets, ctx.scorer) {
+        let record = match analyze_one(item, dets, ctx.scorer, ctx.species) {
             Ok(record) => record,
             Err(e) => {
                 progress.failed += 1;
@@ -334,6 +341,7 @@ fn analyze_one(
     item: &PendingItem,
     dets: Vec<Detection>,
     scorer: &dyn VerdictScorer,
+    species: Option<&dyn SpeciesClassifier>,
 ) -> Result<AnalysisRecord> {
     let all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
@@ -359,6 +367,68 @@ fn analyze_one(
     };
 
     let score = scorer.score(&features)?;
+
+    // Species identification for each detected bird subject.
+    let mut subject_species: Vec<SubjectSpecies> = Vec::new();
+    let mut species_name: Option<String> = None;
+    let mut species_confidence: Option<f32> = None;
+    let mut species_top5: Vec<(String, f32)> = Vec::new();
+
+    if let Some(classifier) = species {
+        if classifier.available() && !dets.is_empty() {
+            // Crops to classify: bird boxes big enough to be worth upscaling.
+            let crops: Vec<(usize, Array3<u8>)> = dets
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    d.class_name == "bird"
+                        && d.bbox.w >= MIN_SPECIES_CROP
+                        && d.bbox.h >= MIN_SPECIES_CROP
+                })
+                .filter_map(|(i, d)| crop_rgb(&item.rgb, d.bbox).map(|c| (i, c)))
+                .collect();
+
+            // One entry per detected box (parallel to `all_bboxes`).
+            let mut per_box: Vec<SubjectSpecies> = dets
+                .iter()
+                .map(|d| SubjectSpecies {
+                    bbox: d.bbox.to_array(),
+                    species: None,
+                    confidence: None,
+                    top5: Vec::new(),
+                    class: Some(d.class_name.clone()),
+                })
+                .collect();
+
+            if !crops.is_empty() {
+                let refs: Vec<&Array3<u8>> = crops.iter().map(|(_, c)| c).collect();
+                let results = classifier.identify_batch(&refs)?;
+                for ((i, _), res) in crops.iter().zip(results) {
+                    if let Some(id) = res {
+                        if let Some(entry) = per_box.get_mut(*i) {
+                            let best = id.best();
+                            entry.species = best.map(|b| b.name.clone());
+                            entry.confidence = best.map(|b| b.confidence);
+                            entry.top5 = id
+                                .top
+                                .iter()
+                                .map(|b| (b.name.clone(), b.confidence))
+                                .collect();
+                        }
+                    }
+                }
+            }
+
+            // Top-level summary = the first identified subject.
+            if let Some(first) = per_box.iter().find(|p| p.species.is_some()) {
+                species_name = first.species.clone();
+                species_confidence = first.confidence;
+                species_top5 = first.top5.clone();
+            }
+            subject_species = per_box;
+        }
+    }
+
     Ok(AnalysisRecord {
         file_id: item.file_id,
         features,
@@ -366,7 +436,10 @@ fn analyze_one(
         subject_bbox: best_bbox,
         subject_class,
         all_bboxes,
-        ..Default::default()
+        species_name,
+        species_confidence,
+        species_top5,
+        subject_species,
     })
 }
 
@@ -461,6 +534,38 @@ mod tests {
     impl VerdictScorer for PanicFreeScorer {
         fn score(&self, f: &SharpnessFeatures) -> Result<ScoreResult> {
             Ok(score_rules(f, &self.0))
+        }
+    }
+
+    /// Canned species classifier for pipeline tests.
+    struct FakeSpecies;
+
+    impl crate::analysis::species::SpeciesClassifier for FakeSpecies {
+        fn available(&self) -> bool {
+            true
+        }
+        fn identify_batch(
+            &self,
+            crops: &[&Array3<u8>],
+        ) -> Result<Vec<Option<crate::analysis::species::SpeciesId>>> {
+            use crate::analysis::species::{SpeciesId, SpeciesPrediction};
+            Ok(crops
+                .iter()
+                .map(|_| {
+                    Some(SpeciesId {
+                        top: vec![
+                            SpeciesPrediction {
+                                name: "Test Bird".into(),
+                                confidence: 0.9,
+                            },
+                            SpeciesPrediction {
+                                name: "Other Bird".into(),
+                                confidence: 0.05,
+                            },
+                        ],
+                    })
+                })
+                .collect())
         }
     }
 
@@ -681,6 +786,55 @@ mod tests {
         assert!(library::files_needing_analysis(&conn, fid)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn species_identification_is_recorded_per_box() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let species = FakeSpecies;
+        let ctx = IngestContext {
+            species: Some(&species),
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(row.species_name.as_deref(), Some("Test Bird"));
+        assert!((row.species_confidence.unwrap() - 0.9).abs() < 1e-6);
+        assert_eq!(row.subject_species.len(), 1);
+        assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
+        assert_eq!(row.subject_species[0].top5.len(), 2);
+        assert_eq!(row.subject_species[0].bbox, [32, 32, 64, 64]);
+    }
+
+    #[test]
+    fn no_classifier_leaves_species_empty() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(row.species_name.is_none());
+        assert!(row.subject_species.is_empty());
     }
 
     #[test]
