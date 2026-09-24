@@ -557,6 +557,7 @@ fn main() {
     let _ = open(&db_path);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db_path,
             cache,

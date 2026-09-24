@@ -31,6 +31,7 @@
     type TrainResult,
   } from "./lib/api";
   import Settings from "./lib/Settings.svelte";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
@@ -354,6 +355,23 @@
     }
   }
 
+  async function browseForFolder() {
+    if (!inTauri) return;
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a shoot folder",
+      });
+      if (typeof selected === "string") {
+        newPath = selected;
+        await addAndScan();
+      }
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   async function rescan() {
     if (activeFolder === null) return;
     busy = true;
@@ -479,7 +497,7 @@
   <aside class="sidebar">
     <h1>🐦 BirdSorter</h1>
 
-    <div style="display:flex; gap:6px; margin-bottom:12px">
+    <div style="display:flex; gap:6px; margin-bottom:6px">
       <input
         placeholder="folder path…"
         bind:value={newPath}
@@ -487,6 +505,9 @@
       />
       <button onclick={addAndScan} disabled={busy}>Add</button>
     </div>
+    <button style="width:100%; margin-bottom:12px" onclick={browseForFolder} disabled={busy}>
+      Browse… (folder picker)
+    </button>
 
     {#each folders as folder (folder.id)}
       <div
