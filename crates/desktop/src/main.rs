@@ -25,10 +25,9 @@ use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
-use birdsorter_core::io::decoder::{
-    dynamic_to_rgb, CompositeDecoder, ImageCrateDecoder, ImageDecoder,
-};
-use birdsorter_core::io::raw::{load_developed, RawDecoder};
+use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
+use birdsorter_core::io::develop::develop_default;
+use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
@@ -260,9 +259,8 @@ fn preview_impl(
         "develop" => (
             render_key(&hash, 1),
             Box::new(move || {
-                let img = load_developed(&path)?;
-                let rgb = dynamic_to_rgb(&img, None);
-                encode_rgb_jpeg(&rgb, 88)
+                let rgb = develop_default(&path)?;
+                encode_rgb_jpeg(&rgb, 95)
             }),
         ),
         "full" => (

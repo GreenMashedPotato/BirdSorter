@@ -20,6 +20,7 @@ rusqlite.workspace = true
 walkdir.workspace = true
 time.workspace = true
 image.workspace = true
+demosaic.workspace = true
 sha2.workspace = true
 ureq.workspace = true
 zip.workspace = true

@@ -209,6 +209,7 @@ name = "birdsorter-core"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "demosaic",
  "directories",
  "image",
  "ndarray 0.16.1",
@@ -799,6 +800,12 @@ checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "demosaic"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c8e7c3f4e7042d592a58e82428b4f482680715f75dd0f774664973e8a88f72f"
 
 [[package]]
 name = "der"

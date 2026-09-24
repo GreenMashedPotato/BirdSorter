@@ -111,17 +111,27 @@ fn cmd_preview(args: &[String]) -> ExitCode {
     };
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
     if args.iter().any(|a| a == "--develop") {
-        // Full RAW demosaic (slow) for maximum detail.
-        let img = match birdsorter_core::io::raw::load_developed(Path::new(src)) {
-            Ok(i) => i,
+        // Full RAW development with a high-quality demosaic (slow).
+        let algo = if args.iter().any(|a| a == "--bilinear") {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Bilinear
+        } else if args.iter().any(|a| a == "--vng") {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Vng
+        } else if args.iter().any(|a| a == "--ppg") {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Ppg
+        } else {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Ahd
+        };
+        let sharpen = !args.iter().any(|a| a == "--no-sharpen");
+        eprintln!("develop: algo={algo:?} sharpen={sharpen}");
+        let rgb = match birdsorter_core::io::develop::develop_srgb(Path::new(src), algo, sharpen) {
+            Ok(rgb) => rgb,
             Err(e) => {
                 eprintln!("preview --develop failed: {e}");
                 return ExitCode::FAILURE;
             }
         };
-        let rgb = birdsorter_core::io::decoder::dynamic_to_rgb(&img, None);
         let (h, w, _) = rgb.dim();
-        return match birdsorter_core::io::thumb::encode_rgb_jpeg(&rgb, 92) {
+        return match birdsorter_core::io::thumb::encode_rgb_jpeg(&rgb, 95) {
             Ok(bytes) => match std::fs::write(out, &bytes) {
                 Ok(()) => {
                     println!("wrote {out} ({w}x{h}, {} KB)", bytes.len() / 1024);
