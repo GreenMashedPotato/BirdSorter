@@ -17,8 +17,11 @@ use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
 use crate::{CoreError, Result};
 
-/// Minimum bird-box side length worth classifying.
-const MIN_SPECIES_CROP: i32 = 24;
+/// Minimum bird-box side length worth classifying. The iNat21 model takes 384 px
+/// and is ~15x slower than the old 85 MB int8 model, so a crop this small cannot
+/// be identified reliably anyway - skipping it saves ~350 ms per image and avoids
+/// confidently wrong labels on distant specks.
+const MIN_SPECIES_CROP: i32 = 110;
 
 /// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
 /// backends can implement them without depending on the pipeline.
@@ -850,7 +853,8 @@ mod tests {
         let (_dir, conn) = setup(1);
         let fid = folder_id(&conn);
         let decoder = FakeDecoder::new();
-        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        // Big enough to clear MIN_SPECIES_CROP.
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 160, 160)]);
         let scorer = PanicFreeScorer(ScoreSettings::default());
         let species = FakeSpecies;
         let ctx = IngestContext {
@@ -871,7 +875,7 @@ mod tests {
         assert_eq!(row.subject_species.len(), 1);
         assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
         assert_eq!(row.subject_species[0].top5.len(), 2);
-        assert_eq!(row.subject_species[0].bbox, [32, 32, 64, 64]);
+        assert_eq!(row.subject_species[0].bbox, [32, 32, 160, 160]);
     }
 
     #[test]
