@@ -105,6 +105,39 @@ pub fn builtin_models() -> Vec<ModelSpec> {
                 "int8".into(),
             ],
         },
+        ModelSpec {
+            key: "bird_eye".into(),
+            display_name: "Bird eye / head landmarks [not trained yet]".into(),
+            description: "Planned tiny ONNX model that locates the eye/head so focus \
+                          can be judged where it matters. Needs a labelled dataset and \
+                          a training run; the heuristic in core::analysis::sharpness is \
+                          used until then."
+                .into(),
+            artifact: "bird_eye_v1.onnx".into(),
+            unpack: false,
+            files: vec!["bird_eye_v1.onnx".into()],
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 8_000_000,
+            tier: Tier::T2,
+            tags: vec!["eye".into(), "birds".into(), "planned".into()],
+        },
+        ModelSpec {
+            key: "bird_detector_v2".into(),
+            display_name: "Bird detector v2 (fine-tuned) [not trained yet]".into(),
+            description: "Planned single-class bird detector fine-tuned for small/distant \
+                          birds (the COCO bird class misses many). Needs a labelled \
+                          detection dataset and a training run."
+                .into(),
+            artifact: "bird_det_v2.onnx".into(),
+            unpack: false,
+            files: vec!["bird_det_v2.onnx".into()],
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 12_000_000,
+            tier: Tier::T1,
+            tags: vec!["detector".into(), "birds".into(), "planned".into()],
+        },
     ]
 }
 
