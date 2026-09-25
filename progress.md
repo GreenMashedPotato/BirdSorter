@@ -188,6 +188,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   arrow-key + Enter navigation). And the global Delete/Backspace shortcut is
   **ignored while typing in a field**, so backspacing in that box no longer
   trashes the photo.
+- **Re-analyse after tuning**: the toolbar has a **Re-analyze all** button, and
+  **Analyze** now offers to recompute when every file already has results.
+  `analyze_folder` gained a `force` flag (CLI: `--force`) that clears the
+  folder's stored analysis first, so improved detection/scoring actually reaches
+  files analysed earlier. User labels are kept. This was the reason a folder
+  could look "still full of no_subject" after a detection change.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses

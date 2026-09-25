@@ -148,8 +148,9 @@ export function onScanError(cb: (message: string) => void): Promise<UnlistenFn> 
 export async function analyzeFolder(
   folder: number,
   model: string | null,
+  force = false,
 ): Promise<void> {
-  return invoke("analyze_folder", { folder, model });
+  return invoke("analyze_folder", { folder, model, force });
 }
 
 export async function cancelAnalysis(): Promise<void> {

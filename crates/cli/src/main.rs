@@ -33,6 +33,7 @@ fn usage() -> &'static str {
 Commands:
   hash <file>...              Print xxh3 content hashes (file identity)
   analyze <folder> [options]  Scan a folder and analyse every pending RAW
+      --force                   Re-analyse files that already have results
       --model <path.onnx>       Use a YOLO ONNX detector (needs a model file)
       --species-model <path.onnx>   Bird species classifier ONNX (optional)
       --species-labels <path.json>  Labels for the species classifier
@@ -789,6 +790,7 @@ struct AnalyzeArgs {
     folder: String,
     model: Option<String>,
     no_detect: bool,
+    force: bool,
     db_path: Option<String>,
     species_model: Option<String>,
     species_labels: Option<String>,
@@ -798,6 +800,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut folder = None;
     let mut model = None;
     let mut no_detect = false;
+    let mut force = false;
     let mut db_path = None;
     let mut species_model = None;
     let mut species_labels = None;
@@ -813,6 +816,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
                 species_labels = Some(it.next().ok_or("--species-labels needs a path")?.clone())
             }
             "--no-detect" => no_detect = true,
+            "--force" => force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => folder = Some(other.to_string()),
         }
@@ -821,6 +825,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
         folder: folder.ok_or("expected a folder path")?,
         model,
         no_detect,
+        force,
         db_path,
         species_model,
         species_labels,
@@ -866,6 +871,12 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
          {restored} restored)"
     );
+
+    // `--force` recomputes files that already have results.
+    if args.force {
+        let cleared = analysis_store::clear_folder(&conn, folder_id)?;
+        println!("--force: cleared {cleared} stored result(s)");
+    }
 
     // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {

@@ -678,11 +678,49 @@
 
   async function analyze() {
     if (activeFolder === null) return;
+    // If everything already has results, offer to recompute with the current
+    // detection/scoring settings — otherwise Analyze would silently do nothing.
+    const pending = files.filter((f) => !f.analyzed).length;
+    let force = false;
+    if (pending === 0 && files.length > 0) {
+      if (
+        !confirm(
+          `All ${files.length} files already have results.\n\n` +
+            "Re-analyse them all with the current detection and scoring settings?",
+        )
+      ) {
+        return;
+      }
+      force = true;
+    }
     busy = true;
     status = "analysing…";
-    progress = { label: "Analysing", done: 0, total: 0 };
+    progress = { label: "Analysing", done: 0, total: force ? files.length : pending };
     try {
-      await analyzeFolder(activeFolder, model.trim() || null);
+      await analyzeFolder(activeFolder, model.trim() || null, force);
+    } catch (e) {
+      status = `error: ${e}`;
+      busy = false;
+      progress = null;
+    }
+  }
+
+  /// Delete stored results and analyse every file again.
+  async function reanalyzeAll() {
+    if (activeFolder === null) return;
+    if (
+      !confirm(
+        `Re-analyse every file in this folder?\n\nStored verdicts, boxes and species ` +
+          "IDs are replaced (your labels are kept).",
+      )
+    ) {
+      return;
+    }
+    busy = true;
+    status = "analysing…";
+    progress = { label: "Analysing", done: 0, total: files.length };
+    try {
+      await analyzeFolder(activeFolder, model.trim() || null, true);
     } catch (e) {
       status = `error: ${e}`;
       busy = false;
@@ -902,6 +940,13 @@
       <button onclick={rescan} disabled={busy || activeFolder === null}>Rescan</button>
       <button class="primary" onclick={analyze} disabled={busy || activeFolder === null}>
         Analyze
+      </button>
+      <button
+        onclick={reanalyzeAll}
+        disabled={busy || activeFolder === null}
+        title="Delete stored results and analyse every file again (after tuning detection or scoring)"
+      >
+        Re-analyze all
       </button>
       <button onclick={cancel} disabled={!busy}>Cancel</button>
       <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />

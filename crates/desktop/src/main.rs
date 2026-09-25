@@ -627,19 +627,29 @@ async fn trash_files(
 }
 
 /// Kick off analysis on a background thread, streaming progress as events.
+///
+/// `force` deletes the folder's stored results first, so already-analysed files
+/// are recomputed (necessary after a detection/scoring change).
 #[tauri::command]
 fn analyze_folder(
     app: AppHandle,
     state: State<AppState>,
     folder: i64,
     model: Option<String>,
+    force: Option<bool>,
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
     let cancel = CancelToken::new();
     *state.cancel.lock().map_err(err)? = Some(cancel.clone());
+    let force = force.unwrap_or(false);
 
     std::thread::spawn(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if force {
+                let conn = open(&db_path)?;
+                let cleared = analysis_store::clear_folder(&conn, folder).map_err(err)?;
+                eprintln!("re-analysing: cleared {cleared} stored result(s)");
+            }
             run_analysis(&app, &db_path, folder, model.as_deref(), &cancel)
         }));
         match outcome {
