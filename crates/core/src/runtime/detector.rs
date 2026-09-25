@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use ndarray::Array3;
-use ort::session::builder::GraphOptimizationLevel;
+use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 use ort::value::Tensor;
 
@@ -42,38 +42,51 @@ fn intra_threads() -> usize {
 /// File name the model manager installs the detector as.
 pub const DETECTOR_ONNX: &str = "bird_det_v1.onnx";
 
-/// Build an ONNX Runtime session, applying the GPU execution provider when the
-/// build enables one. Shared by the detector and the species classifier.
-pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Session> {
-    #[allow(unused_mut)]
-    let mut builder = Session::builder()
+/// A configured CPU session builder (graph optimisations + thread pool).
+fn base_builder() -> Result<SessionBuilder> {
+    Session::builder()
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(ort_err)?
         .with_intra_threads(intra_threads())
-        .map_err(ort_err)?;
+        .map_err(ort_err)
+}
 
+/// Build an ONNX Runtime session, preferring a GPU execution provider when the
+/// build enables one, and falling back to CPU when it is unavailable.
+pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Session> {
     if matches!(device, DevicePreference::Auto | DevicePreference::Gpu) {
+        // Try each enabled GPU EP; if it cannot be created (no driver, missing
+        // provider library, unsupported op) say why and fall through to CPU.
+        macro_rules! try_gpu_ep {
+            ($ep:expr, $name:literal) => {{
+                if let Ok(builder) = base_builder() {
+                    match builder.with_execution_providers([$ep]) {
+                        Ok(mut b) => match b.commit_from_file(model) {
+                            Ok(session) => {
+                                eprintln!("compute: {} execution provider", $name);
+                                return Ok(session);
+                            }
+                            Err(e) => eprintln!(
+                                "{} EP could not run the model ({e}); using CPU",
+                                $name
+                            ),
+                        },
+                        Err(e) => eprintln!("{} EP unavailable ({e}); using CPU", $name),
+                    }
+                }
+            }};
+        }
+
         #[cfg(feature = "gpu-directml")]
-        {
-            builder = builder
-                .with_execution_providers([ort::ep::DirectML::default().build()])
-                .map_err(ort_err)?;
-        }
+        try_gpu_ep!(ort::ep::DirectML::default().build(), "DirectML");
         #[cfg(feature = "gpu-coreml")]
-        {
-            builder = builder
-                .with_execution_providers([ort::ep::CoreML::default().build()])
-                .map_err(ort_err)?;
-        }
+        try_gpu_ep!(ort::ep::CoreML::default().build(), "CoreML");
         #[cfg(feature = "gpu-cuda")]
-        {
-            builder = builder
-                .with_execution_providers([ort::ep::CUDA::default().build()])
-                .map_err(ort_err)?;
-        }
+        try_gpu_ep!(ort::ep::CUDA::default().build(), "CUDA");
     }
 
+    let mut builder = base_builder()?;
     builder.commit_from_file(model).map_err(|e| {
         CoreError::Other(format!(
             "failed to load ONNX model {}: {e}",
