@@ -377,6 +377,11 @@ export interface CacheReport {
   bytesAfter: number;
 }
 
+/** Every species name the installed model knows (autocomplete). */
+export async function speciesLabels(): Promise<string[]> {
+  return invoke("species_labels");
+}
+
 /** Thumbnail-cache maintenance. `clearAll` wipes it; otherwise only orphaned
  *  entries (whose content hash is no longer in the library) are removed. */
 export async function cleanCache(clearAll = false): Promise<CacheReport> {

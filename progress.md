@@ -186,6 +186,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   **`Ardea alba` 0.977** vs **Snowy Egret 0.373** for the shipped 526-class ViT.
   Ships fp32 (~857 MB; ORT's int8 quantiser rejects this head). Bundle:
   `dist-models/inat21.zip`.
+- **Review-view fixes**: the species box now has an **autocomplete** over every
+  name the installed model knows (`runtime::installed_species_labels`, 10,000 for
+  iNat21; a Tauri `species_labels` command; ranked prefix-then-substring matches,
+  arrow-key + Enter navigation). And the global Delete/Backspace shortcut is
+  **ignored while typing in a field**, so backspacing in that box no longer
+  trashes the photo.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses

@@ -16,6 +16,7 @@
     previewImage,
     analysisDetail,
     setSpecies,
+    speciesLabels,
     labelFiles,
     trashFiles,
     getSettings,
@@ -171,6 +172,10 @@
   let natural = $state({ w: 1, h: 1 });
   let selectedBox = $state(0);
   let speciesInput = $state("");
+  /// Every species the installed model knows (loaded once, lazily).
+  let speciesList = $state<string[]>([]);
+  let speciesIndex = $state(0);
+  let speciesOpen = $state(false);
   let previewLoading = $state(false);
   /// Preview render mode: fast (analysis res) or full (native camera preview).
   let previewMode = $state<"fast" | "full">("fast");
@@ -357,9 +362,11 @@
     previewUrl = "";
     selectedBox = 0;
     speciesInput = "";
+    speciesOpen = false;
     zoom = 1;
     tx = 0;
     ty = 0;
+    void ensureSpeciesList();
     try {
       detail = await analysisDetail(id);
     } catch (e) {
@@ -415,7 +422,76 @@
     const name = speciesInput.trim();
     if (!name) return;
     speciesInput = "";
+    speciesOpen = false;
     await chooseSpecies(name, 1.0);
+  }
+
+  /// Load the model's species list once, for the autocomplete.
+  async function ensureSpeciesList() {
+    if (speciesList.length > 0 || !inTauri) return;
+    try {
+      speciesList = await speciesLabels();
+    } catch {
+      /* no model installed: the field still accepts free text */
+    }
+  }
+
+  /// Ranked matches: prefix hits first, then substring hits (capped).
+  const speciesMatches = $derived.by(() => {
+    const q = speciesInput.trim().toLowerCase();
+    if (q.length < 2 || speciesList.length === 0) return [] as string[];
+    const starts: string[] = [];
+    const contains: string[] = [];
+    for (const s of speciesList) {
+      const low = s.toLowerCase();
+      if (low.startsWith(q)) {
+        if (starts.length < 8) starts.push(s);
+      } else if (low.includes(q) && contains.length < 8) {
+        contains.push(s);
+      }
+      if (starts.length >= 8 && contains.length >= 8) break;
+    }
+    return [...starts, ...contains].slice(0, 8);
+  });
+
+  function onSpeciesInput() {
+    speciesIndex = 0;
+    speciesOpen = true;
+  }
+
+  async function pickSpecies(name: string) {
+    speciesInput = "";
+    speciesOpen = false;
+    await chooseSpecies(name, 1.0);
+  }
+
+  function onSpeciesKey(e: KeyboardEvent) {
+    // While suggestions are open the arrows and Enter drive the list.
+    if (speciesOpen && speciesMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        speciesIndex = Math.min(speciesMatches.length - 1, speciesIndex + 1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        speciesIndex = Math.max(0, speciesIndex - 1);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        pickSpecies(speciesMatches[speciesIndex] ?? speciesMatches[0]);
+        return;
+      }
+      if (e.key === "Escape") {
+        speciesOpen = false;
+        return;
+      }
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitBlank();
+    }
   }
 
   async function applyLabelToReview(label: UserLabel) {
@@ -673,7 +749,21 @@
 
   onMount(async () => {
     // Review-view keyboard shortcuts (J/K navigate, Esc closes, +/-/0 zoom).
+    // Ignore them while the user is typing in a field, otherwise Backspace in
+    // the species box would trash the photo.
     window.addEventListener("keydown", (e) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (typing) {
+        // Let the field handle everything except Escape, which just blurs it.
+        if (e.key === "Escape" && target) target.blur();
+        return;
+      }
       if (reviewFile === null) return;
       if (e.key === "Escape") closeReview();
       else if (e.key === "j" || e.key === "ArrowRight") nav(1);
@@ -1068,13 +1158,31 @@
             {#each Array.from({ length: blanks }) as _, i (i)}
               <button class="pick blank" disabled>pick {picks.length + i + 1}</button>
             {/each}
-            <div class="other">
+            <div class="other ac-wrap">
               <input
-                placeholder="actual species…"
+                placeholder="actual species… (type to search)"
                 bind:value={speciesInput}
-                onkeydown={(e) => e.key === "Enter" && submitBlank()}
+                oninput={onSpeciesInput}
+                onkeydown={onSpeciesKey}
+                onfocus={() => (speciesOpen = speciesInput.trim().length >= 2)}
               />
               <button onclick={submitBlank} disabled={!speciesInput.trim()}>Set</button>
+              {#if speciesOpen && speciesMatches.length > 0}
+                <ul class="ac">
+                  {#each speciesMatches as m, i (m)}
+                    <li>
+                      <button
+                        type="button"
+                        class:active={i === speciesIndex}
+                        onmousedown={(e) => e.preventDefault()}
+                        onclick={() => pickSpecies(m)}
+                      >
+                        {m}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </div>
             {#if detail?.species}
               <button class="mini" onclick={() => chooseSpecies(null)}>Clear ID</button>

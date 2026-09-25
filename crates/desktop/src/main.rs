@@ -832,6 +832,12 @@ async fn set_detection_settings(settings: DetectionSettings) -> Result<(), Strin
     blocking(move || settings.save_default().map_err(err)).await
 }
 
+/// Every species name the installed model knows (for the autocomplete).
+#[tauri::command]
+async fn species_labels() -> Result<Vec<String>, String> {
+    blocking(|| Ok(birdsorter_core::runtime::installed_species_labels())).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CacheReportDto {
@@ -1045,6 +1051,7 @@ fn main() {
             set_settings,
             get_detection_settings,
             set_detection_settings,
+            species_labels,
             clean_cache,
             rescore,
             export_keepers,
