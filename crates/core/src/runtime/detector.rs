@@ -13,7 +13,7 @@ use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 use ort::value::Tensor;
 
-use crate::analysis::detector::{Detection, SubjectDetector};
+use crate::analysis::detector::{dedupe_detections, nms, BBox, Detection, SubjectDetector};
 use crate::analysis::yolo::{self, YoloConfig};
 use crate::{CoreError, Result};
 
@@ -54,10 +54,16 @@ fn base_builder() -> Result<SessionBuilder> {
 
 /// Build an ONNX Runtime session, preferring a GPU execution provider when the
 /// build enables one, and falling back to CPU when it is unavailable.
-pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Session> {
+///
+/// Returns the session and the execution-provider name when a GPU EP was used.
+pub(crate) fn build_session(
+    model: &Path,
+    device: DevicePreference,
+) -> Result<(Session, Option<String>)> {
     if matches!(device, DevicePreference::Auto | DevicePreference::Gpu) {
         // Try each enabled GPU EP; if it cannot be created (no driver, missing
         // provider library, unsupported op) say why and fall through to CPU.
+        #[allow(unused_macros)]
         macro_rules! try_gpu_ep {
             ($ep:expr, $name:literal) => {{
                 if let Ok(builder) = base_builder() {
@@ -65,12 +71,11 @@ pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Se
                         Ok(mut b) => match b.commit_from_file(model) {
                             Ok(session) => {
                                 eprintln!("compute: {} execution provider", $name);
-                                return Ok(session);
+                                return Ok((session, Some($name.to_string())));
                             }
-                            Err(e) => eprintln!(
-                                "{} EP could not run the model ({e}); using CPU",
-                                $name
-                            ),
+                            Err(e) => {
+                                eprintln!("{} EP could not run the model ({e}); using CPU", $name)
+                            }
                         },
                         Err(e) => eprintln!("{} EP unavailable ({e}); using CPU", $name),
                     }
@@ -87,12 +92,13 @@ pub(crate) fn build_session(model: &Path, device: DevicePreference) -> Result<Se
     }
 
     let mut builder = base_builder()?;
-    builder.commit_from_file(model).map_err(|e| {
+    let session = builder.commit_from_file(model).map_err(|e| {
         CoreError::Other(format!(
             "failed to load ONNX model {}: {e}",
             model.display()
         ))
-    })
+    })?;
+    Ok((session, None))
 }
 
 /// A YOLO model session implementing [`SubjectDetector`].
@@ -103,13 +109,14 @@ pub struct OnnxDetector {
     session: Mutex<Session>,
     config: YoloConfig,
     input_name: String,
+    /// True when a GPU execution provider is active (enables sliced inference).
+    gpu: bool,
 }
 
 impl OnnxDetector {
     /// Load an ONNX model from disk.
     pub fn from_file(model: &Path, config: YoloConfig, device: DevicePreference) -> Result<Self> {
-        #[allow(unused_mut)]
-        let session = build_session(model, device)?;
+        let (session, ep) = build_session(model, device)?;
         let input_name = session
             .inputs()
             .first()
@@ -120,7 +127,13 @@ impl OnnxDetector {
             session: Mutex::new(session),
             config,
             input_name,
+            gpu: ep.is_some(),
         })
+    }
+
+    /// The active execution provider name, when a GPU EP is in use.
+    pub fn is_gpu(&self) -> bool {
+        self.gpu
     }
 
     pub fn config(&self) -> &YoloConfig {
@@ -140,8 +153,18 @@ impl OnnxDetector {
         Ok(Some(Self::from_file(&path, config, device)?))
     }
 
-    fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
-        let (buf, letterbox) = yolo::preprocess(rgb, &self.config);
+    /// Run the model on one region and map its boxes back to image coordinates.
+    fn run_region(
+        &self,
+        rgb: &Array3<u8>,
+        x0: usize,
+        y0: usize,
+        rw: usize,
+        rh: usize,
+    ) -> Result<Vec<Detection>> {
+        let (h, w, _) = rgb.dim();
+        let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
+        let (buf, letterbox) = yolo::preprocess(&crop, &self.config);
         let ts = self.config.input_size as i64;
         let tensor = Tensor::from_array(([1i64, 3, ts, ts], buf)).map_err(ort_err)?;
 
@@ -154,7 +177,46 @@ impl OnnxDetector {
             .map_err(ort_err)?;
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
-        Ok(yolo::decode(data, &dims, &letterbox, &self.config))
+
+        let mut dets = yolo::decode(data, &dims, &letterbox, &self.config);
+        for d in dets.iter_mut() {
+            if let Some(clamped) = BBox::new(
+                d.bbox.x + x0 as i32,
+                d.bbox.y + y0 as i32,
+                d.bbox.w,
+                d.bbox.h,
+            )
+            .clamp_to(w as i32, h as i32)
+            {
+                d.bbox = clamped;
+            }
+        }
+        Ok(dets)
+    }
+
+    fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
+        let (h, w, _) = rgb.dim();
+        let regions = match self.config.resolved_slice(self.gpu) {
+            Some(cfg) => yolo::region_rects(w, h, &cfg),
+            None => vec![(0, 0, w, h)],
+        };
+
+        let mut all: Vec<Detection> = Vec::new();
+        for (x0, y0, rw, rh) in regions {
+            if rw < 8 || rh < 8 {
+                continue;
+            }
+            match self.run_region(rgb, x0, y0, rw, rh) {
+                Ok(dets) => all.extend(dets),
+                // One bad tile must not fail the image.
+                Err(e) => eprintln!("detector region failed ({x0},{y0},{rw},{rh}): {e}"),
+            }
+        }
+
+        // A bird visible in several tiles appears multiple times: suppress the
+        // duplicates across regions.
+        let merged = nms(all, self.config.iou_threshold);
+        Ok(dedupe_detections(merged, 0.5, 0.7))
     }
 }
 

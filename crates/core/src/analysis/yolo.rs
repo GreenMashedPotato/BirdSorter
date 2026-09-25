@@ -26,6 +26,90 @@ pub fn default_class_name(index: usize) -> String {
     }
 }
 
+/// Sliced inference: also run the detector on a grid of overlapping tiles so
+/// small/distant birds that vanish at full-frame resolution get found.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliceConfig {
+    /// Tile grid per axis (`2` = 2x2 tiles).
+    pub grid: usize,
+    /// Fractional overlap between neighbouring tiles.
+    pub overlap: f32,
+}
+
+impl Default for SliceConfig {
+    fn default() -> Self {
+        Self {
+            grid: 4,
+            overlap: 0.25,
+        }
+    }
+}
+
+/// When to use sliced inference.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SliceMode {
+    /// Tiles only when a GPU execution provider is active (CPU stays fast).
+    #[default]
+    Auto,
+    Off,
+    Tiles(SliceConfig),
+}
+
+impl SliceMode {
+    /// Map a user-facing setting to a slice mode: `0` off, `1` auto (GPU only),
+    /// `n > 1` an `n x n` tile grid.
+    pub fn from_grid(grid: u32) -> Self {
+        match grid {
+            0 => SliceMode::Off,
+            1 => SliceMode::Auto,
+            n => SliceMode::Tiles(SliceConfig {
+                grid: n as usize,
+                overlap: 0.25,
+            }),
+        }
+    }
+
+    /// The user-facing setting this mode corresponds to.
+    pub fn to_grid(self) -> u32 {
+        match self {
+            SliceMode::Off => 0,
+            SliceMode::Auto => 1,
+            SliceMode::Tiles(cfg) => cfg.grid as u32,
+        }
+    }
+}
+
+/// Regions to run detection on: the full image plus overlapping tiles.
+///
+/// Always includes the full frame first, so nothing is lost.
+pub fn region_rects(w: usize, h: usize, cfg: &SliceConfig) -> Vec<(usize, usize, usize, usize)> {
+    let mut out = vec![(0usize, 0usize, w, h)];
+    let grid = cfg.grid.max(1);
+    if grid <= 1 || w == 0 || h == 0 {
+        return out;
+    }
+    let tile_w = w / grid;
+    let tile_h = h / grid;
+    if tile_w == 0 || tile_h == 0 {
+        return out;
+    }
+    let overlap = cfg.overlap.clamp(0.0, 0.5);
+    let ow = ((tile_w as f32 * overlap).round() as usize) / 2;
+    let oh = ((tile_h as f32 * overlap).round() as usize) / 2;
+    for gy in 0..grid {
+        for gx in 0..grid {
+            let x0 = (gx * tile_w).saturating_sub(ow);
+            let y0 = (gy * tile_h).saturating_sub(oh);
+            let x1 = ((gx + 1) * tile_w + ow).min(w);
+            let y1 = ((gy + 1) * tile_h + oh).min(h);
+            if x1 > x0 && y1 > y0 {
+                out.push((x0, y0, x1 - x0, y1 - y0));
+            }
+        }
+    }
+    out
+}
+
 /// Detector tuning.
 #[derive(Debug, Clone, PartialEq)]
 pub struct YoloConfig {
@@ -37,6 +121,8 @@ pub struct YoloConfig {
     pub max_detections: usize,
     /// Letterbox padding value (Ultralytics uses 114).
     pub pad_value: u8,
+    /// Sliced inference mode.
+    pub slice: SliceMode,
 }
 
 impl Default for YoloConfig {
@@ -48,12 +134,29 @@ impl Default for YoloConfig {
             class_filter: Some(vec![COCO_BIRD]),
             max_detections: 300,
             pad_value: 114,
+            slice: SliceMode::Auto,
+        }
+    }
+}
+
+impl YoloConfig {
+    /// Resolve the slice mode for the current device.
+    pub fn resolved_slice(&self, gpu: bool) -> Option<SliceConfig> {
+        match self.slice {
+            SliceMode::Off => None,
+            SliceMode::Tiles(cfg) => Some(cfg),
+            SliceMode::Auto if gpu => Some(SliceConfig::default()),
+            SliceMode::Auto => None,
         }
     }
 }
 
 /// Bilinear resize of an RGB image.
-fn resize_bilinear(src: &Array3<u8>, nw: usize, nh: usize) -> Array3<u8> {
+fn resize_bilinear<S: ndarray::Data<Elem = u8>>(
+    src: &ndarray::ArrayBase<S, ndarray::Ix3>,
+    nw: usize,
+    nh: usize,
+) -> Array3<u8> {
     let (h, w, _) = src.dim();
     let mut out = Array3::<u8>::zeros((nh, nw, 3));
     if h == 0 || w == 0 || nw == 0 || nh == 0 {
@@ -97,7 +200,10 @@ fn resize_bilinear(src: &Array3<u8>, nw: usize, nh: usize) -> Array3<u8> {
 ///
 /// Returns the buffer (`3 * size * size`, RGB planes) and the [`Letterbox`] used
 /// to map boxes back to source coordinates.
-pub fn preprocess(rgb: &Array3<u8>, cfg: &YoloConfig) -> (Vec<f32>, Letterbox) {
+pub fn preprocess<S: ndarray::Data<Elem = u8>>(
+    rgb: &ndarray::ArrayBase<S, ndarray::Ix3>,
+    cfg: &YoloConfig,
+) -> (Vec<f32>, Letterbox) {
     let (h, w, _) = rgb.dim();
     let size = cfg.input_size;
     let lb = Letterbox::new(w as u32, h as u32, size);
@@ -375,6 +481,35 @@ mod tests {
         // Box entirely in the top pad (y in [0, pad_y)).
         let mapped = lb.map_box_to_src(10.0, 1.0, 20.0, 2.0);
         assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn region_rects_cover_the_frame_with_overlapping_tiles() {
+        let cfg = SliceConfig {
+            grid: 2,
+            overlap: 0.2,
+        };
+        let rects = region_rects(100, 80, &cfg);
+        assert_eq!(rects[0], (0, 0, 100, 80)); // full frame first
+        assert_eq!(rects.len(), 5);
+        for &(x, y, w, h) in &rects {
+            assert!(x + w <= 100 && y + h <= 80, "region out of bounds");
+            assert!(w > 0 && h > 0);
+        }
+        // The second tile starts before the half-way mark (overlap).
+        assert!(rects[2].0 < 50);
+    }
+
+    #[test]
+    fn slice_mode_auto_resolves_by_device() {
+        let cfg = YoloConfig::default();
+        assert!(cfg.resolved_slice(false).is_none()); // CPU stays fast
+        assert!(cfg.resolved_slice(true).is_some()); // GPU slices
+        let off = YoloConfig {
+            slice: SliceMode::Off,
+            ..YoloConfig::default()
+        };
+        assert!(off.resolved_slice(true).is_none());
     }
 
     #[test]

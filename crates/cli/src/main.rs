@@ -11,11 +11,11 @@ use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::{score_rules, TrainedScorer};
 use birdsorter_core::analysis::sharpness::{compute_features, Subject};
 use birdsorter_core::analysis::species::{SpeciesClassifier, SpeciesPreprocess};
-use birdsorter_core::analysis::yolo::YoloConfig;
+use birdsorter_core::analysis::yolo::{SliceConfig, SliceMode, YoloConfig};
 use birdsorter_core::data::library;
 use birdsorter_core::data::models;
 use birdsorter_core::data::registry;
-use birdsorter_core::data::settings::ScoreSettings;
+use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, db, library::ScanReport};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
@@ -198,11 +198,39 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     let mut file = None;
     let mut model = None;
     let mut no_detect = false;
+    let mut slice = SliceMode::Auto;
+    let mut imgsz = YoloConfig::default().input_size;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = it.next().cloned(),
             "--no-detect" => no_detect = true,
+            "--imgsz" => {
+                imgsz = match it.next().and_then(|v| v.parse::<u32>().ok()) {
+                    Some(n) if n > 0 => n,
+                    _ => {
+                        eprintln!("probe: --imgsz needs a number");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            }
+            "--slice" => {
+                let v = it.next().map(String::as_str).unwrap_or("");
+                slice = match v {
+                    "auto" => SliceMode::Auto,
+                    "off" => SliceMode::Off,
+                    "on" | "tiles" => SliceMode::Tiles(SliceConfig::default()),
+                    other => match other.parse::<usize>() {
+                        Ok(grid) if grid > 0 => {
+                            SliceMode::Tiles(SliceConfig { grid, overlap: 0.2 })
+                        }
+                        _ => {
+                            eprintln!("probe: --slice needs auto|off|on|<grid>");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                };
+            }
             other if other.starts_with("--") => {
                 eprintln!("probe: unknown option {other}");
                 return ExitCode::FAILURE;
@@ -211,10 +239,10 @@ fn cmd_probe(args: &[String]) -> ExitCode {
         }
     }
     let Some(file) = file else {
-        eprintln!("probe: usage: probe <raw> [--model <onnx>] [--no-detect]");
+        eprintln!("probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--slice auto|off|on]");
         return ExitCode::FAILURE;
     };
-    match run_probe(&file, model.as_deref(), no_detect) {
+    match run_probe(&file, model.as_deref(), no_detect, slice, imgsz) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("probe failed: {e}");
@@ -223,7 +251,13 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_core::Result<()> {
+fn run_probe(
+    file: &str,
+    model: Option<&str>,
+    no_detect: bool,
+    slice: SliceMode,
+    imgsz: u32,
+) -> birdsorter_core::Result<()> {
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(2400))),
         Box::new(ImageCrateDecoder::new(Some(2400))),
@@ -237,12 +271,21 @@ fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_cor
     } else if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
         Box::new(OnnxDetector::from_file(
             Path::new(m),
-            YoloConfig::default(),
+            YoloConfig {
+                input_size: imgsz,
+                slice,
+                ..YoloConfig::default()
+            },
             DevicePreference::Auto,
         )?)
-    } else if let Some(d) =
-        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
-    {
+    } else if let Some(d) = OnnxDetector::load_default(
+        YoloConfig {
+            input_size: imgsz,
+            slice,
+            ..YoloConfig::default()
+        },
+        DevicePreference::Auto,
+    )? {
         Box::new(d)
     } else {
         Box::new(SaliencyDetector::default())
@@ -649,12 +692,13 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         println!("using ONNX detector: {m}");
         Box::new(OnnxDetector::from_file(
             Path::new(m),
-            YoloConfig::default(),
+            DetectionSettings::load_default().yolo_config(),
             DevicePreference::Auto,
         )?)
-    } else if let Some(d) =
-        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
-    {
+    } else if let Some(d) = OnnxDetector::load_default(
+        DetectionSettings::load_default().yolo_config(),
+        DevicePreference::Auto,
+    )? {
         println!("using installed detector (model manager)");
         Box::new(d)
     } else {

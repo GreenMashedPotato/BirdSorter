@@ -40,7 +40,7 @@ impl OnnxSpeciesClassifier {
         preprocess: SpeciesPreprocess,
         device: DevicePreference,
     ) -> Result<Self> {
-        let session = build_session(model, device)?;
+        let (session, _ep) = build_session(model, device)?;
         let input_name = session
             .inputs()
             .first()

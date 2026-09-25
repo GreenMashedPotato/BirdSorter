@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::yolo::{SliceMode, YoloConfig};
 use crate::{CoreError, Result};
 
 /// Every knob the rule-based scorer reads. Kept as `f32` (including the
@@ -105,6 +106,70 @@ impl ScoreSettings {
     }
 }
 
+/// Detector settings that are independent of scoring.
+///
+/// Changing these only affects images analysed afterwards; existing scores keep
+/// the detections they were computed from until the folder is re-analysed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DetectionSettings {
+    /// Sliced (tiled) inference for small/distant birds:
+    /// `0` off, `1` auto (only when a GPU execution provider is active),
+    /// `n > 1` an `n x n` overlapping tile grid.
+    pub slice_grid: u32,
+}
+
+impl Default for DetectionSettings {
+    fn default() -> Self {
+        Self { slice_grid: 1 }
+    }
+}
+
+impl DetectionSettings {
+    /// The detector configuration these settings describe.
+    pub fn yolo_config(&self) -> YoloConfig {
+        YoloConfig {
+            slice: SliceMode::from_grid(self.slice_grid),
+            ..YoloConfig::default()
+        }
+    }
+
+    /// `.../BirdSorter/detection_settings.json` under the platform user-data dir.
+    pub fn default_path() -> Result<PathBuf> {
+        let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
+            .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
+        Ok(dirs.config_dir().join("detection_settings.json"))
+    }
+
+    pub fn load_default() -> Self {
+        match Self::default_path() {
+            Ok(path) => Self::load(path),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        self.save(Self::default_path()?)
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+        }
+        let text = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, text).map_err(|e| CoreError::io(path, e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +219,20 @@ mod tests {
         let s = ScoreSettings::load(&p);
         assert_eq!(s.sharp_threshold, 0.5);
         assert_eq!(s.bokeh_ratio, 2.5); // default preserved
+    }
+
+    #[test]
+    fn detection_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("detection_settings.json");
+        assert_eq!(DetectionSettings::default().slice_grid, 1); // auto
+        let s = DetectionSettings { slice_grid: 6 };
+        s.save(&p).unwrap();
+        assert_eq!(DetectionSettings::load(&p), s);
+        // A missing file falls back to defaults rather than failing.
+        assert_eq!(
+            DetectionSettings::load(dir.path().join("missing.json")),
+            DetectionSettings::default()
+        );
     }
 }
