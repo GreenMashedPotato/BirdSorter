@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+time.workspace = true
 
 [dependencies]
 birdsorter-core = { path = "../core" }

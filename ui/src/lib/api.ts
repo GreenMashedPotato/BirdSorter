@@ -24,6 +24,8 @@ export interface FileEntry {
   hasBokeh: boolean;
   species: string | null;
   subjectClass: string | null;
+  /** 0-5 stars, mirrored into an XMP sidecar. */
+  rating: number;
 }
 
 export interface ScanReport {
@@ -383,6 +385,46 @@ export interface CacheReport {
 /** Every species name the installed model knows (autocomplete). */
 export async function speciesLabels(): Promise<string[]> {
   return invoke("species_labels");
+}
+
+export interface RatingResult {
+  changed: number;
+  xmpWritten: number;
+  xmpFailed: string[];
+}
+
+/** Set a 0-5 rating (database + XMP sidecar). */
+export async function rateFiles(files: number[], rating: number): Promise<RatingResult> {
+  return invoke("rate_files", { files, rating });
+}
+
+/** Auto-rate a folder from the verdicts: sharp 5, uncertain 3, blurry 1, none 0. */
+export async function autoRate(folder: number): Promise<RatingResult> {
+  return invoke("auto_rate", { folder });
+}
+
+/** Clear every rating in a folder (database + XMP). */
+export async function resetRatings(folder: number): Promise<RatingResult> {
+  return invoke("reset_ratings", { folder });
+}
+
+export interface Disclaimer {
+  name: string;
+  license: string;
+  note: string;
+}
+
+export interface AppInfo {
+  name: string;
+  version: string;
+  buildDate: string;
+  author: string;
+  contact: string;
+  disclaimers: Disclaimer[];
+}
+
+export async function appInfo(): Promise<AppInfo> {
+  return invoke("app_info");
 }
 
 /** Thumbnail-cache maintenance. `clearAll` wipes it; otherwise only orphaned

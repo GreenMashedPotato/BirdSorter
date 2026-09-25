@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -33,6 +33,7 @@ const DDL: &[&str] = &[
         imported_at         TEXT NOT NULL,
         trashed_at          TEXT,
         captured_at         TEXT,
+        rating              INTEGER NOT NULL DEFAULT 0,
         UNIQUE(folder_id, relative_path)
     )",
     "CREATE INDEX IF NOT EXISTS idx_files_hash    ON files(content_hash)",
@@ -193,6 +194,10 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
             "ALTER TABLE analysis ADD COLUMN image_width INTEGER;
              ALTER TABLE analysis ADD COLUMN image_height INTEGER;",
         )?;
+    }
+    if from < 9 {
+        // v8 -> v9: 0-5 star rating, mirrored into an XMP sidecar.
+        conn.execute_batch("ALTER TABLE files ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;")?;
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())

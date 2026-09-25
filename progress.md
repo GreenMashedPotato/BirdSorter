@@ -134,6 +134,24 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Silhouette fallback detector** (`analysis::silhouette`): classical detection of
+  dark compact blobs against a bright, uniform background (integral-image local
+  background, connected components, and a background-uniformity gate computed
+  *excluding* the blob). Runs as a last resort when the network finds nothing, so
+  backlit birds in flight that COCO-YOLO misses still become subjects (class
+  `silhouette`, so species ID is skipped). Unit-tested on sky/blob/busy/tiny
+  images.
+- **Star ratings (0-5)**: `files.rating` (schema v9) plus **XMP sidecar sync** —
+  `io::xmp::write_rating` merges `xmp:Rating` into an existing `.xmp`
+  (Lightroom/ON1 format), preserving every other attribute, and writes a minimal
+  sidecar when none exists. UI: clickable stars on every grid tile, a star row in
+  the review view, **Auto-star** (sharp 5 / uncertain 3 / blurry 1 / none 0) and
+  **Reset stars** buttons.
+- **About dialog** (`About.svelte`), opened by clicking the **🐦 BirdSorter**
+  title: author (Michel Gunawan), contact, version and **build date** (baked in by
+  `build.rs`), plus credits/licences and dataset disclaimers — most importantly
+  that the **species model is CC-BY-NC-4.0 (non-commercial)**.
+
 - **Scan/analysis are no longer opaque**: scanning runs on a background thread
   with a **progress bar** (`done/total`, streamed), an immediate "scanning…"
   status, and a **Stop** button (a first scan of a big shoot hashes every file —

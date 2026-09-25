@@ -29,6 +29,7 @@ use birdsorter_core::io::develop::develop_preview;
 use birdsorter_core::io::export::{export_files, ExportMode};
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
+use birdsorter_core::io::xmp;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
@@ -853,6 +854,173 @@ async fn species_labels() -> Result<Vec<String>, String> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RatingResultDto {
+    changed: usize,
+    xmp_written: usize,
+    xmp_failed: Vec<String>,
+}
+
+/// Mirror every file's rating in a folder into its XMP sidecar.
+fn mirror_ratings(conn: &Connection, folder: i64) -> Result<(usize, Vec<String>), String> {
+    let rows = library::ratings_for_folder(conn, folder).map_err(err)?;
+    let mut written = 0usize;
+    let mut failed = Vec::new();
+    for (_, path, rating) in rows {
+        match xmp::write_rating(&path, rating.clamp(0, 5) as u8) {
+            Ok(()) => written += 1,
+            Err(e) => failed.push(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok((written, failed))
+}
+
+/// Set a 0-5 rating on files, in the database and in their XMP sidecars.
+#[tauri::command]
+async fn rate_files(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    rating: i64,
+) -> Result<RatingResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let changed = library::set_rating(&conn, &files, rating).map_err(err)?;
+        let rating = rating.clamp(0, 5) as u8;
+        let mut written = 0usize;
+        let mut failed = Vec::new();
+        for id in &files {
+            if let Some(lf) = library::get_file(&conn, *id).map_err(err)? {
+                match xmp::write_rating(&lf.absolute_path, rating) {
+                    Ok(()) => written += 1,
+                    Err(e) => failed.push(format!("{}: {e}", lf.file.filename)),
+                }
+            }
+        }
+        Ok(RatingResultDto {
+            changed,
+            xmp_written: written,
+            xmp_failed: failed,
+        })
+    })
+    .await
+}
+
+/// Auto-rate a folder from the verdicts: sharp 5, uncertain 3, blurry 1,
+/// no_subject 0.
+#[tauri::command]
+async fn auto_rate(state: State<'_, AppState>, folder: i64) -> Result<RatingResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let changed = library::auto_rate_folder(&conn, folder).map_err(err)?;
+        let (xmp_written, xmp_failed) = mirror_ratings(&conn, folder)?;
+        Ok(RatingResultDto {
+            changed,
+            xmp_written,
+            xmp_failed,
+        })
+    })
+    .await
+}
+
+/// Clear every rating in a folder (database + XMP).
+#[tauri::command]
+async fn reset_ratings(state: State<'_, AppState>, folder: i64) -> Result<RatingResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let changed = library::reset_ratings(&conn, folder).map_err(err)?;
+        let (xmp_written, xmp_failed) = mirror_ratings(&conn, folder)?;
+        Ok(RatingResultDto {
+            changed,
+            xmp_written,
+            xmp_failed,
+        })
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DisclaimerDto {
+    name: String,
+    license: String,
+    note: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfoDto {
+    name: String,
+    version: String,
+    build_date: String,
+    author: String,
+    contact: String,
+    disclaimers: Vec<DisclaimerDto>,
+}
+
+/// Author, build date and the third-party / dataset disclaimers shown in the
+/// About dialog (opened by clicking the app name).
+#[tauri::command]
+fn app_info() -> AppInfoDto {
+    let d = |name: &str, license: &str, note: &str| DisclaimerDto {
+        name: name.to_string(),
+        license: license.to_string(),
+        note: note.to_string(),
+    };
+    AppInfoDto {
+        name: "BirdSorter".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_date: option_env!("BUILD_DATE").unwrap_or("dev build").to_string(),
+        author: "Michel Gunawan".to_string(),
+        contact: "github.com/GreenMashedPotato/raw-sorter-app".to_string(),
+        disclaimers: vec![
+            d(
+                "Bird species model - iNaturalist 2021 (ConvNeXt-Large, 10,000 species)",
+                "CC-BY-NC-4.0",
+                "NON-COMMERCIAL. The model (timm/convnext_large_mlp.laion2b_ft_augreg_inat21) \
+                 may not be used commercially. It was trained on the iNaturalist 2021 \
+                 competition dataset; iNaturalist photographs are community-licensed, mostly \
+                 CC BY-NC. Species names enriched from Wikidata (CC0).",
+            ),
+            d(
+                "Bird detector - YOLO11n (Ultralytics)",
+                "AGPL-3.0",
+                "Exported Ultralytics weights inherit AGPL-3.0, which is why BirdSorter is \
+                 licensed AGPL-3.0-or-later. COCO-pretrained; only the 'bird' class is used.",
+            ),
+            d(
+                "BirdSorter",
+                "AGPL-3.0-or-later",
+                "Provisional licence. Bundling or modifying it? Keep it AGPL-compatible.",
+            ),
+            d(
+                "rawler",
+                "LGPL-2.1",
+                "Pure-Rust RAW decoding, kept behind a trait so it can be swapped.",
+            ),
+            d(
+                "ONNX Runtime (ort)",
+                "MIT",
+                "Inference engine; models run locally, nothing is uploaded.",
+            ),
+            d(
+                "Tauri",
+                "MIT or Apache-2.0",
+                "Desktop shell. The UI is Svelte (MIT).",
+            ),
+            d(
+                "Other Rust crates",
+                "MIT / Apache-2.0",
+                "ndarray, image, rusqlite, rustfft, rayon and others - see Cargo.lock for the \
+                 full list.",
+            ),
+        ],
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CacheReportDto {
     removed: usize,
     bytes_before: u64,
@@ -1065,6 +1233,10 @@ fn main() {
             get_detection_settings,
             set_detection_settings,
             species_labels,
+            rate_files,
+            auto_rate,
+            reset_ratings,
+            app_info,
             clean_cache,
             rescore,
             export_keepers,

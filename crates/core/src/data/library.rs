@@ -48,6 +48,8 @@ pub struct FileRow {
     pub trashed_at: Option<String>,
     /// EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for burst grouping.
     pub captured_at: Option<String>,
+    /// 0-5 star rating (0 = none), mirrored into an XMP sidecar.
+    pub rating: i64,
 }
 
 /// A file row paired with its absolute path on disk.
@@ -112,6 +114,7 @@ fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
         imported_at: r.get("imported_at")?,
         trashed_at: r.get("trashed_at")?,
         captured_at: r.get("captured_at")?,
+        rating: r.get("rating")?,
     })
 }
 
@@ -569,6 +572,8 @@ pub struct FileGridRow {
     pub has_bokeh: bool,
     pub species_name: Option<String>,
     pub subject_class: Option<String>,
+    /// 0-5 stars.
+    pub rating: i64,
 }
 
 /// List files with their analysis status and latest user label in a single
@@ -595,7 +600,7 @@ pub fn list_files_with_details(
                 f.captured_at,
                 fo.path AS folder_path,
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
-                a.species_name, a.subject_class,
+                a.species_name, a.subject_class, f.rating,
                 (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
            FROM files f
@@ -619,6 +624,7 @@ pub fn list_files_with_details(
             imported_at: r.get("imported_at")?,
             trashed_at: r.get("trashed_at")?,
             captured_at: r.get("captured_at")?,
+            rating: r.get("rating")?,
         };
         let predicted: Option<String> = r.get("predicted_label")?;
         let score: Option<f32> = r.get("sharpness_score")?;
@@ -635,6 +641,7 @@ pub fn list_files_with_details(
             has_bokeh: bokeh_i.unwrap_or(0) != 0,
             species_name: r.get("species_name")?,
             subject_class: r.get("subject_class")?,
+            rating: r.get("rating")?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -705,6 +712,72 @@ pub fn reconcile_trashed(conn: &Connection, folder_id: i64) -> Result<usize> {
         Ok(())
     })?;
     Ok(restored)
+}
+
+/// Set the 0-5 rating for a set of files (clamped). Returns rows changed.
+pub fn set_rating(conn: &Connection, file_ids: &[i64], rating: i64) -> Result<usize> {
+    let rating = rating.clamp(0, 5);
+    with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET rating = ?1 WHERE id = ?2")?;
+        let mut n = 0;
+        for id in file_ids {
+            n += stmt.execute(rusqlite::params![rating, id])?;
+        }
+        Ok(n)
+    })
+}
+
+/// Auto-rate a folder from the stored verdicts: sharp 5, uncertain 3, blurry 1,
+/// no_subject 0. Files without an analysis row keep their rating.
+pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
+    with_tx(conn, || {
+        let n = conn.execute(
+            "UPDATE files SET rating = COALESCE(
+                 (SELECT CASE a.predicted_label
+                            WHEN 'sharp' THEN 5
+                            WHEN 'uncertain' THEN 3
+                            WHEN 'blurry' THEN 1
+                            ELSE 0
+                         END
+                    FROM analysis a WHERE a.file_id = files.id),
+                 files.rating)
+               WHERE folder_id = ?1
+                 AND EXISTS (SELECT 1 FROM analysis a WHERE a.file_id = files.id)",
+            [folder_id],
+        )?;
+        Ok(n)
+    })
+}
+
+/// Clear every rating in a folder. Returns rows changed.
+pub fn reset_ratings(conn: &Connection, folder_id: i64) -> Result<usize> {
+    with_tx(conn, || {
+        let n = conn.execute(
+            "UPDATE files SET rating = 0 WHERE folder_id = ?1",
+            [folder_id],
+        )?;
+        Ok(n)
+    })
+}
+
+/// `(file_id, absolute_path, rating)` for a folder — used to mirror ratings
+/// into XMP sidecars.
+pub fn ratings_for_folder(conn: &Connection, folder_id: i64) -> Result<Vec<(i64, PathBuf, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, fo.path AS folder_path, f.relative_path, f.rating
+           FROM files f JOIN folders fo ON fo.id = f.folder_id
+          WHERE f.folder_id = ?1",
+    )?;
+    let rows = stmt.query_map([folder_id], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let rel: String = r.get("relative_path")?;
+        Ok((
+            r.get::<_, i64>("id")?,
+            PathBuf::from(folder_path).join(rel),
+            r.get::<_, i64>("rating")?,
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[cfg(test)]
