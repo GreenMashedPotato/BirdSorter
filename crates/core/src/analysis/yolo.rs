@@ -13,6 +13,7 @@ use ndarray::Array3;
 
 use crate::analysis::detector::{dedupe_detections, nms, BBox, Detection, Letterbox};
 use crate::analysis::edges::EdgeConfig;
+use crate::analysis::silhouette::SilhouetteConfig;
 
 /// COCO class index for "bird".
 pub const COCO_BIRD: usize = 14;
@@ -172,6 +173,11 @@ pub struct YoloConfig {
     /// already decided to look harder it is worth accepting weaker boxes.
     /// `None` keeps the normal threshold.
     pub fallback_conf: Option<f32>,
+    /// Last-resort classical silhouette detection for backlit birds on flat sky
+    /// (YOLO misses those). Runs only when nothing else was found.
+    pub silhouette: bool,
+    /// Tuning for the silhouette pass.
+    pub silhouette_cfg: SilhouetteConfig,
 }
 
 impl Default for YoloConfig {
@@ -188,6 +194,8 @@ impl Default for YoloConfig {
             edge_proposal: true,
             edge: EdgeConfig::default(),
             fallback_conf: Some(0.15),
+            silhouette: true,
+            silhouette_cfg: SilhouetteConfig::default(),
         }
     }
 }

@@ -9,3 +9,4 @@ pub mod hash;
 pub mod raw;
 pub mod thumb;
 pub mod trash;
+pub mod xmp;

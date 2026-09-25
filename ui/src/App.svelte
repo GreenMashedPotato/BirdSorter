@@ -18,6 +18,9 @@
     setSpecies,
     speciesLabels,
     labelFiles,
+    rateFiles,
+    autoRate,
+    resetRatings,
     trashFiles,
     getSettings,
     setSettings,
@@ -46,6 +49,7 @@
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
+  import About from "./lib/About.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
@@ -183,6 +187,7 @@
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
   let showModels = $state(false);
+  let showAbout = $state(false);
   let showBreakdown = $state(false);
   let breakdown = $state<Breakdown | null>(null);
 
@@ -355,6 +360,11 @@
 
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
+
+  /// Star rating of the file in the review view (0 = unrated).
+  const currentRating = $derived(
+    reviewFile === null ? 0 : (files.find((f) => f.id === reviewFile)?.rating ?? 0),
+  );
 
   async function openReview(id: number) {
     reviewFile = id;
@@ -535,6 +545,80 @@
 
   function setSelected(next: Set<number>) {
     selected = next;
+  }
+
+  // --- star ratings --------------------------------------------------------
+  /// Rate one file (0 clears). Updates the grid immediately, then persists.
+  async function rateOne(id: number, rating: number) {
+    try {
+      const r = await rateFiles([id], rating);
+      files = files.map((f) => (f.id === id ? { ...f, rating } : f));
+      if (r.xmpFailed.length > 0) {
+        status = `rated, but the XMP sidecar failed for ${r.xmpFailed.length} file(s)`;
+      }
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Rate every selected file.
+  async function rateSelected(rating: number) {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    try {
+      const r = await rateFiles(ids, rating);
+      files = files.map((f) => (selected.has(f.id) ? { ...f, rating } : f));
+      status =
+        `rated ${r.changed} file(s)` +
+        (r.xmpFailed.length ? ` · ${r.xmpFailed.length} XMP failed` : "");
+      await refreshDetail();
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  async function autoStar() {
+    if (activeFolder === null) return;
+    if (
+      !confirm(
+        "Set stars for every analysed file from its verdict?\n\n" +
+          "sharp → 5 · uncertain → 3 · blurry → 1 · no subject → 0\n\n" +
+          "This also writes xmp:Rating into each file's XMP sidecar.",
+      )
+    ) {
+      return;
+    }
+    busy = true;
+    status = "auto-starring…";
+    try {
+      const r = await autoRate(activeFolder);
+      status =
+        `rated ${r.changed} file(s)` +
+        (r.xmpFailed.length ? ` · ${r.xmpFailed.length} XMP failed` : "");
+      await refreshFiles();
+      await refreshDetail();
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function resetStars() {
+    if (activeFolder === null) return;
+    if (!confirm("Clear the star rating on every file in this folder?")) return;
+    busy = true;
+    status = "resetting stars…";
+    try {
+      const r = await resetRatings(activeFolder);
+      status = `cleared ${r.changed} rating(s)`;
+      await refreshFiles();
+      await refreshDetail();
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      busy = false;
+    }
   }
 
   function toggle(id: number) {
@@ -907,7 +991,11 @@
 
 <div class="app" class:review-open={reviewFile !== null}>
   <aside class="sidebar">
-    <h1>🐦 BirdSorter</h1>
+    <h1>
+      <button class="app-title" title="About BirdSorter" onclick={() => (showAbout = true)}>
+        🐦 BirdSorter
+      </button>
+    </h1>
 
     <div style="display:flex; gap:6px; margin-bottom:6px">
       <input
@@ -1007,6 +1095,33 @@
       <button onclick={trashSelected} disabled={selected.size === 0} title="Move to the OS trash">
         Delete
       </button>
+      <span class="stars" title="Rate the selection">
+        {#each [1, 2, 3, 4, 5] as v (v)}
+          <button
+            class="star"
+            disabled={selected.size === 0}
+            onclick={() => rateSelected(v)}
+            title="{v} star{v > 1 ? 's' : ''}"
+          >
+            ★
+          </button>
+        {/each}
+      </span>
+      <div class="spacer"></div>
+      <button
+        onclick={autoStar}
+        disabled={busy || activeFolder === null}
+        title="Rate every analysed file from its verdict (sharp 5 … no subject 0)"
+      >
+        Auto-star
+      </button>
+      <button
+        onclick={resetStars}
+        disabled={busy || activeFolder === null}
+        title="Clear every star in this folder"
+      >
+        Reset stars
+      </button>
     </div>
 
     <div
@@ -1047,6 +1162,23 @@
               </div>
               <div class="meta">
                 <span class="name" title={f.filename}>{f.filename}</span>
+                <span class="stars tile-stars" title="Click a star to rate">
+                  {#each [1, 2, 3, 4, 5] as v (v)}
+                    <button
+                      class="star"
+                      class:on={f.rating >= v}
+                      title="{v} star{v > 1 ? 's' : ''}"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        rateOne(f.id, f.rating === v ? 0 : v);
+                      }}
+                      onkeydown={(e) => e.stopPropagation()}
+                      ondblclick={(e) => e.stopPropagation()}
+                    >
+                      ★
+                    </button>
+                  {/each}
+                </span>
                 {#if burstInfo[f.id]}
                   <span
                     class="badge burst"
@@ -1242,6 +1374,21 @@
             <button class="pick" onclick={() => applyLabelToReview("reject")}>Reject</button>
           </div>
           {#if detail?.label}<p class="status">current: {detail.label}</p>{/if}
+
+          <h3>Rating</h3>
+          <div class="stars">
+            {#each [1, 2, 3, 4, 5] as v (v)}
+              <button
+                class="star"
+                class:on={currentRating >= v}
+                title="{v} star{v > 1 ? 's' : ''}"
+                onclick={() => rateOne(reviewFile!, currentRating === v ? 0 : v)}
+              >
+                ★
+              </button>
+            {/each}
+            <span class="status">{currentRating ? `${currentRating} / 5` : "unrated"}</span>
+          </div>
         </aside>
       </div>
     </div>
@@ -1259,6 +1406,10 @@
 
   {#if showModels}
     <ModelManager onClose={() => (showModels = false)} />
+  {/if}
+
+  {#if showAbout}
+    <About onClose={() => (showAbout = false)} />
   {/if}
 
   {#if showBreakdown && breakdown}

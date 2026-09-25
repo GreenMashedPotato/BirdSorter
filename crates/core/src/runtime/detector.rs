@@ -17,6 +17,7 @@ use crate::analysis::detector::{
     dedupe_detections, nms, BBox, Detection, Letterbox, SubjectDetector,
 };
 use crate::analysis::edges;
+use crate::analysis::silhouette;
 use crate::analysis::yolo::{self, SliceMode, YoloConfig};
 use crate::{CoreError, Result};
 
@@ -382,8 +383,8 @@ impl OnnxDetector {
         // already decided these frames are worth the extra scrutiny.
         let recall = self.config.recall_pass();
 
-        match self.config.slice {
-            SliceMode::Off => self.detect_regions(rgb, &full, &self.config),
+        let dets = match self.config.slice {
+            SliceMode::Off => self.detect_regions(rgb, &full, &self.config)?,
             SliceMode::Always(cfg) => {
                 let mut regions = vec![(0usize, 0usize, w, h)];
                 self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
@@ -392,30 +393,38 @@ impl OnnxDetector {
                     rects.remove(0); // the full frame is already in
                 }
                 self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
-                self.detect_regions(rgb, &regions, &recall)
+                self.detect_regions(rgb, &regions, &recall)?
             }
             SliceMode::Fallback(cfg) => {
                 // Phase 1: the cheap full-frame pass. Most frames resolve here.
                 let dets = self.detect_regions(rgb, &full, &self.config)?;
                 if !dets.is_empty() || cfg.grid <= 1 {
-                    return Ok(dets);
+                    dets
+                } else {
+                    // Phase 2: nothing found — this is exactly the frame worth
+                    // paying for. Edge proposals first (targeted, high-res
+                    // crops), then the tile grid minus the empty tiles.
+                    let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
+                    self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
+                    let mut rects = yolo::region_rects(w, h, &cfg);
+                    if !rects.is_empty() {
+                        rects.remove(0);
+                    }
+                    self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
+                    if regions.is_empty() {
+                        dets
+                    } else {
+                        self.detect_regions(rgb, &regions, &recall)?
+                    }
                 }
-                // Phase 2: nothing found — this is exactly the frame worth
-                // paying for. Edge proposals first (targeted, high-res crops),
-                // then the tile grid minus the empty tiles.
-                let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
-                self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
-                let mut rects = yolo::region_rects(w, h, &cfg);
-                if !rects.is_empty() {
-                    rects.remove(0);
-                }
-                self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
-                if regions.is_empty() {
-                    return Ok(dets);
-                }
-                self.detect_regions(rgb, &regions, &recall)
             }
+        };
+
+        if !dets.is_empty() || !self.config.silhouette {
+            return Ok(dets);
         }
+        // Nothing found by the network: try the classical backlit-bird finder.
+        Ok(silhouette::detect(rgb, &self.config.silhouette_cfg))
     }
 
     /// Add edge-proposed subject crops (birds against empty sky) to `regions`.

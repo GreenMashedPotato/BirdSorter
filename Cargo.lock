@@ -259,6 +259,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "time",
 ]
 
 [[package]]

@@ -599,6 +599,63 @@ input {
   background: var(--accent);
   color: #fff;
 }
+
+/* App title opens the About dialog. */
+.app-title {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+.app-title:hover {
+  color: var(--accent);
+}
+
+/* Star ratings (grid tiles + review sidebar + bulk row). */
+.stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+.star {
+  background: none;
+  border: 0;
+  padding: 0 1px;
+  font-size: 13px;
+  line-height: 1;
+  color: #4a5160;
+  cursor: pointer;
+}
+.star:hover:not(:disabled) {
+  color: #ffd479;
+}
+.star.on {
+  color: #ffc247;
+}
+.star:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.tile-stars {
+  margin-left: 2px;
+}
+.disclaimer {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.disclaimer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.disclaimer-head .tier {
+  font-size: 11px;
+}
 .mini {
   font-size: 12px;
   padding: 4px 8px;

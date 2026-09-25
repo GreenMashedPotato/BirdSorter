@@ -61,6 +61,11 @@ Measured on a real egret crop: `Ardea alba (Great Egret)` **0.977**.
   (`Ardea cinerea (Grey Heron)`) by `tools/enrich_common_names.py` (one Wikidata
   query, 1,461 of the 10,000 labels matched), so either name is searchable in
   the species autocomplete.
+- **Licence — read this**: the model is **CC-BY-NC-4.0 (NonCommercial)** and was
+  trained on the iNaturalist 2021 competition dataset (iNaturalist photographs
+  are community-licensed, mostly CC BY-NC). **Do not use it for commercial
+  work.** This is also shown in the app's About dialog. (The YOLO11n detector is
+  AGPL-3.0, which is why BirdSorter is AGPL-3.0-or-later.)
 - **Rebuild / update**:
 
   ```bash
