@@ -178,6 +178,18 @@ detection → sharpness verdict → species ID → grid/review UI).
   frame misses) and lets the detector **skip tiles that are uniform sky/water**.
   Unit-tested on synthetic sky/blob/busy-scene images. This is the empty-sky
   performance win: sky shots scan far fewer tiles.
+- **The prototype's bird-ID model is identified and available**:
+  `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` - **ConvNeXt-Large fine-tuned
+  on iNaturalist 2021 (10,000 species, global, strong Indonesian coverage)**.
+  `tools/export_inat21.py` exports it (labels auto-fetched from the TFDS iNat21
+  label file in the correct class order). Measured on a real egret crop:
+  **`Ardea alba` 0.977** vs **Snowy Egret 0.373** for the shipped 526-class ViT.
+  Ships fp32 (~857 MB; ORT's int8 quantiser rejects this head). Bundle:
+  `dist-models/inat21.zip`.
+- **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
+  pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
+  in-flight birds score weakly on the full frame. The full-frame pass still uses
+  0.25, so ordinary frames are unaffected.
 - **`tools/train_species.py`**: fine-tune a ViT on a folder-per-class set (or an
   HF dataset) and export `bird_species.onnx` + labels + meta, including iNat-2021
   Aves (~1,486 species) guidance.

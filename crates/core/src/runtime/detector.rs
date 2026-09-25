@@ -184,11 +184,12 @@ impl OnnxDetector {
         y0: usize,
         rw: usize,
         rh: usize,
+        cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
         let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
-        let (buf, letterbox) = yolo::preprocess(&crop, &self.config);
-        let ts = self.config.input_size as i64;
+        let (buf, letterbox) = yolo::preprocess(&crop, cfg);
+        let ts = cfg.input_size as i64;
         let tensor = Tensor::from_array(([1i64, 3, ts, ts], buf)).map_err(ort_err)?;
 
         let mut session = self
@@ -201,7 +202,7 @@ impl OnnxDetector {
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
 
-        let mut dets = yolo::decode(data, &dims, &letterbox, &self.config);
+        let mut dets = yolo::decode(data, &dims, &letterbox, cfg);
         for d in dets.iter_mut() {
             if let Some(clamped) = BBox::new(
                 d.bbox.x + x0 as i32,
@@ -237,10 +238,11 @@ impl OnnxDetector {
         regions: &[RegionInput],
         img_w: usize,
         img_h: usize,
+        cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
         let n = regions.len();
-        let ts = self.config.input_size as i64;
-        let stride = 3 * self.config.input_size as usize * self.config.input_size as usize;
+        let ts = cfg.input_size as i64;
+        let stride = 3 * cfg.input_size as usize * cfg.input_size as usize;
         let mut batch: Vec<f32> = Vec::with_capacity(n * stride);
         for r in regions {
             batch.extend_from_slice(&r.buf);
@@ -266,7 +268,7 @@ impl OnnxDetector {
 
         let mut all: Vec<Detection> = Vec::new();
         for (i, r) in regions.iter().enumerate() {
-            let mut dets = yolo::decode_batched(data, &dims, i, &r.letterbox, &self.config);
+            let mut dets = yolo::decode_batched(data, &dims, i, &r.letterbox, cfg);
             for d in dets.iter_mut() {
                 if let Some(clamped) = BBox::new(
                     d.bbox.x + r.x0 as i32,
@@ -289,6 +291,7 @@ impl OnnxDetector {
         &self,
         rgb: &Array3<u8>,
         regions: &[(usize, usize, usize, usize)],
+        cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
         let mut inputs: Vec<RegionInput> = Vec::with_capacity(regions.len());
@@ -297,7 +300,7 @@ impl OnnxDetector {
                 continue;
             }
             let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
-            let (buf, letterbox) = yolo::preprocess(&crop, &self.config);
+            let (buf, letterbox) = yolo::preprocess(&crop, cfg);
             inputs.push(RegionInput {
                 x0,
                 y0,
@@ -311,12 +314,12 @@ impl OnnxDetector {
 
         // Batched inference in chunks; a model with a fixed batch axis falls
         // back to one region at a time rather than failing the image.
-        let chunk = self.config.region_batch.max(1);
+        let chunk = cfg.region_batch.max(1);
         let mut all: Vec<Detection> = Vec::new();
         let mut i = 0;
         while i < inputs.len() {
             let end = (i + chunk).min(inputs.len());
-            match self.run_region_batch(&inputs[i..end], w, h) {
+            match self.run_region_batch(&inputs[i..end], w, h, cfg) {
                 Ok(dets) => all.extend(dets),
                 Err(batch_err) => {
                     if end - i > 1 {
@@ -326,7 +329,7 @@ impl OnnxDetector {
                         );
                     }
                     for r in &inputs[i..end] {
-                        match self.run_region(rgb, r.x0, r.y0, region_w(r), region_h(r)) {
+                        match self.run_region(rgb, r.x0, r.y0, region_w(r), region_h(r), cfg) {
                             Ok(dets) => all.extend(dets),
                             Err(e) => {
                                 eprintln!("detector region failed ({},{}): {e}", r.x0, r.y0)
@@ -340,7 +343,7 @@ impl OnnxDetector {
 
         // A bird visible in several tiles appears multiple times: suppress the
         // duplicates across regions.
-        let merged = nms(all, self.config.iou_threshold);
+        let merged = nms(all, cfg.iou_threshold);
         Ok(dedupe_detections(merged, 0.5, 0.7))
     }
 
@@ -363,8 +366,13 @@ impl OnnxDetector {
             None
         };
 
+        // The "look harder" pass (tiles + edge proposals) uses a lower
+        // confidence threshold: small in-flight birds score weakly, and we have
+        // already decided these frames are worth the extra scrutiny.
+        let recall = self.config.recall_pass();
+
         match self.config.slice {
-            SliceMode::Off => self.detect_regions(rgb, &full),
+            SliceMode::Off => self.detect_regions(rgb, &full, &self.config),
             SliceMode::Always(cfg) => {
                 let mut regions = vec![(0usize, 0usize, w, h)];
                 self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
@@ -373,11 +381,11 @@ impl OnnxDetector {
                     rects.remove(0); // the full frame is already in
                 }
                 self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
-                self.detect_regions(rgb, &regions)
+                self.detect_regions(rgb, &regions, &recall)
             }
             SliceMode::Fallback(cfg) => {
                 // Phase 1: the cheap full-frame pass. Most frames resolve here.
-                let dets = self.detect_regions(rgb, &full)?;
+                let dets = self.detect_regions(rgb, &full, &self.config)?;
                 if !dets.is_empty() || cfg.grid <= 1 {
                     return Ok(dets);
                 }
@@ -394,7 +402,7 @@ impl OnnxDetector {
                 if regions.is_empty() {
                     return Ok(dets);
                 }
-                self.detect_regions(rgb, &regions)
+                self.detect_regions(rgb, &regions, &recall)
             }
         }
     }

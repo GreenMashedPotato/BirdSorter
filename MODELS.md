@@ -52,24 +52,45 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 
 ### Want more species?
 
-Three routes, cheapest first:
+Four routes, cheapest first. Measured on the same frame (an egret crop):
 
-1. **Open-vocabulary BioCLIP (no training at all).** `tools/export_bioclip.py`
-   turns BioCLIP (a CLIP model trained on the tree of life) into a `bird_species`
-   bundle for **any list of names you supply** - a national checklist, Indonesian
-   endemics, scientific names. The app detects `"kind": "clip"` in
-   `bird_species.meta.json` and runs the image tower + precomputed text
-   embeddings instead of a fixed head. Measured on a real frame: **Snowy Egret
-   0.947** (BioCLIP) vs 0.373 (the shipped ViT), at the same ~86 MB int8 size.
+| Model | Species | Egret result | Size |
+|---|---|---|---|
+| Shipped ViT-B/16 (526 classes) | 526 | Snowy Egret **0.373** | 85 MB |
+| **iNat21 ConvNeXt-Large** (the prototype's model) | **10,000** | **Ardea alba 0.977** | 857 MB |
+| BioCLIP (open vocabulary) | any list | Snowy Egret 0.947 | 86 MB |
+
+1. **iNaturalist 2021 - ConvNeXt-Large (the prototype's model).** This is what the
+   earlier Python project used, and why its bird ID was better: ~10,000 species
+   globally with strong Indonesian coverage. Exported here with
+   `tools/export_inat21.py` (labels are fetched automatically in the iNat21 class
+   order).
+
+   ```bash
+   python tools/export_inat21.py --out-dir dist-models/inat21
+   python tools/pack_models.py dist-models/inat21 dist-models/inat21.zip
+   # Models -> Install from file -> inat21.zip   (857 MB)
+   ```
+
+   Model: `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` (ConvNeXt-Large,
+   384 px, bicubic, crop_pct 0.95, CLIP mean/std). int8 export is blocked by an
+   ONNX Runtime shape-inference bug on this head, so it ships fp32 - the
+   prototype ran it fp32 too.
+
+2. **Open-vocabulary BioCLIP (no training).** `tools/export_bioclip.py` turns
+   BioCLIP (a CLIP model trained on the tree of life) into a bundle for **any
+   list of names you supply** - a national checklist, Indonesian endemics,
+   scientific names. Measured: Snowy Egret 0.947 (vs 0.373 for the shipped ViT)
+   at the same ~86 MB int8 size.
 
    ```bash
    # names.json = ["Snowy Egret", "Javan Kingfisher", ...] or {"id2label": {...}}
    python tools/export_bioclip.py --labels names.json --out-dir dist-models/bioclip
    python tools/pack_models.py dist-models/bioclip dist-models/bioclip.zip
-   # BirdSorter -> Models -> Install from file -> bioclip.zip
+   # Models -> Install from file -> bioclip.zip
    ```
 
-2. **Fine-tune on a bigger labelled set** (`tools/train_species.py`). Best
+3. **Fine-tune on a bigger labelled set** (`tools/train_species.py`). Best
    accuracy for the species you actually shoot.
    - **iNat-2021 Aves - ~1,486 species, global** (414k train / 15k test images).
      The best free coverage for South-East Asia; ~3x our current label count at
@@ -84,7 +105,7 @@ Three routes, cheapest first:
    python tools/pack_models.py models dist-models/bird_species.zip
    ```
 
-3. **BioCLIP 2 / 2.5** (2025-26, NeurIPS spotlight) - ViT-L/14 / ViT-H/14 over
+4. **BioCLIP 2 / 2.5** (2025-26, NeurIPS spotlight) - ViT-L/14 / ViT-H/14 over
    TreeOfLife-200M. Higher accuracy than v1 and it also does trait/habitat
    prediction, but ~4x the parameters; v1 (ViT-B/16) is the sweet spot for this
    app.
@@ -93,14 +114,15 @@ The shipped default stays a fixed-head **ViT-B/16, 526 species** (fast, small,
 predictable); the options above are drop-in replacements for the `bird_species`
 slot.
 
-| Option | Species | Notes |
-|---|---|---|
-| **BioCLIP v1** (shipped option) | **any list you provide** | Zero-shot; ~86 MB int8; best accuracy/size here |
-| **iNat-2021 Aves** (fine-tune) | ~1,486 | Global; needs a training run |
-| NABirds | 555 | North America only |
-| CUB-200-2011 | 200 | Small benchmark set |
-| BioCLIP 2 / 2.5 | 450k+ taxa | ViT-L/14, ViT-H/14; heavier |
-| SpeciesNet (Google, 2024) | ~2,000 | Camera-trap imagery; different domain |
+| Option | Species | Size | Notes |
+|---|---|---|---|
+| **iNat21 ConvNeXt-Large** (prototype's) | **10,000** | 857 MB | Strong Indonesian coverage; fp32 only |
+| **BioCLIP v1** | **any list you provide** | 86 MB | Zero-shot; best accuracy/size |
+| iNat-2021 Aves (fine-tune) | ~1,486 | ~85 MB | Global; needs a training run |
+| NABirds | 555 | ~85 MB | North America only |
+| CUB-200-2011 | 200 | ~85 MB | Small benchmark set |
+| BioCLIP 2 / 2.5 | 450k+ taxa | ~1 GB | ViT-L/14, ViT-H/14; heavier |
+| SpeciesNet (Google, 2024) | ~2,000 | ~100 MB | Camera-trap imagery; different domain |
 
 
 The detector ships inside the app and is copied into the model directory on first
