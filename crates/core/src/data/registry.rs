@@ -77,7 +77,7 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             files: vec!["bird_det_v1.onnx".into()],
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 10_700_000,
+            size_bytes: 10_600_000,
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into()],
         },

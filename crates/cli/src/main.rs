@@ -215,6 +215,7 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     let mut no_detect = false;
     let mut slice = SliceMode::Auto;
     let mut imgsz = YoloConfig::default().input_size;
+    let mut region_batch = YoloConfig::default().region_batch;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -246,6 +247,15 @@ fn cmd_probe(args: &[String]) -> ExitCode {
                     },
                 };
             }
+            "--region-batch" => {
+                region_batch = match it.next().and_then(|v| v.parse::<usize>().ok()) {
+                    Some(n) if n > 0 => n,
+                    _ => {
+                        eprintln!("probe: --region-batch needs a positive number");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            }
             other if other.starts_with("--") => {
                 eprintln!("probe: unknown option {other}");
                 return ExitCode::FAILURE;
@@ -255,11 +265,18 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     }
     let Some(file) = file else {
         eprintln!(
-            "probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--imgsz <n>] [--slice auto|off|on|<grid>]"
+            "probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--imgsz <n>] [--slice auto|off|on|<grid>] [--region-batch <n>]"
         );
         return ExitCode::FAILURE;
     };
-    match run_probe(&file, model.as_deref(), no_detect, slice, imgsz) {
+    match run_probe(
+        &file,
+        model.as_deref(),
+        no_detect,
+        slice,
+        imgsz,
+        region_batch,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("probe failed: {e}");
@@ -274,6 +291,7 @@ fn run_probe(
     no_detect: bool,
     slice: SliceMode,
     imgsz: u32,
+    region_batch: usize,
 ) -> birdsorter_core::Result<()> {
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(2400))),
@@ -291,17 +309,19 @@ fn run_probe(
             YoloConfig {
                 input_size: imgsz,
                 slice,
+                region_batch,
                 ..YoloConfig::default()
             },
-            DevicePreference::Auto,
+            DevicePreference::from_setting(&DetectionSettings::load_default().device),
         )?)
     } else if let Some(d) = OnnxDetector::load_default(
         YoloConfig {
             input_size: imgsz,
             slice,
+            region_batch,
             ..YoloConfig::default()
         },
-        DevicePreference::Auto,
+        DevicePreference::from_setting(&DetectionSettings::load_default().device),
     )? {
         Box::new(d)
     } else {
@@ -343,7 +363,9 @@ fn run_probe(
     );
 
     // Species identification of the first bird box (default model).
-    match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+    match OnnxSpeciesClassifier::load_default(DevicePreference::from_setting(
+        &DetectionSettings::load_default().device,
+    )) {
         Ok(Some(classifier)) => {
             if let Some(bird) = dets.iter().find(|d| d.class_name == "bird") {
                 if let Some(crop) =
@@ -838,8 +860,12 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         updated,
         untouched,
         seen,
+        restored,
     } = library::scan_folder(&conn, folder_id)?;
-    println!("scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged)");
+    println!(
+        "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
+         {restored} restored)"
+    );
 
     // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {
@@ -850,16 +876,21 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         .map(str::trim)
         .filter(|m| !m.is_empty())
     {
-        println!("using ONNX detector: {m}");
+        let det = DetectionSettings::load_default();
+        let device = DevicePreference::from_setting(&det.device);
+        println!("using ONNX detector: {m} (device: {})", det.device);
         Box::new(OnnxDetector::from_file(
             Path::new(m),
-            DetectionSettings::load_default().yolo_config(),
-            DevicePreference::Auto,
+            det.yolo_config(),
+            device,
         )?)
-    } else if let Some(d) = OnnxDetector::load_default(
-        DetectionSettings::load_default().yolo_config(),
-        DevicePreference::Auto,
-    )? {
+    } else if let Some(d) = {
+        let det = DetectionSettings::load_default();
+        OnnxDetector::load_default(
+            det.yolo_config(),
+            DevicePreference::from_setting(&det.device),
+        )?
+    } {
         println!("using installed detector (model manager)");
         Box::new(d)
     } else {
@@ -868,6 +899,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     };
 
     // Species identification (optional): explicit flags, else the default model.
+    let species_device = DevicePreference::from_setting(&DetectionSettings::load_default().device);
     let species: Option<OnnxSpeciesClassifier> = if args.no_detect {
         None
     } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
@@ -875,10 +907,10 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             Path::new(m),
             Path::new(l),
             SpeciesPreprocess::default(),
-            DevicePreference::Auto,
+            species_device,
         )?)
     } else {
-        match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+        match OnnxSpeciesClassifier::load_default(species_device) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("warning: species model could not be loaded: {e}");

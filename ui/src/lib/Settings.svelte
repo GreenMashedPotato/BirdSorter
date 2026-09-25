@@ -174,12 +174,31 @@
             step="1"
             value={localDetection.slice_grid}
             oninput={(e) =>
-              (localDetection = { slice_grid: Number(e.currentTarget.value) })}
+              (localDetection = { ...localDetection, slice_grid: Number(e.currentTarget.value) })}
           />
           <span class="val">{sliceGridLabel(localDetection.slice_grid)}</span>
         </div>
         <p class="status">
-          0 = off · 1 = only when a GPU is used (CPU stays fast) · 4–6 = most thorough, slowest.
+          0 = off · 1 = only when a GPU is used · 4–6 = most thorough, slowest. Tiles are batched
+          into one network call, so on a GPU the cost is close to off.
+        </p>
+
+        <div class="row">
+          <label for="device">Compute device</label>
+          <select
+            id="device"
+            value={localDetection.device}
+            onchange={(e) =>
+              (localDetection = { ...localDetection, device: e.currentTarget.value })}
+          >
+            <option value="cpu">CPU — fastest for these models</option>
+            <option value="auto">Auto — GPU when available</option>
+            <option value="gpu">GPU — force</option>
+          </select>
+        </div>
+        <p class="status">
+          The detector and species models are small, so CPU usually beats a GPU provider
+          (measured ~1.7× faster for the detector). Switch to Auto/GPU for larger models.
         </p>
       </section>
 

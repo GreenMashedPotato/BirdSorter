@@ -117,11 +117,18 @@ pub struct DetectionSettings {
     /// `0` off, `1` auto (only when a GPU execution provider is active),
     /// `n > 1` an `n x n` overlapping tile grid.
     pub slice_grid: u32,
+    /// Compute device for the ONNX models: `"cpu"` (default), `"auto"` or
+    /// `"gpu"`. CPU wins for these small models; GPU providers pay off for
+    /// larger networks.
+    pub device: String,
 }
 
 impl Default for DetectionSettings {
     fn default() -> Self {
-        Self { slice_grid: 1 }
+        Self {
+            slice_grid: 1,
+            device: "cpu".to_string(),
+        }
     }
 }
 
@@ -226,7 +233,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("detection_settings.json");
         assert_eq!(DetectionSettings::default().slice_grid, 1); // auto
-        let s = DetectionSettings { slice_grid: 6 };
+        assert_eq!(DetectionSettings::default().device, "cpu");
+        let s = DetectionSettings {
+            slice_grid: 6,
+            device: "auto".into(),
+        };
         s.save(&p).unwrap();
         assert_eq!(DetectionSettings::load(&p), s);
         // A missing file falls back to defaults rather than failing.
@@ -234,5 +245,10 @@ mod tests {
             DetectionSettings::load(dir.path().join("missing.json")),
             DetectionSettings::default()
         );
+        // Older files without `device` still parse (serde default fills it).
+        std::fs::write(&p, r#"{"slice_grid":2}"#).unwrap();
+        let partial = DetectionSettings::load(&p);
+        assert_eq!(partial.slice_grid, 2);
+        assert_eq!(partial.device, "cpu");
     }
 }

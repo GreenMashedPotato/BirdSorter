@@ -54,6 +54,8 @@ struct AppState {
     db_path: PathBuf,
     cache: ThumbCache,
     cancel: Mutex<Option<CancelToken>>,
+    /// Separate token so a long scan can be cancelled independently.
+    scan_cancel: Mutex<Option<CancelToken>>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -86,13 +88,22 @@ struct FolderDto {
     last_scanned_at: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ScanReportDto {
     seen: usize,
     added: usize,
     updated: usize,
     untouched: usize,
+    restored: usize,
+}
+
+/// Scan progress: `done` of `total` photos (hashing is the slow part).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScanProgressDto {
+    done: usize,
+    total: usize,
 }
 
 #[derive(Serialize)]
@@ -177,17 +188,6 @@ fn list_folders_impl(db_path: &Path) -> Result<Vec<FolderDto>, String> {
 fn add_folder_impl(db_path: &Path, path: &str) -> Result<i64, String> {
     let conn = open(db_path)?;
     library::add_folder(&conn, Path::new(path)).map_err(err)
-}
-
-fn scan_folder_impl(db_path: &Path, folder: i64) -> Result<ScanReportDto, String> {
-    let conn = open(db_path)?;
-    let r = library::scan_folder(&conn, folder).map_err(err)?;
-    Ok(ScanReportDto {
-        seen: r.seen,
-        added: r.added,
-        updated: r.updated,
-        untouched: r.untouched,
-    })
 }
 
 fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String> {
@@ -380,10 +380,84 @@ async fn add_folder(state: State<'_, AppState>, path: String) -> Result<i64, Str
     blocking(move || add_folder_impl(&db_path, &path)).await
 }
 
+/// Kick off a scan on a background thread, streaming progress as events.
+///
+/// A first scan hashes every photo, which for a large shoot is minutes of work,
+/// so this never blocks the UI and can be cancelled.
 #[tauri::command]
-async fn scan_folder(state: State<'_, AppState>, folder: i64) -> Result<ScanReportDto, String> {
+fn scan_folder(app: AppHandle, state: State<AppState>, folder: i64) -> Result<(), String> {
     let db_path = state.db_path.clone();
-    blocking(move || scan_folder_impl(&db_path, folder)).await
+    let cancel = CancelToken::new();
+    *state.scan_cancel.lock().map_err(err)? = Some(cancel.clone());
+
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_scan(&app, &db_path, folder, &cancel)
+        }));
+        match result {
+            Ok(Ok(report)) => {
+                let _ = app.emit("scan-done", report);
+            }
+            Ok(Err(message)) => {
+                let _ = app.emit("scan-error", message);
+            }
+            Err(_) => {
+                // A panic anywhere in the scan must still clear the UI.
+                let _ = app.emit(
+                    "scan-error",
+                    "scan crashed (see the console); the library was left consistent".to_string(),
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+fn run_scan(
+    app: &AppHandle,
+    db_path: &Path,
+    folder: i64,
+    cancel: &CancelToken,
+) -> Result<ScanReportDto, String> {
+    let conn = open(db_path)?;
+    // Throttle events: a progress event per file is thousands of IPC calls.
+    let mut last_emit = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    let mut last_done = 0usize;
+    let handle = app.clone();
+
+    let report = library::scan_folder_streaming(
+        &conn,
+        folder,
+        &|| cancel.is_cancelled(),
+        &mut |done, total| {
+            let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
+            if due || done == total || done == 0 {
+                last_emit = std::time::Instant::now();
+                last_done = done;
+                let _ = handle.emit("scan-progress", ScanProgressDto { done, total });
+            }
+        },
+    )
+    .map_err(err)?;
+    let _ = last_done;
+
+    Ok(ScanReportDto {
+        seen: report.seen,
+        added: report.added,
+        updated: report.updated,
+        untouched: report.untouched,
+        restored: report.restored,
+    })
+}
+
+#[tauri::command]
+fn cancel_scan(state: State<AppState>) -> Result<(), String> {
+    if let Some(token) = state.scan_cancel.lock().map_err(err)?.take() {
+        token.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -567,12 +641,23 @@ fn analyze_folder(
     *state.cancel.lock().map_err(err)? = Some(cancel.clone());
 
     std::thread::spawn(move || {
-        match run_analysis(&app, &db_path, folder, model.as_deref(), &cancel) {
-            Ok(()) => {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_analysis(&app, &db_path, folder, model.as_deref(), &cancel)
+        }));
+        match outcome {
+            Ok(Ok(())) => {
                 let _ = app.emit("analysis-done", ());
             }
-            Err(message) => {
+            Ok(Err(message)) => {
                 let _ = app.emit("analysis-error", message);
+            }
+            Err(_) => {
+                // A panic in a decoder or the runtime must not leave the UI
+                // stuck on "analysing" forever.
+                let _ = app.emit(
+                    "analysis-error",
+                    "analysis crashed (see the console); re-run to continue".to_string(),
+                );
             }
         }
     });
@@ -593,20 +678,21 @@ fn run_analysis(
         Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
     ]);
 
-    let yolo = DetectionSettings::load_default().yolo_config();
+    let det = DetectionSettings::load_default();
+    let yolo = det.yolo_config();
+    let device = DevicePreference::from_setting(&det.device);
     let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => Box::new(
-            OnnxDetector::from_file(Path::new(m), yolo.clone(), DevicePreference::Auto)
-                .map_err(err)?,
-        ),
-        None => match OnnxDetector::load_default(yolo, DevicePreference::Auto).map_err(err)? {
+        Some(m) => {
+            Box::new(OnnxDetector::from_file(Path::new(m), yolo.clone(), device).map_err(err)?)
+        }
+        None => match OnnxDetector::load_default(yolo, device).map_err(err)? {
             Some(d) => Box::new(d),
             None => Box::new(SaliencyDetector::default()),
         },
     };
 
     let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
-    let species = match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+    let species = match OnnxSpeciesClassifier::load_default(device) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("species model could not be loaded: {e}");
@@ -938,11 +1024,13 @@ fn main() {
             db_path,
             cache,
             cancel: Mutex::new(None),
+            scan_cancel: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             list_folders,
             add_folder,
             scan_folder,
+            cancel_scan,
             query_files,
             thumbnail,
             preview_image,

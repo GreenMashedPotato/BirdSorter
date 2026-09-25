@@ -123,6 +123,9 @@ pub struct YoloConfig {
     pub pad_value: u8,
     /// Sliced inference mode.
     pub slice: SliceMode,
+    /// Regions (full frame + tiles) pushed through the model in one call.
+    /// Requires a model with a dynamic batch axis; falls back to one at a time.
+    pub region_batch: usize,
 }
 
 impl Default for YoloConfig {
@@ -135,6 +138,7 @@ impl Default for YoloConfig {
             max_detections: 300,
             pad_value: 114,
             slice: SliceMode::Auto,
+            region_batch: 16,
         }
     }
 }
@@ -305,7 +309,37 @@ pub fn decode(
     if shape.len() != 3 || shape[0] != 1 {
         return Vec::new();
     }
+    decode_flat(raw, shape[1], shape[2], letterbox, cfg)
+}
+
+/// Decode item `item` from a **batched** output `[batch, d1, d2]`.
+pub fn decode_batched(
+    raw: &[f32],
+    shape: &[usize],
+    item: usize,
+    letterbox: &Letterbox,
+    cfg: &YoloConfig,
+) -> Vec<Detection> {
+    if shape.len() != 3 || item >= shape[0] {
+        return Vec::new();
+    }
     let (d1, d2) = (shape[1], shape[2]);
+    let per = d1 * d2;
+    let start = item * per;
+    if raw.len() < start + per {
+        return Vec::new();
+    }
+    decode_flat(&raw[start..start + per], d1, d2, letterbox, cfg)
+}
+
+/// Decode one `[d1, d2]` YOLO output matrix.
+fn decode_flat(
+    buf: &[f32],
+    d1: usize,
+    d2: usize,
+    letterbox: &Letterbox,
+    cfg: &YoloConfig,
+) -> Vec<Detection> {
     // Layout is the smaller dim = attributes (4 + classes).
     let (num_attrs, num_anchors, transposed) = if d1 <= d2 {
         (d1, d2, false)
@@ -313,28 +347,37 @@ pub fn decode(
         (d2, d1, true)
     };
     let num_classes = num_attrs.saturating_sub(4);
-    if num_classes == 0 || raw.len() < d1 * d2 {
+    if num_classes == 0 || buf.len() < d1 * d2 {
         return Vec::new();
     }
 
     let at = |anchor: usize, attr: usize| -> f32 {
         if transposed {
-            raw[anchor * num_attrs + attr]
+            buf[anchor * num_attrs + attr]
         } else {
-            raw[attr * num_anchors + anchor]
+            buf[attr * num_anchors + anchor]
         }
     };
+
+    // Only the filtered classes can ever be picked, so precompute the list
+    // (avoids a `contains` scan per anchor per class).
+    let classes: Vec<usize> = match &cfg.class_filter {
+        Some(filter) => filter
+            .iter()
+            .copied()
+            .filter(|&c| c < num_classes)
+            .collect(),
+        None => (0..num_classes).collect(),
+    };
+    if classes.is_empty() {
+        return Vec::new();
+    }
 
     let mut dets: Vec<Detection> = Vec::new();
     for i in 0..num_anchors {
         let mut best_score = cfg.conf_threshold;
         let mut best_cls = usize::MAX;
-        for cls in 0..num_classes {
-            if let Some(filter) = &cfg.class_filter {
-                if !filter.contains(&cls) {
-                    continue;
-                }
-            }
+        for &cls in &classes {
             let score = at(i, 4 + cls);
             if score > best_score {
                 best_score = score;

@@ -134,6 +134,30 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Scan/analysis are no longer opaque**: scanning runs on a background thread
+  with a **progress bar** (`done/total`, streamed), an immediate "scanning…"
+  status, and a **Stop** button (a first scan of a big shoot hashes every file —
+  e.g. 3537 photos / 76 GB ≈ 3 min at ~410 MB/s). Analysis streams into the same
+  bar. Previously a multi-minute scan showed nothing, which looked like a hang.
+- **A stall can no longer be silent**: every decoder call and per-image analysis
+  runs behind a panic boundary, and the scan/analysis threads are wrapped so a
+  panic always emits an error event (clearing the UI) instead of leaving
+  "analysing…" forever. Restored-from-trash files are also re-linked on Rescan —
+  `reconcile_trashed` was written but never called from the Rust app.
+- **Detector is batched**: sliced inference makes ~17 regions per image; they are
+  now stacked into one `[N,3,640,640]` call (`region_batch`, default 16) with a
+  per-region fallback for fixed-batch models. The bundled detector was re-exported
+  with `dynamic=True`. Measured: tiling went from a large penalty to **free**
+  on DirectML (slice off 15.0 s vs 4×4 tiling 15.2 s for 40 frames).
+- **Compute device is now a setting** (Settings ▸ Distant birds), default **CPU**.
+  Measured on an i7-14700F + RTX 5060 Ti: the 640×640 YOLO11n runs **8.7 s vs
+  15.0 s** for 40 frames on CPU vs DirectML, so the GPU provider was making bulk
+  analysis ~1.7× slower. Auto/GPU remain available for larger models.
+- **Model provenance documented** in `MODELS.md` (exact upstream URLs, hashes,
+  export flags) plus a survey of **larger bird datasets**: iNat-2021 Aves
+  (~1,486 species), NABirds (555), CUB-200 (200), and BioCLIP 2/2.5 (450k+ taxa,
+  vision-language, zero-shot).
+
 - **int8 quantization** of the species model: 345 MB → **85 MB**, top-1
   unchanged (Snowy Egret 0.373 vs 0.385). Quantized only MatMul weights, since
   ORT's CPU EP cannot run `ConvInteger` (the patch-embed Conv is left fp32).
