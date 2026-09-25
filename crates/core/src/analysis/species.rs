@@ -67,59 +67,31 @@ pub struct SpeciesPreprocess {
     /// Per-channel mean (applied after scaling to `[0, 1]`).
     pub mean: [f32; 3],
     pub std: [f32; 3],
-    /// `"clip"` for an open-vocabulary CLIP-style model (see
-    /// [`crate::runtime::OnnxClipClassifier`]); anything else is a plain
-    /// image classifier whose ONNX output *is* the logits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    /// CLIP only: file holding the `[N, D]` f32 text embeddings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_file: Option<String>,
-    /// CLIP only: sidecar JSON with `{"rows","cols","scale"}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_meta: Option<String>,
-    /// CLIP only: the model's logit scale (`logit_scale.exp()`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scale: Option<f32>,
-    /// Resize layout: `"squash"` (default) or `"center"` (CLIP-style
-    /// shortest-side resize + centre crop).
+    /// Resize layout: `"squash"` (default) or `"center"` (shortest-side resize +
+    /// centre crop, the ImageNet/timm convention the iNat21 model wants).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resize: Option<String>,
     /// Resampling kernel: `"nearest"` (default), `"triangle"` or `"bicubic"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     /// For `resize: "center"`: resize the shortest side to `size / crop_pct`
-    /// before centre-cropping to `size` (the ImageNet/timm convention).
+    /// before centre-cropping to `size`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop_pct: Option<f32>,
 }
 
 impl Default for SpeciesPreprocess {
     fn default() -> Self {
-        // Matches the bundled ViT's image processor exactly (224 px, mean/std
-        // 0.5). CLIP models override all of this from their meta sidecar.
+        // Matches the iNat21 ConvNeXt-Large bundle (384 px, CLIP mean/std,
+        // shortest-side resize + 0.95 centre crop, bicubic).
         Self {
-            size: 224,
-            mean: [0.5, 0.5, 0.5],
-            std: [0.5, 0.5, 0.5],
-            kind: None,
-            text_file: None,
-            text_meta: None,
-            scale: None,
-            resize: None,
-            filter: None,
-            crop_pct: None,
+            size: 384,
+            mean: [0.48145466, 0.4578275, 0.40821073],
+            std: [0.26862955, 0.2613026, 0.2757771],
+            resize: Some("center".to_string()),
+            filter: Some("bicubic".to_string()),
+            crop_pct: Some(0.95),
         }
-    }
-}
-
-impl SpeciesPreprocess {
-    /// True when this describes an open-vocabulary CLIP classifier.
-    pub fn is_clip(&self) -> bool {
-        self.kind
-            .as_deref()
-            .map(|k| k.eq_ignore_ascii_case("clip"))
-            .unwrap_or(false)
     }
 }
 
@@ -144,10 +116,9 @@ pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {
 /// Resize a crop to `size x size` and normalise to NCHW `f32`.
 ///
 /// Two layouts are supported, selected by [`SpeciesPreprocess::resize`]:
-/// * `"squash"` (default) — stretch to a square, which is what the bundled
-///   EfficientNet/ViT models were trained with;
-/// * `"center"` — resize the *shortest* side to `size` and centre-crop, which is
-///   what CLIP/BioCLIP expect (preserves aspect ratio).
+/// * `"squash"` — stretch to a square (older models);
+/// * `"center"` — resize the *shortest* side to `size / crop_pct` and
+///   centre-crop, which is what the iNat21 ConvNeXt model expects.
 ///
 /// [`SpeciesPreprocess::filter`] picks the resampling kernel (`nearest`,
 /// `triangle` or `bicubic`).
@@ -377,15 +348,10 @@ mod tests {
     fn center_crop_preprocessing_keeps_aspect_ratio() {
         let cfg = SpeciesPreprocess {
             size: 224,
-            mean: [0.5, 0.5, 0.5],
-            std: [0.5, 0.5, 0.5],
-            kind: Some("clip".into()),
-            text_file: None,
-            text_meta: None,
-            scale: None,
             resize: Some("center".into()),
             filter: Some("bicubic".into()),
             crop_pct: Some(0.95),
+            ..SpeciesPreprocess::default()
         };
         // A tall crop, a wide crop and a square must all produce the same
         // [3, s, s] buffer without panicking.

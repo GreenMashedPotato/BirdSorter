@@ -154,38 +154,34 @@ detection → sharpness verdict → species ID → grid/review UI).
   15.0 s** for 40 frames on CPU vs DirectML, so the GPU provider was making bulk
   analysis ~1.7× slower. Auto/GPU remain available for larger models.
 - **Model provenance documented** in `MODELS.md` (exact upstream URLs, hashes,
-  export flags) plus a survey of **larger bird datasets**: iNat-2021 Aves
-  (~1,486 species), NABirds (555), CUB-200 (200), and BioCLIP 2/2.5 (450k+ taxa,
-  vision-language, zero-shot).
+  export flags).
+- **The bird-ID model is iNaturalist 2021 ConvNeXt-Large (10,000 species)**, with
+  English common names added by `tools/enrich_common_names.py` (one Wikidata
+  query; 1,461 of 10,000 labels matched).
 - **Two-phase ("smart") detection is the default**: phase 1 runs the full frame;
   only when it finds *nothing* does phase 2 retry on the tile grid. Because tiles
   are batched, this is free where it matters — measured 8.1-8.7 s vs 8.6-8.7 s
   for 40 frames (off vs smart), while the distant raptor that used to be missed
   now resolves at 0.88 -> `uncertain`. Settings ▸ Distant birds: Off / Smart /
   Always + a 2-12 tile grid.
-- **BioCLIP (open-vocabulary species ID) works end-to-end**: `tools/export_bioclip.py`
-  exports the ViT-B/16 image tower (fp32 346 MB -> **int8 86 MB**) plus text
-  embeddings for *any* label list; the app auto-detects `"kind": "clip"` in
-  `bird_species.meta.json` and runs `runtime::OnnxClipClassifier`. Measured:
-  **Snowy Egret 0.947** vs 0.373 for the shipped ViT. This is the path to
-  Indonesian/regional species without training.
-- **Species preprocessing is now model-driven**: `meta.json` can select
-  CLIP-style shortest-side resize + centre-crop and bicubic filtering (the
-  difference between 0.011 and 0.947 on the egret).
+- **Species preprocessing is model-driven**: `meta.json` selects the resize
+  layout (squash / shortest-side + crop_pct), kernel (nearest/triangle/bicubic),
+  size, mean and std — currently tuned for the iNat21 model (384 px, bicubic,
+  0.95 crop, CLIP mean/std).
 - **Edge-based "bird in flight" detection** (`analysis::edges`): a downscaled
   Sobel edge map proposes small subjects in otherwise-empty frames (crops fed to
   the detector at full resolution, which catches distant/flying birds the whole
   frame misses) and lets the detector **skip tiles that are uniform sky/water**.
   Unit-tested on synthetic sky/blob/busy-scene images. This is the empty-sky
   performance win: sky shots scan far fewer tiles.
-- **The prototype's bird-ID model is identified and available**:
-  `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` - **ConvNeXt-Large fine-tuned
-  on iNaturalist 2021 (10,000 species, global, strong Indonesian coverage)**.
-  `tools/export_inat21.py` exports it (labels auto-fetched from the TFDS iNat21
-  label file in the correct class order). Measured on a real egret crop:
-  **`Ardea alba` 0.977** vs **Snowy Egret 0.373** for the shipped 526-class ViT.
-  Ships fp32 (~857 MB; ORT's int8 quantiser rejects this head). Bundle:
-  `dist-models/inat21.zip`.
+- **The bird-ID model is now iNaturalist 2021 ConvNeXt-Large (10,000 species)**,
+  installed in the model directory and used by the app. The 526-class ViT and
+  the BioCLIP option were **dropped** (the ViT is backed up under
+  `data/models_backup_vit/`). `tools/export_inat21.py` rebuilds the bundle;
+  `tools/enrich_common_names.py` adds English common names (1,461 of 10,000
+  labels) so `Grey Heron` finds `Ardea cinerea (Grey Heron)`. The species
+  preprocessing defaults now match this model (384 px, CLIP mean/std, bicubic,
+  0.95 centre crop), and the `SpeciesPreprocess` CLIP-specific fields are gone.
 - **Review-view fixes**: the species box now has an **autocomplete** over every
   name the installed model knows (`runtime::installed_species_labels`, 10,000 for
   iNat21; a Tauri `species_labels` command; ranked prefix-then-substring matches,

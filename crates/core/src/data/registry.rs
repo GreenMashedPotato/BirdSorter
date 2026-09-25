@@ -83,11 +83,14 @@ pub fn builtin_models() -> Vec<ModelSpec> {
         },
         ModelSpec {
             key: "bird_species".into(),
-            display_name: "Bird species (ViT, 526 classes, int8)".into(),
-            description: "ViT-B/16 fine-tuned on 526 bird species, int8 (~85 MB). \
-                          Shipped as a zip: model + labels + preprocessing meta."
+            display_name: "Bird species (iNaturalist 2021, 10,000 species)".into(),
+            description: "THE bird-ID model: ConvNeXt-Large fine-tuned on iNaturalist 2021 - \
+                          ~10,000 species globally, with strong South-East Asian / Indonesian \
+                          coverage (bulbuls, sunbirds, kingfishers, drongos, swifts, raptors). \
+                          Build the bundle with tools/export_inat21.py. ~817 MB fp32 (ONNX \
+                          Runtime's int8 quantiser rejects this head)."
                 .into(),
-            artifact: "bird_species.zip".into(),
+            artifact: "bird_species_inat21.zip".into(),
             unpack: true,
             files: vec![
                 "bird_species.onnx".into(),
@@ -96,13 +99,13 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             ],
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 85_000_000,
+            size_bytes: 818_000_000,
             tier: Tier::T2,
             tags: vec![
                 "species".into(),
                 "birds".into(),
-                "vit".into(),
-                "int8".into(),
+                "inat21".into(),
+                "global".into(),
             ],
         },
         ModelSpec {
@@ -137,63 +140,6 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             size_bytes: 12_000_000,
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into(), "planned".into()],
-        },
-        ModelSpec {
-            key: "bird_species_inat21".into(),
-            display_name: "Bird species (iNaturalist 2021, ConvNeXt-Large, 10k species)".into(),
-            description: "The model the original Python prototype used: ConvNeXt-Large fine-tuned \
-                          on iNaturalist 2021 - ~10,000 species globally, with strong South-East \
-                          Asian / Indonesian coverage (bulbuls, sunbirds, kingfishers, drongos, \
-                          swifts, raptors). Build it with tools/export_inat21.py. ~857 MB fp32 \
-                          (ORT's int8 quantiser cannot handle this head); the shipped 526-class \
-                          ViT stays the lightweight default."
-                .into(),
-            artifact: "bird_species_inat21.zip".into(),
-            unpack: true,
-            files: vec![
-                "bird_species.onnx".into(),
-                "bird_species.labels.json".into(),
-                "bird_species.meta.json".into(),
-            ],
-            url: String::new(),
-            sha256: String::new(),
-            size_bytes: 858_000_000,
-            tier: Tier::T2,
-            tags: vec![
-                "species".into(),
-                "birds".into(),
-                "inat21".into(),
-                "global".into(),
-            ],
-        },
-        ModelSpec {
-            key: "bird_species_bioclip".into(),
-            display_name: "Bird species (BioCLIP, open vocabulary)".into(),
-            description: "Open-vocabulary species ID: image embeddings are compared against \
-                          text embeddings, so the label list is whatever the bundle was built \
-                          with (e.g. a regional checklist) - no retraining. Build one with \
-                          tools/export_bioclip.py --labels <names.json>. int8 image encoder \
-                          (~86 MB) + text embeddings."
-                .into(),
-            artifact: "bird_species_bioclip.zip".into(),
-            unpack: true,
-            files: vec![
-                "bird_species.onnx".into(),
-                "bird_species.labels.json".into(),
-                "bird_species.meta.json".into(),
-                "bioclip_text.bin".into(),
-                "bioclip_text.json".into(),
-            ],
-            url: String::new(),
-            sha256: String::new(),
-            size_bytes: 87_000_000,
-            tier: Tier::T2,
-            tags: vec![
-                "species".into(),
-                "birds".into(),
-                "clip".into(),
-                "open-vocabulary".into(),
-            ],
         },
     ]
 }
