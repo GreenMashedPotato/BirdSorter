@@ -345,14 +345,14 @@
 
   /// Stage pointerdown: either start drawing a box or start panning.
   function onStageDown(e: PointerEvent) {
-    if (!stageEl) return;
-    if ((e.target as HTMLElement | null)?.closest?.(".box")) return;
+    if (!stageEl || e.button !== 0) return;
     if (drawing) {
       const p = localPoint(e);
       dragRect = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
       stageEl.setPointerCapture(e.pointerId);
       return;
     }
+    if ((e.target as HTMLElement | null)?.closest?.(".box")) return;
     onPanStart(e);
   }
 
@@ -402,8 +402,8 @@
       detail = await setSubjectBox(reviewFile, bx, by, bw, bh);
       selectedBox = 0;
       await refreshFiles();
-      status = "drawn box applied";
-      drawing = false;
+      // Stay in drawing mode so several birds can be added in a row.
+      status = "box added — draw another, or click Draw box to stop";
     } catch (e) {
       status = `error: ${e}`;
     } finally {
@@ -1365,7 +1365,12 @@
         <button onclick={() => nav(1)}>J ›</button>
         <button
           class:active={drawing}
-          onclick={() => (drawing = !drawing)}
+          onclick={() => {
+            drawing = !drawing;
+            status = drawing
+              ? "draw on the image to add a box — existing birds stay"
+              : "";
+          }}
           title="Drag on the image to mark the bird yourself"
         >
           {drawing ? "Drawing… (click to stop)" : "Draw box"}

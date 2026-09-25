@@ -385,10 +385,22 @@ fn analyze_one(
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
 ) -> Result<AnalysisRecord> {
-    let all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
+    let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
+    // A box the user drew by hand is the subject even if a detected bird is
+    // sharper; otherwise the sharpest detection wins.
     let (features, best_bbox, subject_class) = if dets.is_empty() {
         (compute_features(rgb, None), None, None)
+    } else if let Some(det) = dets.iter().find(|d| d.class_name == "manual") {
+        let subject = Subject {
+            bbox: det.bbox,
+            area_px: det.area_px,
+        };
+        (
+            compute_features(rgb, Some(subject)),
+            Some(det.bbox),
+            Some(det.class_name.clone()),
+        )
     } else {
         let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
         for det in &dets {
@@ -425,7 +437,8 @@ fn analyze_one(
                 .iter()
                 .enumerate()
                 .filter(|(_, d)| {
-                    d.class_name == "bird"
+                    // Detected birds and boxes the user drew are both subjects.
+                    matches!(d.class_name.as_str(), "bird" | "manual")
                         && d.bbox.w >= MIN_SPECIES_CROP
                         && d.bbox.h >= MIN_SPECIES_CROP
                 })
@@ -473,6 +486,22 @@ fn analyze_one(
         }
     }
 
+    // `subject_species` is parsed positionally against the stored boxes, so put
+    // the chosen subject first in *both* lists (the storage layer also stores
+    // best-first).
+    if let Some(best) = best_bbox {
+        if let Some(pos) = all_bboxes.iter().position(|b| *b == best) {
+            if pos != 0 {
+                let b = all_bboxes.remove(pos);
+                all_bboxes.insert(0, b);
+                if pos < subject_species.len() {
+                    let s = subject_species.remove(pos);
+                    subject_species.insert(0, s);
+                }
+            }
+        }
+    }
+
     Ok(AnalysisRecord {
         file_id,
         features,
@@ -489,11 +518,11 @@ fn analyze_one(
     })
 }
 
-/// Decode one file and (re)analyse it, optionally forcing the subject box (a
-/// rectangle the user drew) and/or dropping detections the user removed.
+/// Decode one file and (re)analyse it, optionally adding the subject box the
+/// user drew and/or dropping boxes the user removed.
 ///
-/// Used by the review view's box editing: a drawn box becomes the subject, and
-/// removing a box re-evaluates the image without it.
+/// The box set is read back from storage and edited, rather than re-detected,
+/// so adding a box keeps every other bird (and earlier removals stay removed).
 #[allow(clippy::too_many_arguments)]
 pub fn analyze_file_with(
     conn: &Connection,
@@ -507,25 +536,88 @@ pub fn analyze_file_with(
 ) -> Result<AnalysisRecord> {
     let img = decoder.decode(&file.absolute_path)?;
     let (h, w, _) = img.rgb.dim();
+    let stored = stored_detections(conn, file.file.id)?;
+
     let dets: Vec<Detection> = if let Some(box_) = manual_box {
         let Some(clamped) = box_.clamp_to(w as i32, h as i32) else {
             return Err(CoreError::Other(
                 "the drawn box is outside the image".into(),
             ));
         };
-        vec![Detection::new(clamped, "manual", 1.0)]
+        // Keep the subjects already found; only drop the ones the drawn box
+        // covers, so drawing over a bird replaces it instead of duplicating.
+        let mut dets: Vec<Detection> = stored
+            .iter()
+            .filter(|d| !exclude.contains(&d.bbox) && !boxes_overlap(&d.bbox, &clamped))
+            .cloned()
+            .collect();
+        dets.push(Detection::new(clamped, "manual", 1.0));
+        dets
+    } else if !exclude.is_empty() {
+        stored
+            .iter()
+            .filter(|d| !exclude.contains(&d.bbox))
+            .cloned()
+            .collect()
     } else {
+        // Plain re-identify: refresh detection, but keep the user's own boxes.
         let mut dets = detector
             .detect_batch(&[&img.rgb])?
             .into_iter()
             .next()
             .unwrap_or_default();
-        dets.retain(|d| !exclude.contains(&d.bbox));
+        for d in stored.iter().filter(|d| d.class_name == "manual") {
+            if !dets.iter().any(|e| boxes_overlap(&e.bbox, &d.bbox)) {
+                dets.push(d.clone());
+            }
+        }
         dets
     };
     let record = analyze_one(file.file.id, &img.rgb, dets, scorer, species)?;
     upsert_analysis(conn, &record)?;
     Ok(record)
+}
+
+/// The boxes currently stored for a file, with their classes (detected `bird`
+/// vs. user-drawn `manual`) recovered from the parallel species entries.
+fn stored_detections(conn: &Connection, file_id: i64) -> Result<Vec<Detection>> {
+    let Some(row) = crate::data::analysis_store::get_analysis(conn, file_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(row
+        .bboxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let class = row
+                .subject_species
+                .get(i)
+                .and_then(|s| s.class.clone())
+                .unwrap_or_else(|| "bird".to_string());
+            Detection::new(*b, class, 1.0)
+        })
+        .collect())
+}
+
+/// True when two boxes describe the same subject: high IoU, or the second box
+/// mostly covers the first (used to avoid duplicating a subject the user
+/// redrew over).
+fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
+    let ix0 = a.x.max(b.x);
+    let iy0 = a.y.max(b.y);
+    let ix1 = a.x1().min(b.x1());
+    let iy1 = a.y1().min(b.y1());
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return false;
+    }
+    let inter = i64::from(ix1 - ix0) * i64::from(iy1 - iy0);
+    let union = a.area() + b.area() - inter;
+    if union <= 0 {
+        return false;
+    }
+    let iou = inter as f64 / union as f64;
+    let covered = inter as f64 / a.area().max(1) as f64;
+    iou >= 0.3 || covered >= 0.6
 }
 
 /// Convenience helper for callers that only have settings, not a scorer object.
@@ -923,6 +1015,72 @@ mod tests {
         assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
         assert_eq!(row.subject_species[0].top5.len(), 2);
         assert_eq!(row.subject_species[0].bbox, [32, 32, 160, 160]);
+    }
+
+    #[test]
+    fn drawn_box_is_added_without_losing_other_birds() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![
+            subject_at(32, 32, 160, 160),
+            subject_at(300, 300, 160, 160),
+        ]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let species = FakeSpecies;
+        let ctx = IngestContext {
+            species: Some(&species),
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        let lf = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let file_id = lf.file.id;
+
+        // Draw a third box on empty space: both birds must survive.
+        let record = analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            Some(&species),
+            Some(BBox::new(600, 600, 160, 160)),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(record.all_bboxes.len(), 3);
+        assert_eq!(record.subject_bbox, Some(BBox::new(600, 600, 160, 160)));
+        assert_eq!(record.subject_class.as_deref(), Some("manual"));
+
+        // Stored best-first, with per-subject species parallel to the boxes.
+        let row = crate::data::analysis_store::get_analysis(&conn, file_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.bboxes[0], BBox::new(600, 600, 160, 160));
+        assert_eq!(row.bboxes.len(), 3);
+        assert_eq!(row.subject_species[0].bbox, [600, 600, 160, 160]);
+        assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
+        assert_eq!(row.subject_species[0].class.as_deref(), Some("manual"));
+
+        // Drawing over an existing bird replaces it instead of duplicating.
+        let record = analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            Some(&species),
+            Some(BBox::new(48, 48, 140, 140)),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(record.all_bboxes.len(), 3, "third box replaced, not added");
+        assert!(!record.all_bboxes.contains(&BBox::new(32, 32, 160, 160)));
     }
 
     #[test]

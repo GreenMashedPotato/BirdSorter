@@ -468,6 +468,12 @@ input {
 .stage.drawing:active {
   cursor: crosshair;
 }
+/* While drawing, a box must not swallow the pointer down, otherwise you cannot
+   start a new rectangle on top of an existing bird. */
+.stage.drawing .box,
+.stage.drawing .boxx {
+  pointer-events: none;
+}
 .drawrect {
   position: absolute;
   border: 2px dashed #ffd166;

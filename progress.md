@@ -212,6 +212,16 @@ detection → sharpness verdict → species ID → grid/review UI).
   folder's stored analysis first, so improved detection/scoring actually reaches
   files analysed earlier. User labels are kept. This was the reason a folder
   could look "still full of no_subject" after a detection change.
+- **Box editing fixes (review view)**: a drawn box used to **replace every
+  detection**, so the other birds vanished the moment you added one. Adding now
+  edits the stored box set: existing birds are kept, and only a box the drawn
+  rectangle covers is replaced (no duplicates). Removing likewise works on the
+  stored set, so user boxes survive. A user box is always the subject and now
+  **gets a species ID** (it was filtered out before). Drawing mode **stays on**
+  for multiple boxes, boxes no longer swallow the drag (you can draw over an
+  existing bird), and an explicit subject box is re-ordered first. Also fixed a
+  latent alignment bug where `subject_species` was stored in detection order
+  while boxes were stored best-first, so species could be shown on the wrong box.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses
