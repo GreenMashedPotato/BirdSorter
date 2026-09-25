@@ -22,18 +22,9 @@ ENTRIES = [
     "bird_species.meta.json",
 ]
 
-# Extra files an open-vocabulary CLIP/BioCLIP bundle needs.
-CLIP_ENTRIES = [
-    "bioclip_text.bin",
-    "bioclip_text.json",
-]
-
 
 def main(src: Path, out: Path) -> int:
     entries = list(ENTRIES)
-    # A CLIP bundle carries its text embeddings alongside the image encoder.
-    if (src / "bioclip_text.bin").is_file():
-        entries += CLIP_ENTRIES
 
     missing = [name for name in entries if not (src / name).is_file()]
     if missing:

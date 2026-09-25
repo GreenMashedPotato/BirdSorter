@@ -26,8 +26,7 @@ on a 28-core Windows box.
 | ✅ **Property tests for scoring** — score always in `[0,1]`, and monotonic in subject sharpness | new tests |
 | ✅ **Model-load error hints** — opset/truncated-download hints in the ONNX load failure | clearer failures |
 | ✅ **Two-phase ("smart") detection** — full frame first; the tile grid runs **only** on frames that found nothing. Batching made tiling ~free, so this is the best of both: distant birds recovered (raptor 0.88 vs missed) at no measurable cost (8.1–8.7 s vs 8.6–8.7 s / 40 frames). | new default |
-| ✅ **Open-vocabulary species ID (BioCLIP)** — `tools/export_bioclip.py` exports a ViT-B/16 image tower (int8 86 MB) + text embeddings for *any* label list; the app loads it via `runtime::OnnxClipClassifier` when `meta.json` says `"kind":"clip"`. Measured **Snowy Egret 0.947** vs 0.373 for the fixed-head ViT. | done |
-| ✅ **iNat21 ConvNeXt-Large (the prototype's model)** — `tools/export_inat21.py` exports `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` (10,000 species, global) with the canonical TFDS labels. Measured **`Ardea alba` 0.977** where the shipped ViT said Snowy Egret 0.373. fp32 ~857 MB. | done |
+| ✅ **Species ID: iNaturalist 2021 ConvNeXt-Large (10,000 species)** — `tools/export_inat21.py` exports `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` with the canonical 10k labels; `tools/enrich_common_names.py` adds English common names (`Ardea cinerea (Grey Heron)`). Measured **`Ardea alba (Great Egret)` 0.977** where the old 526-class ViT said Snowy Egret 0.373. Now the app's only species model; the ViT and BioCLIP options were dropped. | done |
 | ✅ **Recall threshold for the "look harder" pass** — `YoloConfig::fallback_conf` (0.15) is used for the fallback/edge/tile pass only, since small in-flight birds score weakly. | done |
 | ✅ **Species fine-tuning tool** — `tools/train_species.py` (folder-per-class or HF dataset → `bird_species.onnx` + labels + meta), with iNat-2021 Aves (~1,486 species) guidance. | done |
 | ✅ **Model-driven preprocessing** — `meta.json` can request CLIP-style shortest-side resize + centre-crop and bicubic filtering (0.011 → 0.947 on the egret when added). | done |
@@ -108,16 +107,16 @@ on a 28-core Windows box.
 
 ## Model quality (open)
 
-26. ✅ **Larger label sets** — done: BioCLIP (open-vocabulary, any list) and
-    `tools/train_species.py` (iNat-2021 Aves, ~1,486 species). See `MODELS.md`.
+26. ✅ **Species model decided**: iNat21 ConvNeXt-Large (10,000 species) is the
+    app's model; common names added via `tools/enrich_common_names.py`.
 27. ⬜ **Confidence calibration** (temperature scaling) for the detector.
-28. ⬜ **Species ensemble** (BioCLIP + the ViT) — cheap accuracy and better
-    uncertainty: they fail differently.
-29. ⬜ **Active learning** — after a species correction, surface similar frames.
+28. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
+    the birds, but a few may be missing; a second source (IOC/Clements) could
+    fill the gaps.
+29. ⬜ **Fine-tuned detector** for in-flight/distant birds
+    (`tools/train_bird_detector.py` is ready; needs a labelled dataset).
 30. ⬜ **Multi-region background sampling** — median of several background
     rectangles instead of the largest single one.
-31. ⬜ **Ship a curated regional label list** for BioCLIP (e.g. an Indonesian
-    checklist) as a ready-made bundle.
 
 ## Documentation (open)
 
