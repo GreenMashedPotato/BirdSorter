@@ -1001,7 +1001,7 @@ fn app_info() -> AppInfoDto {
             ),
             d(
                 "ONNX Runtime (ort)",
-                "MIT",
+                "MIT or Apache-2.0",
                 "Inference engine; models run locally, nothing is uploaded.",
             ),
             d(
