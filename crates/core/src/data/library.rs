@@ -444,6 +444,88 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
     )
 }
 
+/// One-row summary of a file's analysis + latest label, for grid display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileGridRow {
+    pub file: LibraryFile,
+    pub analyzed: bool,
+    pub user_label: Option<String>,
+    pub predicted_label: Option<String>,
+    pub sharpness_score: Option<f32>,
+    pub has_bokeh: bool,
+    pub species_name: Option<String>,
+    pub subject_class: Option<String>,
+}
+
+/// List files with their analysis status and latest user label in a single
+/// query, avoiding N+1 lookups. Worst-score-first when `order_by_score`.
+pub fn list_files_with_details(
+    conn: &Connection,
+    folder_id: i64,
+    include_trashed: bool,
+    order_by_score: bool,
+) -> Result<Vec<FileGridRow>> {
+    let trashed_filter = if include_trashed {
+        ""
+    } else {
+        "AND f.trashed_at IS NULL"
+    };
+    let order = if order_by_score {
+        "a.sharpness_score ASC NULLS LAST, f.filename ASC"
+    } else {
+        "f.filename ASC"
+    };
+    let sql = format!(
+        "SELECT f.id, f.folder_id, f.relative_path, f.filename, f.content_hash,
+                f.filesize, f.mtime, f.format, f.imported_at, f.trashed_at,
+                f.captured_at,
+                fo.path AS folder_path,
+                a.predicted_label, a.sharpness_score, a.has_bokeh,
+                a.species_name, a.subject_class,
+                (SELECT l.user_label FROM labels l
+                  WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
+           FROM files f
+           JOIN folders fo ON fo.id = f.folder_id
+           LEFT JOIN analysis a ON a.file_id = f.id
+          WHERE f.folder_id = ?1 {trashed_filter}
+          ORDER BY {order}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([folder_id], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let file = FileRow {
+            id: r.get("id")?,
+            folder_id: r.get("folder_id")?,
+            relative_path: r.get("relative_path")?,
+            filename: r.get("filename")?,
+            content_hash: r.get("content_hash")?,
+            filesize: r.get("filesize")?,
+            mtime: r.get("mtime")?,
+            format: r.get("format")?,
+            imported_at: r.get("imported_at")?,
+            trashed_at: r.get("trashed_at")?,
+            captured_at: r.get("captured_at")?,
+        };
+        let predicted: Option<String> = r.get("predicted_label")?;
+        let score: Option<f32> = r.get("sharpness_score")?;
+        let bokeh_i: Option<i32> = r.get("has_bokeh")?;
+        Ok(FileGridRow {
+            file: LibraryFile {
+                absolute_path: PathBuf::from(&folder_path).join(&file.relative_path),
+                file,
+            },
+            analyzed: predicted.is_some(),
+            user_label: r.get("user_label")?,
+            predicted_label: predicted,
+            sharpness_score: score,
+            has_bokeh: bokeh_i.unwrap_or(0) != 0,
+            species_name: r.get("species_name")?,
+            subject_class: r.get("subject_class")?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn get_file(conn: &Connection, file_id: i64) -> Result<Option<LibraryFile>> {
     let mut stmt = conn.prepare(
         "SELECT f.*, fo.path AS folder_path
