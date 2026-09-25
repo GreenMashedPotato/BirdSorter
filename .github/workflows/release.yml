@@ -1,5 +1,7 @@
 name: Release
 
+# Manual/tag only, deliberately: every run spends billed minutes, and the macOS
+# bundling jobs cost 10x the Linux rate. See the cost note in ci.yml.
 on:
   push:
     tags: ["v*"]

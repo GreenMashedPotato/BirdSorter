@@ -420,6 +420,7 @@ export interface AppInfo {
   buildDate: string;
   author: string;
   contact: string;
+  contactLabel: string;
   disclaimers: Disclaimer[];
 }
 

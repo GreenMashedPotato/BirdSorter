@@ -263,6 +263,20 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 
 ## Known issues / notes
 
+- **GitHub Actions is blocked by billing, not by the code.** Every CI job was
+  failing at 0 steps with: *"The job was not started because recent account
+  payments have failed or your spending limit needs to be increased."* The repo
+  is private, so minutes are billed, and the old matrix ran **two macOS runners
+  (10x the Linux rate)**. `ci.yml` now runs Linux + Windows only, cancels
+  superseded runs (`concurrency`), skips doc-only commits (`paths-ignore`) and
+  type-checks the UI with `svelte-check`. To fully restore CI: raise the Actions
+  spending limit in GitHub → Settings → Billing, **or make the repo public**
+  (free unlimited minutes, and it matches the AGPL plan anyway). macOS is now
+  validated by hand per `MACOS_TODO.md`.
+- **The iNat21 species model is expensive**: fp32, 818 MB, ~350 ms per crop on
+  CPU (roughly doubles analysis time; DirectML does not help it on this
+  machine). `MIN_SPECIES_CROP` is now 110 px so distant specks are not sent
+  through it at all.
 - **EfficientNet ONNX collapses in `ort`**: the bundled ONNX Runtime returns
   constant logits for the EfficientNet bird classifier, while the same file is
   correct under `onnxruntime` 1.23.2 and PyTorch. **Workaround: use the ViT

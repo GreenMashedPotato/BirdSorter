@@ -955,7 +955,10 @@ struct AppInfoDto {
     version: String,
     build_date: String,
     author: String,
+    /// Full URL (empty when there is no public contact).
     contact: String,
+    /// Short text shown for the link.
+    contact_label: String,
     disclaimers: Vec<DisclaimerDto>,
 }
 
@@ -973,7 +976,8 @@ fn app_info() -> AppInfoDto {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build_date: option_env!("BUILD_DATE").unwrap_or("dev build").to_string(),
         author: "Michel Gunawan".to_string(),
-        contact: "github.com/GreenMashedPotato/raw-sorter-app".to_string(),
+        contact: "https://www.instagram.com/michael.wildlife/".to_string(),
+        contact_label: "@michael.wildlife".to_string(),
         disclaimers: vec![
             d(
                 "Bird species model - iNaturalist 2021 (ConvNeXt-Large, 10,000 species)",
