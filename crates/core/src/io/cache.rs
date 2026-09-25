@@ -69,6 +69,49 @@ impl ThumbCache {
         }
         Ok(removed)
     }
+
+    /// Remove entries whose content hash is no longer in `live`, plus any stale
+    /// `.tmp` files. Returns how many files were deleted.
+    ///
+    /// This is the cache GC: thumbnails are keyed by content hash, so deleting a
+    /// file (or removing a folder) orphans its entry forever otherwise.
+    pub fn retain(&self, live: &std::collections::HashSet<String>) -> Result<usize> {
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Ok(0);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            // Left-behind temp files from a crashed write are always stale.
+            let stale_tmp = path.extension().map(|e| e == "tmp").unwrap_or(false);
+            let keep = !stale_tmp
+                && path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|stem| live.contains(stem))
+                    .unwrap_or(false);
+            if !keep && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Total size of the cache in bytes (best effort; 0 when unreadable).
+    pub fn size_bytes(&self) -> u64 {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .sum()
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +171,34 @@ mod tests {
             cache.path_for("deadbeef"),
             Path::new("/tmp/x/deadbeef.thumb")
         );
+    }
+
+    #[test]
+    fn retain_keeps_live_entries_and_drops_orphans_and_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path());
+        cache.put("keep1", b"1").unwrap();
+        cache.put("keep2", b"2").unwrap();
+        cache.put("orphan", b"3").unwrap();
+        // A crashed write leaves a `.tmp` behind.
+        std::fs::write(dir.path().join("half.thumb.tmp"), b"partial").unwrap();
+
+        let live: std::collections::HashSet<String> =
+            ["keep1", "keep2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(cache.retain(&live).unwrap(), 2); // orphan + tmp
+        assert!(cache.get("keep1").is_some());
+        assert!(cache.get("keep2").is_some());
+        assert!(cache.get("orphan").is_none());
+        assert!(!dir.path().join("half.thumb.tmp").exists());
+    }
+
+    #[test]
+    fn size_bytes_reports_the_cache_footprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path());
+        assert_eq!(cache.size_bytes(), 0);
+        cache.put("a", b"12345").unwrap();
+        cache.put("b", b"678").unwrap();
+        assert_eq!(cache.size_bytes(), 8);
     }
 }

@@ -94,7 +94,11 @@ pub(crate) fn build_session(
     let mut builder = base_builder()?;
     let session = builder.commit_from_file(model).map_err(|e| {
         CoreError::Other(format!(
-            "failed to load ONNX model {}: {e}",
+            "failed to load ONNX model {}: {e}\n  \
+             hint: an 'unsupported operator'/'opset' error means the model was \
+             exported for a newer ONNX Runtime than the bundled one — re-export at \
+             a lower opset (see MODELS.md). A missing session usually means a \
+             truncated download; re-install the model from the Model Manager.",
             model.display()
         ))
     })?;

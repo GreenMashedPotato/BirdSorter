@@ -3,6 +3,7 @@
   import {
     DEFAULT_DETECTION_SETTINGS,
     DEFAULT_SETTINGS,
+    cleanCache,
     sliceGridLabel,
     type DetectionSettings,
     type ScoreSettings,
@@ -25,6 +26,26 @@
   // Editable snapshots of the incoming settings (intentionally not reactive).
   let local = $state<ScoreSettings>(untrack(() => ({ ...settings })));
   let localDetection = $state<DetectionSettings>(untrack(() => ({ ...detection })));
+
+  let cacheStatus = $state("");
+  let cacheBusy = $state(false);
+
+  async function runCache(clearAll: boolean) {
+    cacheBusy = true;
+    cacheStatus = clearAll ? "clearing…" : "cleaning…";
+    try {
+      const r = await cleanCache(clearAll);
+      const mb = (n: number) => (n / 1e6).toFixed(1);
+      cacheStatus =
+        r.removed === 0
+          ? "nothing to clean"
+          : `removed ${r.removed} · ${mb(r.bytesBefore)} MB → ${mb(r.bytesAfter)} MB`;
+    } catch (e) {
+      cacheStatus = `error: ${e}`;
+    } finally {
+      cacheBusy = false;
+    }
+  }
 
   type NumKey = keyof ScoreSettings;
   const RULES: {
@@ -189,6 +210,19 @@
         Saving re-scores every analyzed file in the current folder from its stored feature vector —
         instant, no re-decoding.
       </p>
+
+      <section>
+        <h3>Maintenance</h3>
+        <p class="status">
+          Thumbnails are cached by content hash. Deleting photos (or removing a folder) leaves
+          orphaned entries behind; cleaning reclaims that space without touching the originals.
+        </p>
+        <div class="row">
+          <button onclick={() => runCache(false)} disabled={cacheBusy}>Clean orphaned thumbnails</button>
+          <button onclick={() => runCache(true)} disabled={cacheBusy}>Clear all thumbnails</button>
+          <span class="status">{cacheStatus}</span>
+        </div>
+      </section>
     </div>
   </div>
 </div>

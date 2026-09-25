@@ -302,6 +302,9 @@ export const FILTERS = [
   { key: "blurry", label: "Blurry" },
   { key: "no_subject", label: "No subject" },
   { key: "bokeh", label: "Bokeh" },
+  { key: "my_sharp", label: "My keepers" },
+  { key: "my_reject", label: "My rejects" },
+  { key: "unlabeled", label: "Unlabelled" },
   { key: "burst", label: "Burst winners" },
 ] as const;
 
@@ -317,9 +320,49 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return f.hasBokeh;
     case "burst":
       return true; // handled in the view (needs the burst map)
+    case "my_sharp":
+      return f.label === "sharp";
+    case "my_reject":
+      return f.label === "reject";
+    case "unlabeled":
+      return f.label === null;
     default:
       return f.predicted === key;
   }
+}
+
+export interface ExportResult {
+  exported: number;
+  failed: string[];
+  destination: string;
+}
+
+export interface CacheReport {
+  removed: number;
+  bytesBefore: number;
+  bytesAfter: number;
+}
+
+/** Thumbnail-cache maintenance. `clearAll` wipes it; otherwise only orphaned
+ *  entries (whose content hash is no longer in the library) are removed. */
+export async function cleanCache(clearAll = false): Promise<CacheReport> {
+  return invoke("clean_cache", { clearAll });
+}
+
+/** Copy (or move) keepers into `dest`. Selection is by latest user `label`,
+ *  or by the scorer's `predicted` verdict when that is set. */
+export async function exportKeepers(
+  folder: number,
+  dest: string,
+  opts: { label?: string; predicted?: string; mode?: "copy" | "move" } = {},
+): Promise<ExportResult> {
+  return invoke("export_keepers", {
+    folder,
+    dest,
+    label: opts.label ?? null,
+    mode: opts.mode ?? "copy",
+    predicted: opts.predicted ?? null,
+  });
 }
 
 export interface Burst {

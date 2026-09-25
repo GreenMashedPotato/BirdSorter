@@ -20,6 +20,7 @@
     setDetectionSettings,
     type DetectionSettings,
     rescoreFolder,
+    exportKeepers,
     train,
     scoreBreakdown,
     bursts,
@@ -47,6 +48,8 @@
   let files = $state<FileEntry[]>([]);
   let filter = $state<FilterKey>("all");
   let selected = $state<Set<number>>(new Set());
+  /// Index into `visible` of the tile that has keyboard focus (-1 = none).
+  let focusIndex = $state(-1);
   let thumbs = $state<Record<number, string>>({});
 
   // Thumbnail loading: deduplicated, queued, and limited to a few in flight.
@@ -244,7 +247,7 @@
   let panStart = { x: 0, y: 0, tx: 0, ty: 0 };
 
   const ZOOM_MIN = 1;
-  const ZOOM_MAX = 8;
+  const ZOOM_MAX = 16;
 
   /** Fit the image inside the stage (centred, scale 1) and optionally reset. */
   function computeFit(reset = true) {
@@ -281,6 +284,14 @@
 
   function resetZoom() {
     computeFit(true);
+  }
+
+  /// Zoom so the preview is shown at 1:1 pixels (for judging critical focus).
+  function zoomToActual() {
+    if (!stageEl || fit.w <= 0) return;
+    const target = natural.w / fit.w;
+    const r = stageEl.getBoundingClientRect();
+    zoomAt(r.width / 2, r.height / 2, target / zoom);
   }
 
   function onWheel(e: WheelEvent) {
@@ -455,10 +466,60 @@
     await refreshFiles();
   }
 
-  function onTileKey(e: KeyboardEvent, id: number) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      toggle(id);
+  /// Move keyboard focus to a visible-tile index and scroll its row into view.
+  /// The virtualized grid re-renders on scroll, then the focus effect below
+  /// lands on the element.
+  function focusTile(i: number) {
+    if (visible.length === 0) return;
+    const clamped = Math.max(0, Math.min(visible.length - 1, i));
+    focusIndex = clamped;
+    if (!gridEl) return;
+    const rowTop = Math.floor(clamped / cols) * ROW_H;
+    if (rowTop < gridEl.scrollTop) {
+      gridEl.scrollTop = rowTop;
+    } else if (rowTop + ROW_H > gridEl.scrollTop + gridEl.clientHeight) {
+      gridEl.scrollTop = rowTop + ROW_H - gridEl.clientHeight;
+    }
+  }
+
+  /// Grid keyboard handling: arrows move, Space selects, Enter opens the review.
+  function onTileKey(e: KeyboardEvent, idx: number, id: number) {
+    focusIndex = idx;
+    switch (e.key) {
+      case " ":
+        e.preventDefault();
+        toggle(id);
+        break;
+      case "Enter":
+        e.preventDefault();
+        openReview(id);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        focusTile(idx + 1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        focusTile(idx - 1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        focusTile(idx + cols);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        focusTile(idx - cols);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusTile(idx - (idx % cols));
+        break;
+      case "End":
+        e.preventDefault();
+        focusTile(idx - (idx % cols) + cols - 1);
+        break;
+      default:
+        break;
     }
   }
 
@@ -560,6 +621,37 @@
     }
   }
 
+  /// Copy keepers into a folder the user picks. Prefers the user's own "Sharp"
+  /// labels; falls back to the scorer's "sharp" verdicts when none exist.
+  async function exportKeepersFlow() {
+    if (activeFolder === null || !inTauri) return;
+    try {
+      const dest = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Export keepers to…",
+      });
+      if (typeof dest !== "string") return;
+      status = "exporting…";
+      let r = await exportKeepers(activeFolder, dest, { label: "sharp", mode: "copy" });
+      if (r.exported === 0) {
+        const usePredicted = confirm(
+          "No files are labelled Sharp.\n\nExport the files the scorer rated sharp instead?",
+        );
+        if (usePredicted) {
+          r = await exportKeepers(activeFolder, dest, { predicted: "sharp", mode: "copy" });
+        }
+      }
+      status = r.exported
+        ? `exported ${r.exported} keeper${r.exported === 1 ? "" : "s"} to ${r.destination}${
+            r.failed.length ? ` · ${r.failed.length} failed` : ""
+          }`
+        : "nothing to export";
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   function scoreText(f: FileEntry): string {
     return f.score === null ? "" : f.score.toFixed(2);
   }
@@ -635,6 +727,15 @@
     for (const f of slice) enqueueThumb(f.id);
     pumpThumbs();
   });
+
+  // Land DOM focus on the tile the keyboard cursor points at. Reads `slice` so
+  // it re-runs once a scroll has mounted the target row.
+  $effect(() => {
+    const i = focusIndex;
+    const rendered = slice;
+    if (i < 0 || !gridEl || rendered.length === 0) return;
+    gridEl.querySelector<HTMLElement>(`[data-idx="${i}"]`)?.focus();
+  });
 </script>
 
 <div class="app" class:review-open={reviewFile !== null}>
@@ -678,6 +779,13 @@
       <button onclick={openSettings} title="Scoring settings">Settings</button>
       <button onclick={() => (showModels = true)} title="Manage models">Models</button>
       <button onclick={retrain} title="Train a model from your labels">Retrain</button>
+      <button
+        onclick={exportKeepersFlow}
+        disabled={busy || activeFolder === null}
+        title="Copy every file labelled Sharp into a folder"
+      >
+        Export keepers…
+      </button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
     </div>
@@ -721,39 +829,46 @@
       {:else}
         <div style="height:{topPad}px"></div>
         <div class="grid-row" style="grid-template-columns: repeat({cols}, minmax(0, 1fr))">
-          {#each slice as f (f.id)}
+          {#each slice as f, j (f.id)}
+            {@const idx = firstRow * cols + j}
             <div
               class="tile"
               class:selected={selected.has(f.id)}
+              class:focused={focusIndex === idx}
               role="button"
               tabindex="0"
-              onclick={() => toggle(f.id)}
-          onkeydown={(e) => onTileKey(e, f.id)}
-          ondblclick={() => openReview(f.id)}
-        >
-          <div class="thumb">
-            {#if thumbs[f.id]}
-              <img src={thumbs[f.id]} alt={f.filename} loading="lazy" />
-            {/if}
-          </div>
-          <div class="meta">
-            <span class="name" title={f.filename}>{f.filename}</span>
-            {#if burstInfo[f.id]}
-              <span
-                class="badge burst"
-                class:winner={burstInfo[f.id].best}
-                title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
-                >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
-              >
-            {/if}
-            {#if f.predicted}
-              <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
-              <span class="status">{scoreText(f)}</span>
-            {:else}
-              <span class="badge none">—</span>
-            {/if}
-          </div>
-        </div>
+              data-idx={idx}
+              onclick={() => {
+                focusIndex = idx;
+                toggle(f.id);
+              }}
+              onfocus={() => (focusIndex = idx)}
+              onkeydown={(e) => onTileKey(e, idx, f.id)}
+              ondblclick={() => openReview(f.id)}
+            >
+              <div class="thumb">
+                {#if thumbs[f.id]}
+                  <img src={thumbs[f.id]} alt={f.filename} loading="lazy" />
+                {/if}
+              </div>
+              <div class="meta">
+                <span class="name" title={f.filename}>{f.filename}</span>
+                {#if burstInfo[f.id]}
+                  <span
+                    class="badge burst"
+                    class:winner={burstInfo[f.id].best}
+                    title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
+                    >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
+                  >
+                {/if}
+                {#if f.predicted}
+                  <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
+                  <span class="status">{scoreText(f)}</span>
+                {:else}
+                  <span class="badge none">—</span>
+                {/if}
+              </div>
+            </div>
           {/each}
         </div>
         <div style="height:{bottomPad}px"></div>
@@ -780,6 +895,7 @@
         <button onclick={() => zoomByFactor(1 / 1.25)} title="Zoom out (-)">−</button>
         <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
         <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
+        <button onclick={zoomToActual} title="Zoom to 1:1 pixels">1:1</button>
         <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
         <select
           class="modesel"

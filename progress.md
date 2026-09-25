@@ -10,9 +10,11 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **158 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- **169 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
+- Feature extraction is **~50% faster** than the first cut (criterion benches in
+  `crates/core/benches/analysis.rs`)
 - GPU: DirectML verified on a real NVIDIA GPU; sliced inference recovers distant
   birds the frame-wide run misses
 - App runs in release (`cargo run --release -p birdsorter-desktop`)
@@ -107,6 +109,23 @@ detection → sharpness verdict → species ID → grid/review UI).
   `.pfx` secret is imported, a merge config enables `certificateThumbprint`, and
   the app exe + NSIS + MSI are signed. With no secret it builds unsigned, so
   forks keep working. Full guide in `SIGNING.md`.
+- **Performance pass** (from `SUGGESTIONS.md`): gradient directionality is now
+  trig-free (the double-angle identities), feature extraction runs its metric
+  groups in parallel, the YOLO letterbox/normalise is fused into one pass, the
+  FFT plan is thread-local, and the grid loads with a single JOIN instead of
+  2N+1 queries. Measured: **−50%** on `compute_features`, **−42%** per detector
+  tile. Benchmarks live in `crates/core/benches/analysis.rs`.
+- **Export keepers**: copy or move labelled keepers (or files the scorer rated
+  sharp) to a folder, never overwriting — CLI `export <folder> <dest>
+  [--label sharp] [--predicted sharp] [--move]`, toolbar button, and
+  `core::io::export`.
+- **Thumbnail cache GC**: `ThumbCache::retain` + `cleancache` CLI + Settings ▸
+  Maintenance. Reclaimed 45.9 MB of 46.6 MB on a real library while keeping every
+  referenced entry.
+- **Grid UX**: arrow-key navigation with a visible cursor (works with the
+  virtualized grid), Space to select, Enter to open the review, plus
+  label-based filters (*My keepers* / *My rejects* / *Unlabelled*) and a **1:1**
+  zoom button for judging critical focus.
 
 ## In progress
 
@@ -121,6 +140,8 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## TODO / backlog (roughly ordered)
 
+See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
+
 ### User-requested (priority)
 
 - _(none outstanding — folder picker, high-res preview and score breakdown are done)_
@@ -133,24 +154,26 @@ detection → sharpness verdict → species ID → grid/review UI).
    `--from-coco` gets ~2.7k bird instances for free; your own labelled frames
    are better) and ~200–400 hand-labelled eye/head keypoints for `bird_eye`.
    Then: train → export → install via Model Manager → re-analyse and compare.
-2. **macOS** — see `MACOS_TODO.md` (a self-contained brief for an agent on a
+2. **Species model re-export with a dynamic batch axis** — batched inference is
+   implemented (with a per-crop fallback and a model-gated test), but the bundled
+   ViT export is fixed at batch=1, so it stays dormant. Two-line fix in
+   `MODELS.md`.
+3. **macOS** — see `MACOS_TODO.md` (a self-contained brief for an agent on a
    Mac). CoreML validation, `.app`/`.dmg`, notarization, Intel + Apple Silicon,
-   and HEIC input via ImageIO. Build + note: the desktop build already enables
-   CoreML on macOS; it is **unverified**.
-3. **Signing/notarization** — Windows is wired and only needs a certificate
+   and HEIC input via ImageIO. The desktop build already enables CoreML on
+   macOS; it is **unverified**.
+4. **Signing/notarization** — Windows is wired and only needs a certificate
    (`SIGNING.md` §1; Azure Trusted Signing is ~$10/month). macOS needs the
-   Apple Developer Program + the §2 steps. Auto-updater
-   (`tauri-plugin-updater`) after signing works.
-4. **HEIC input** — needs `libheif` (no mature pure-Rust decoder; the `image`
-   crate has no HEIC). Easiest on macOS via system ImageIO (see
-   `MACOS_TODO.md`). JPEG is already a first-class input.
-5. **Asset protocol for previews** — still not worth it: previews come from
-   embedded JPEGs, and the largest (native camera preview) is ~3.7 MB base64.
-6. **Developed preview round 3** — evaluated: the `demosaic` crate's **DHT and
+   Apple Developer Program + the §2 steps. Auto-updater after that.
+5. **HEIC input** — needs `libheif` (no mature pure-Rust decoder). Easiest on
+   macOS via system ImageIO (see `MACOS_TODO.md`). JPEG is already first-class.
+6. **Anti-aliased downscaling + recalibration** — `normalise_size` subsamples;
+   a box average is more faithful but shifts every metric, so it needs a scoring
+   recalibration rather than a silent swap.
+7. **Developed preview round 3** — evaluated: the `demosaic` crate's **DHT and
    Markesteijn variants are X-Trans only**, so a true Bayer DHT/DCB needs LibRaw
    FFI. What *is* available is wired up: `preview --develop --max-quality`
-   (VNG + RL deconvolution). Non-Bayer sensors now get a clear error instead of
-   "unsupported CFA".
+   (VNG + RL deconvolution).
 
 ## Known issues / notes
 
@@ -185,6 +208,14 @@ birdsorter analyze <folder> --model yolo11n.onnx
 birdsorter list <folder>
 birdsorter probe <one.cr3> --model yolo11n.onnx   # detections + features + species
 birdsorter probe <one.cr3> --slice 6             # tiled detection for distant birds
+
+# culling workflow
+birdsorter export <folder> <dest> --label sharp       # your labelled keepers
+birdsorter export <folder> <dest> --predicted sharp    # the scorer's keepers
+birdsorter cleancache                                  # reclaim orphaned thumbnails
+
+# performance (criterion; HTML reports under target/criterion/)
+cargo bench -p birdsorter-core --bench analysis
 
 # developed preview (Bayer only; --max-quality = VNG + RL deconvolution)
 birdsorter preview <one.cr3> out.jpg --develop --max-quality

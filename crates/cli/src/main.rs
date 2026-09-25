@@ -40,9 +40,13 @@ Commands:
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
   bursts <folder> [--db <path>]  Print burst groups (by capture time)
+  export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
+      --label <name>            Which label to export (default: sharp)
+      --move                    Move instead of copy
+      --db <path>               Override the library database location
   train [--db <path>]         Train a verdict model from your labels
-  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
-  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+  cleancache [--all] [--db <path>]  Delete orphaned thumbnails (--all: everything)
+  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
@@ -61,6 +65,8 @@ fn main() -> ExitCode {
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("bursts") => cmd_bursts(&args[1..]),
+        Some("export") => cmd_export(&args[1..]),
+        Some("cleancache") => cmd_cleancache(&args[1..]),
         Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
         Some("preview") => cmd_preview(&args[1..]),
@@ -435,6 +441,150 @@ fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()
         );
     }
     Ok(())
+}
+
+/// Export keepers to a destination folder.
+fn cmd_export(args: &[String]) -> ExitCode {
+    use birdsorter_core::data::labels::UserLabel;
+    use birdsorter_core::io::export::{export_files, ExportMode};
+
+    let mut positional: Vec<String> = Vec::new();
+    let mut label = "sharp".to_string();
+    let mut predicted: Option<String> = None;
+    let mut mode = ExportMode::Copy;
+    let mut db_path: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--label" => match it.next() {
+                Some(v) => label = v.clone(),
+                None => {
+                    eprintln!("export: --label needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
+            // Select by the scorer's verdict instead of the user's label.
+            "--predicted" => match it.next() {
+                Some(v) => predicted = Some(v.clone()),
+                None => {
+                    eprintln!(
+                        "export: --predicted needs a value (sharp|uncertain|blurry|no_subject)"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--move" => mode = ExportMode::Move,
+            "--copy" => mode = ExportMode::Copy,
+            "--db" => db_path = it.next().cloned(),
+            other if other.starts_with("--") => {
+                eprintln!("export: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other => positional.push(other.to_string()),
+        }
+    }
+    let (Some(folder), Some(dest)) = (positional.first(), positional.get(1)) else {
+        eprintln!(
+            "export: usage: export <folder> <dest> [--label sharp] [--predicted sharp] [--move] [--db <path>]"
+        );
+        return ExitCode::FAILURE;
+    };
+    // Validate the arguments before touching the database.
+    let user_label: Option<UserLabel> = match predicted {
+        Some(_) => None,
+        None => match label.parse() {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("export: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    let run = || -> birdsorter_core::Result<()> {
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        db::init_schema(&conn)?;
+        let folder_id = library::add_folder(&conn, Path::new(folder))?;
+        let files = match (&predicted, user_label) {
+            (Some(pred), _) => library::files_with_predicted_label(&conn, folder_id, pred)?,
+            (None, Some(l)) => library::files_with_latest_label(&conn, folder_id, l)?,
+            (None, None) => Vec::new(),
+        };
+        if files.is_empty() {
+            let what = predicted.as_deref().unwrap_or(label.as_str());
+            println!("no files match '{what}' to export");
+            return Ok(());
+        }
+        let paths: Vec<std::path::PathBuf> = files.into_iter().map(|f| f.absolute_path).collect();
+        let report = export_files(&paths, Path::new(dest), mode)?;
+        println!(
+            "exported {} file(s) to {}",
+            report.exported,
+            report.destination.display()
+        );
+        for (path, why) in &report.failed {
+            eprintln!("  failed: {} ({why})", path.display());
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("export failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Delete orphaned thumbnails (cache GC).
+fn cmd_cleancache(args: &[String]) -> ExitCode {
+    use birdsorter_core::io::cache::ThumbCache;
+
+    let clear_all = args.iter().any(|a| a == "--all");
+    let db_path: Option<String> = args
+        .iter()
+        .position(|a| a == "--db")
+        .and_then(|i| args.get(i + 1).cloned());
+
+    let run = || -> birdsorter_core::Result<()> {
+        let cache = ThumbCache::open_default()?;
+        let before = cache.size_bytes();
+        if clear_all {
+            let n = cache.clear()?;
+            println!(
+                "cleared {n} cached thumbnails ({:.1} MB)",
+                before as f64 / 1e6
+            );
+            return Ok(());
+        }
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        db::init_schema(&conn)?;
+        let live = library::all_content_hashes(&conn)?;
+        let n = cache.retain(&live)?;
+        let after = cache.size_bytes();
+        println!(
+            "removed {n} orphaned thumbnails ({:.1} MB -> {:.1} MB); {} still referenced",
+            before as f64 / 1e6,
+            after as f64 / 1e6,
+            live.len()
+        );
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cleancache failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Train a verdict model from the user's labels.

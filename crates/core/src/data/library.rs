@@ -444,6 +444,69 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
     )
 }
 
+/// Every content hash currently tracked by the library (any folder, including
+/// trashed files — their thumbnails stay valid if restored).
+pub fn all_content_hashes(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT content_hash FROM files")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
+/// Files whose **predicted** verdict is `label` (and not trashed). Lets
+/// "export keepers" work before the user has labelled anything.
+pub fn files_with_predicted_label(
+    conn: &Connection,
+    folder_id: i64,
+    label: &str,
+) -> Result<Vec<LibraryFile>> {
+    let sql = "SELECT f.*, fo.path AS folder_path
+                 FROM files f
+                 JOIN folders fo ON fo.id = f.folder_id
+                 JOIN analysis a ON a.file_id = f.id
+                WHERE f.folder_id = ?1
+                  AND f.trashed_at IS NULL
+                  AND a.predicted_label = ?2
+                ORDER BY f.filename ASC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params![folder_id, label], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let file = row_to_file(r)?;
+        Ok(LibraryFile {
+            absolute_path: PathBuf::from(folder_path).join(&file.relative_path),
+            file,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Files whose **latest** user label is `label` (and not trashed). Used by
+/// "export keepers".
+pub fn files_with_latest_label(
+    conn: &Connection,
+    folder_id: i64,
+    label: crate::data::labels::UserLabel,
+) -> Result<Vec<LibraryFile>> {
+    let sql = "SELECT f.*, fo.path AS folder_path
+                 FROM files f
+                 JOIN folders fo ON fo.id = f.folder_id
+                WHERE f.folder_id = ?1
+                  AND f.trashed_at IS NULL
+                  AND (SELECT l.user_label FROM labels l
+                        WHERE l.file_id = f.id
+                        ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
+                ORDER BY f.filename ASC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params![folder_id, label.as_str()], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let file = row_to_file(r)?;
+        Ok(LibraryFile {
+            absolute_path: PathBuf::from(folder_path).join(&file.relative_path),
+            file,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// One-row summary of a file's analysis + latest label, for grid display.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileGridRow {
