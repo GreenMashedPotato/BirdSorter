@@ -213,7 +213,7 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     let mut file = None;
     let mut model = None;
     let mut no_detect = false;
-    let mut slice = SliceMode::Auto;
+    let mut slice = SliceMode::default();
     let mut imgsz = YoloConfig::default().input_size;
     let mut region_batch = YoloConfig::default().region_batch;
     let mut it = args.iter();
@@ -233,15 +233,15 @@ fn cmd_probe(args: &[String]) -> ExitCode {
             "--slice" => {
                 let v = it.next().map(String::as_str).unwrap_or("");
                 slice = match v {
-                    "auto" => SliceMode::Auto,
-                    "off" => SliceMode::Off,
-                    "on" | "tiles" => SliceMode::Tiles(SliceConfig::default()),
+                    "off" | "none" => SliceMode::Off,
+                    "on" | "tiles" | "always" => SliceMode::Always(SliceConfig::default()),
+                    "smart" | "fallback" => SliceMode::Fallback(SliceConfig::default()),
                     other => match other.parse::<usize>() {
                         Ok(grid) if grid > 0 => {
-                            SliceMode::Tiles(SliceConfig { grid, overlap: 0.2 })
+                            SliceMode::Always(SliceConfig { grid, overlap: 0.2 })
                         }
                         _ => {
-                            eprintln!("probe: --slice needs auto|off|on|<grid>");
+                            eprintln!("probe: --slice needs off|fallback|always|on|<grid>");
                             return ExitCode::FAILURE;
                         }
                     },
@@ -362,8 +362,8 @@ fn run_probe(
         features.motion_directionality
     );
 
-    // Species identification of the first bird box (default model).
-    match OnnxSpeciesClassifier::load_default(DevicePreference::from_setting(
+    // Species identification of the first bird box (whatever model is installed).
+    match birdsorter_core::runtime::load_species_classifier(DevicePreference::from_setting(
         &DetectionSettings::load_default().device,
     )) {
         Ok(Some(classifier)) => {
@@ -898,19 +898,20 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         Box::new(SaliencyDetector::default())
     };
 
-    // Species identification (optional): explicit flags, else the default model.
+    // Species identification (optional): explicit flags, else whatever species
+    // model is installed (a fixed-head ViT or an open-vocabulary CLIP bundle).
     let species_device = DevicePreference::from_setting(&DetectionSettings::load_default().device);
-    let species: Option<OnnxSpeciesClassifier> = if args.no_detect {
+    let species: Option<Box<dyn SpeciesClassifier>> = if args.no_detect {
         None
     } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
-        Some(OnnxSpeciesClassifier::from_files(
+        Some(Box::new(OnnxSpeciesClassifier::from_files(
             Path::new(m),
             Path::new(l),
             SpeciesPreprocess::default(),
             species_device,
-        )?)
+        )?) as Box<dyn SpeciesClassifier>)
     } else {
-        match OnnxSpeciesClassifier::load_default(species_device) {
+        match birdsorter_core::runtime::load_species_classifier(species_device) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("warning: species model could not be loaded: {e}");
@@ -920,8 +921,8 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     };
     match &species {
         Some(c) => println!(
-            "species identification: enabled ({} species)",
-            c.labels().len()
+            "species identification: enabled ({} available)",
+            c.available()
         ),
         None => println!(
             "species identification: no model installed (use --species-model/--species-labels)"
@@ -955,7 +956,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         decode_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4),
-        species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
+        species: species.as_deref(),
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 

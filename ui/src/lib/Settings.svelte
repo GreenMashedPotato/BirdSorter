@@ -4,7 +4,6 @@
     DEFAULT_DETECTION_SETTINGS,
     DEFAULT_SETTINGS,
     cleanCache,
-    sliceGridLabel,
     type DetectionSettings,
     type ScoreSettings,
   } from "./api";
@@ -163,25 +162,44 @@
       <section>
         <h3>Distant birds</h3>
         <p class="status">
-          Small birds far away can be missed at full-frame resolution. This runs the detector on a
-          grid of overlapping tiles so they are found too. Takes effect on the next analysis run.
+          Small birds far away vanish when the frame is scaled down for the detector.
+          <strong>Smart</strong> retries those frames on a grid of overlapping tiles, so you pay the
+          extra time only where a bird was actually missed. Takes effect on the next analysis run.
         </p>
         <div class="row">
-          <input
-            type="range"
-            min="0"
-            max="6"
-            step="1"
-            value={localDetection.slice_grid}
-            oninput={(e) =>
-              (localDetection = { ...localDetection, slice_grid: Number(e.currentTarget.value) })}
-          />
-          <span class="val">{sliceGridLabel(localDetection.slice_grid)}</span>
+          <label for="slice-mode">Detection</label>
+          <select
+            id="slice-mode"
+            value={localDetection.slice_mode}
+            onchange={(e) => {
+              localDetection = { ...localDetection, slice_mode: e.currentTarget.value };
+            }}
+          >
+            <option value="off">Off — full frame only (fastest)</option>
+            <option value="fallback">Smart — tiles only when nothing is found</option>
+            <option value="always">Always tile — most thorough, slowest</option>
+          </select>
         </div>
-        <p class="status">
-          0 = off · 1 = only when a GPU is used · 4–6 = most thorough, slowest. Tiles are batched
-          into one network call, so on a GPU the cost is close to off.
-        </p>
+        {#if localDetection.slice_mode !== "off"}
+          <div class="row">
+            <label for="slice-grid">Tile grid</label>
+            <input
+              id="slice-grid"
+              type="range"
+              min="2"
+              max="8"
+              step="1"
+              value={localDetection.slice_grid}
+              oninput={(e) =>
+                (localDetection = { ...localDetection, slice_grid: Number(e.currentTarget.value) })}
+            />
+            <span class="val">{localDetection.slice_grid} × {localDetection.slice_grid}</span>
+          </div>
+          <p class="status">
+            Higher finds smaller/distant birds. {localDetection.slice_grid}×{localDetection.slice_grid}
+            = {localDetection.slice_grid * localDetection.slice_grid} tiles + 1 full-frame pass.
+          </p>
+        {/if}
 
         <div class="row">
           <label for="device">Compute device</label>

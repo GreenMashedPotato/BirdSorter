@@ -33,9 +33,7 @@ use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
 };
-use birdsorter_core::runtime::{
-    DevicePreference, OnnxDetector, OnnxSpeciesClassifier, DETECTOR_ONNX,
-};
+use birdsorter_core::runtime::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -692,13 +690,14 @@ fn run_analysis(
     };
 
     let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
-    let species = match OnnxSpeciesClassifier::load_default(device) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("species model could not be loaded: {e}");
-            None
-        }
-    };
+    let species: Option<Box<dyn SpeciesClassifier>> =
+        match birdsorter_core::runtime::load_species_classifier(device) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("species model could not be loaded: {e}");
+                None
+            }
+        };
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -707,7 +706,7 @@ fn run_analysis(
         batch_size: 8,
         decode_threads: threads,
         cancel: Some(cancel),
-        species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
+        species: species.as_deref(),
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 

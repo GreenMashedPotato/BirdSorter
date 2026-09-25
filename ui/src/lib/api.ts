@@ -193,14 +193,17 @@ export async function setSettings(settings: ScoreSettings): Promise<void> {
 
 /** Detector settings (mirrors `birdsorter_core::data::settings::DetectionSettings`). */
 export interface DetectionSettings {
-  /** `0` off, `1` auto (GPU only), `n > 1` an `n x n` tile grid. */
+  /** `"off"`, `"fallback"` (tiles only when the full frame finds nothing) or `"always"`. */
+  slice_mode: string;
+  /** Tile grid per axis for fallback/always. */
   slice_grid: number;
   /** `"cpu"` (default), `"auto"` or `"gpu"`. */
   device: string;
 }
 
 export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
-  slice_grid: 1,
+  slice_mode: "fallback",
+  slice_grid: 6,
   device: "cpu",
 };
 

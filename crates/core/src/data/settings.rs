@@ -113,9 +113,11 @@ impl ScoreSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DetectionSettings {
-    /// Sliced (tiled) inference for small/distant birds:
-    /// `0` off, `1` auto (only when a GPU execution provider is active),
-    /// `n > 1` an `n x n` overlapping tile grid.
+    /// Sliced inference: `"off"`, `"fallback"` (retry on the tile grid only when
+    /// the full frame finds nothing) or `"always"`. Legacy numeric values are
+    /// still accepted.
+    pub slice_mode: String,
+    /// Tile grid per axis for the `fallback` / `always` modes.
     pub slice_grid: u32,
     /// Compute device for the ONNX models: `"cpu"` (default), `"auto"` or
     /// `"gpu"`. CPU wins for these small models; GPU providers pay off for
@@ -126,7 +128,8 @@ pub struct DetectionSettings {
 impl Default for DetectionSettings {
     fn default() -> Self {
         Self {
-            slice_grid: 1,
+            slice_mode: "fallback".to_string(),
+            slice_grid: 6,
             device: "cpu".to_string(),
         }
     }
@@ -136,7 +139,7 @@ impl DetectionSettings {
     /// The detector configuration these settings describe.
     pub fn yolo_config(&self) -> YoloConfig {
         YoloConfig {
-            slice: SliceMode::from_grid(self.slice_grid),
+            slice: SliceMode::from_setting(&self.slice_mode, self.slice_grid),
             ..YoloConfig::default()
         }
     }
@@ -232,10 +235,13 @@ mod tests {
     fn detection_settings_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("detection_settings.json");
-        assert_eq!(DetectionSettings::default().slice_grid, 1); // auto
-        assert_eq!(DetectionSettings::default().device, "cpu");
+        let d = DetectionSettings::default();
+        assert_eq!(d.slice_mode, "fallback");
+        assert_eq!(d.slice_grid, 6);
+        assert_eq!(d.device, "cpu");
         let s = DetectionSettings {
-            slice_grid: 6,
+            slice_mode: "always".into(),
+            slice_grid: 4,
             device: "auto".into(),
         };
         s.save(&p).unwrap();
@@ -245,10 +251,37 @@ mod tests {
             DetectionSettings::load(dir.path().join("missing.json")),
             DetectionSettings::default()
         );
-        // Older files without `device` still parse (serde default fills it).
+        // Older files without `device` / `slice_mode` still parse.
         std::fs::write(&p, r#"{"slice_grid":2}"#).unwrap();
         let partial = DetectionSettings::load(&p);
         assert_eq!(partial.slice_grid, 2);
         assert_eq!(partial.device, "cpu");
+        assert_eq!(partial.slice_mode, "fallback");
+    }
+
+    #[test]
+    fn slice_mode_parses_modes_and_legacy_numbers() {
+        use crate::analysis::yolo::SliceMode;
+        assert_eq!(SliceMode::from_setting("off", 6), SliceMode::Off);
+        assert!(matches!(
+            SliceMode::from_setting("fallback", 6),
+            SliceMode::Fallback(_)
+        ));
+        assert!(matches!(
+            SliceMode::from_setting("always", 4),
+            SliceMode::Always(_)
+        ));
+        // Legacy numeric values.
+        assert_eq!(SliceMode::from_setting("0", 6), SliceMode::Off);
+        assert!(matches!(
+            SliceMode::from_setting("1", 0),
+            SliceMode::Fallback(_)
+        ));
+        match SliceMode::from_setting("5", 0) {
+            SliceMode::Always(cfg) => assert_eq!(cfg.grid, 5),
+            other => panic!("expected Always, got {other:?}"),
+        }
+        let (mode, grid) = SliceMode::default().to_setting();
+        assert_eq!((mode, grid), ("fallback", 6));
     }
 }

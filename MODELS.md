@@ -52,20 +52,55 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 
 ### Want more species?
 
-The 525/526-class model is a good balance of size and accuracy, but it is not
-the ceiling. Options, roughly in order of effort:
+Three routes, cheapest first:
+
+1. **Open-vocabulary BioCLIP (no training at all).** `tools/export_bioclip.py`
+   turns BioCLIP (a CLIP model trained on the tree of life) into a `bird_species`
+   bundle for **any list of names you supply** - a national checklist, Indonesian
+   endemics, scientific names. The app detects `"kind": "clip"` in
+   `bird_species.meta.json` and runs the image tower + precomputed text
+   embeddings instead of a fixed head. Measured on a real frame: **Snowy Egret
+   0.947** (BioCLIP) vs 0.373 (the shipped ViT), at the same ~86 MB int8 size.
+
+   ```bash
+   # names.json = ["Snowy Egret", "Javan Kingfisher", ...] or {"id2label": {...}}
+   python tools/export_bioclip.py --labels names.json --out-dir dist-models/bioclip
+   python tools/pack_models.py dist-models/bioclip dist-models/bioclip.zip
+   # BirdSorter -> Models -> Install from file -> bioclip.zip
+   ```
+
+2. **Fine-tune on a bigger labelled set** (`tools/train_species.py`). Best
+   accuracy for the species you actually shoot.
+   - **iNat-2021 Aves - ~1,486 species, global** (414k train / 15k test images).
+     The best free coverage for South-East Asia; ~3x our current label count at
+     the same inference cost.
+   - **Your own library**: export keepers, sort into folders per species,
+     ~50-200 images each. Strongest option for your region and gear.
+   - NABirds (555, North America) and CUB-200 (200) are fine as sanity checks but
+     do not describe Indonesian birds.
+
+   ```bash
+   python tools/train_species.py --data D:/data/birds --export-int8
+   python tools/pack_models.py models dist-models/bird_species.zip
+   ```
+
+3. **BioCLIP 2 / 2.5** (2025-26, NeurIPS spotlight) - ViT-L/14 / ViT-H/14 over
+   TreeOfLife-200M. Higher accuracy than v1 and it also does trait/habitat
+   prediction, but ~4x the parameters; v1 (ViT-B/16) is the sweet spot for this
+   app.
+
+The shipped default stays a fixed-head **ViT-B/16, 526 species** (fast, small,
+predictable); the options above are drop-in replacements for the `bird_species`
+slot.
 
 | Option | Species | Notes |
 |---|---|---|
-| **iNat-2021 Aves** | **~1,486** | 414k train / 15k test images. Fine-tune a ViT-B/16 the same way; same inference cost, ~3× the classes. Best next step. |
-| **NABirds** | 555 | North America only, 48k photos — comparable to what we ship. |
-| **CUB-200-2011** | 200 | Small (11.8k images); mostly a benchmark. |
-| **BioCLIP 2 / 2.5** (2025–26) | **450k+ taxa** (TreeOfLife-10M; 214M images in v2) | Vision-language foundation model. Zero-shot / few-shot over *any* species — no fixed head — with strong rare-species accuracy. Bigger (ViT-B/16 ≈ 350 MB) and needs text-prompt machinery; the best long-term answer. |
-| **SpeciesNet** (Google, 2024) | ~2,000 (incl. birds) | Built for camera traps; EfficientNet-based, ONNX-friendly, but trained on very different imagery. |
-
-Practical recommendation: keep the current model as the default, add
-**iNat-2021 Aves (1,486 species)** as an alternative `bird_species` bundle, and
-treat **BioCLIP 2** as the future path for rare/travelled species.
+| **BioCLIP v1** (shipped option) | **any list you provide** | Zero-shot; ~86 MB int8; best accuracy/size here |
+| **iNat-2021 Aves** (fine-tune) | ~1,486 | Global; needs a training run |
+| NABirds | 555 | North America only |
+| CUB-200-2011 | 200 | Small benchmark set |
+| BioCLIP 2 / 2.5 | 450k+ taxa | ViT-L/14, ViT-H/14; heavier |
+| SpeciesNet (Google, 2024) | ~2,000 | Camera-trap imagery; different domain |
 
 
 The detector ships inside the app and is copied into the model directory on first
