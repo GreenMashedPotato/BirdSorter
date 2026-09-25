@@ -59,6 +59,18 @@ fn intra_threads() -> usize {
 /// File name the model manager installs the detector as.
 pub const DETECTOR_ONNX: &str = "bird_det_v1.onnx";
 
+/// A fine-tuned detector, when one has been trained and installed. Preferred
+/// over [`DETECTOR_ONNX`] (see `tools/train_bird_detector.py`).
+pub const DETECTOR_ONNX_V2: &str = "bird_det_v2.onnx";
+
+/// Pick the detector file in `dir`: a fine-tuned v2 wins, else v1, else none.
+fn detector_path_in(dir: &Path) -> Option<std::path::PathBuf> {
+    [DETECTOR_ONNX_V2, DETECTOR_ONNX]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
+}
+
 /// A configured CPU session builder (graph optimisations + thread pool).
 fn base_builder() -> Result<SessionBuilder> {
     Session::builder()
@@ -167,10 +179,9 @@ impl OnnxDetector {
         let Ok(dir) = crate::data::registry::default_model_dir() else {
             return Ok(None);
         };
-        let path = dir.join(DETECTOR_ONNX);
-        if !path.is_file() {
+        let Some(path) = detector_path_in(&dir) else {
             return Ok(None);
-        }
+        };
         Ok(Some(Self::from_file(&path, config, device)?))
     }
 
@@ -496,6 +507,25 @@ impl SubjectDetector for OnnxDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detector_path_prefers_a_finetuned_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detector_path_in(dir.path()).is_none());
+
+        std::fs::write(dir.path().join(DETECTOR_ONNX), b"v1").unwrap();
+        assert_eq!(
+            detector_path_in(dir.path()).unwrap().file_name().unwrap(),
+            DETECTOR_ONNX
+        );
+
+        // A fine-tuned v2 wins over the stock v1.
+        std::fs::write(dir.path().join(DETECTOR_ONNX_V2), b"v2").unwrap();
+        assert_eq!(
+            detector_path_in(dir.path()).unwrap().file_name().unwrap(),
+            DETECTOR_ONNX_V2
+        );
+    }
 
     #[test]
     fn device_preference_defaults_to_auto() {

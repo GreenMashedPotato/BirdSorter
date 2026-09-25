@@ -248,6 +248,8 @@ export interface ModelStatus {
   status: string;
   files: string[];
   url: string;
+  /** A planned model with no artefact yet (needs a training run). */
+  planned: boolean;
 }
 
 export async function modelsStatus(): Promise<ModelStatus[]> {

@@ -87,21 +87,39 @@
           <div class="model-head">
             <strong>{m.displayName}</strong>
             <span class="tier">{m.tier.toUpperCase()}</span>
-            <span class="badge {m.status === 'ready' ? 'sharp' : m.status === 'corrupt' ? 'blurry' : 'no_subject'}"
-              >{m.status}</span
-            >
+            {#if m.planned}
+              <span class="badge none">planned</span>
+            {:else}
+              <span
+                class="badge {m.status === 'ready' ? 'sharp' : m.status === 'corrupt' ? 'blurry' : 'no_subject'}"
+                >{m.status}</span
+              >
+            {/if}
             <div class="spacer"></div>
             <span class="status">{mb(m.sizeBytes)}</span>
           </div>
           <p class="status">{m.description}</p>
           <div class="model-actions">
-            <button onclick={() => doDownload(m)} disabled={busy === m.key}>Download</button>
+            <button
+              onclick={() => doDownload(m)}
+              disabled={busy === m.key || m.planned}
+              title={m.planned
+                ? "Not published yet - train one with the tools/ scripts, then install it from file"
+                : "Download from the configured URL"}
+            >
+              Download
+            </button>
             <button onclick={() => doImport(m)} disabled={busy === m.key}>Install from file…</button>
             {#if m.status !== "missing"}
               <button onclick={() => doRemove(m)} disabled={busy === m.key}>Remove</button>
             {/if}
             {#if busy === m.key}<span class="status">working…</span>{/if}
           </div>
+          {#if m.planned}
+            <p class="status">
+              Planned — needs a labelled dataset and a training run; see MODELS.md / SUGGESTIONS.md.
+            </p>
+          {/if}
           <p class="status files">files: {m.files.join(", ")}</p>
         </section>
       {/each}
