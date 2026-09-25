@@ -279,6 +279,20 @@ pub fn set_manual_bbox(conn: &Connection, file_id: i64, bbox: BBox) -> Result<()
     })
 }
 
+/// Delete every analysis row for a folder's files, so a re-analysis recomputes
+/// them from scratch (used by "Re-analyse all"). User labels are untouched.
+/// Returns how many rows were removed.
+pub fn clear_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
+    with_tx(conn, || {
+        let n = conn.execute(
+            "DELETE FROM analysis
+              WHERE file_id IN (SELECT id FROM files WHERE folder_id = ?1)",
+            [folder_id],
+        )?;
+        Ok(n)
+    })
+}
+
 /// Recompute verdicts for every analyzed file in a folder using `score`.
 /// Cheap (no decode). Returns the number of rows rescored.
 pub fn rescore_folder_with(
@@ -502,6 +516,30 @@ mod tests {
         let conn = connect_in_memory().unwrap();
         init_schema(&conn).unwrap();
         assert!(get_analysis(&conn, 123).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_folder_removes_analysis_but_keeps_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let folder = crate::data::library::list_folders(&conn).unwrap()[0].id;
+        upsert_analysis(&conn, &sample_record(fid)).unwrap();
+        crate::data::labels::add_label(
+            &conn,
+            fid,
+            crate::data::labels::UserLabel::Sharp,
+            crate::data::labels::LabelSource::Manual,
+        )
+        .unwrap();
+
+        assert_eq!(clear_folder(&conn, folder).unwrap(), 1);
+        assert!(get_analysis(&conn, fid).unwrap().is_none());
+        // The user's label survives, so a re-analysis keeps their work.
+        assert!(crate::data::labels::latest_label(&conn, fid)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
