@@ -114,16 +114,29 @@ cd crates/desktop
 ../../ui/node_modules/.bin/tauri build           # add --no-bundle for just the binary
 ```
 
-Output goes to `target/release/bundle/` (verified: NSIS setup 18 MB, MSI 32 MB).
-The bundled YOLO detector ships as a resource (`target/release/models/…`) and is
-seeded into the model directory on first run.
+Output goes to `target/release/bundle/`.
+
+**Two flavours:**
+
+| Build | Command | Contents |
+|---|---|---|
+| Default | `tauri build` | app + the bundled **detector** only. Works on any machine — the species model is installed later from Models ▸ Install from file. |
+| With the species model | `tauri build --config tauri.models.conf.json --bundles nsis` (Windows) / `… --bundles dmg` (macOS) | also bundles the **iNaturalist 2021 model (~820 MB)** and seeds it on first run, so testers get working ID with no downloads. Windows installer ≈ **769 MB**. |
+
+`tauri.models.conf.json` is a merge overlay (Tauri accepts repeated `--config`),
+so it combines with the signing config:
+`tauri build --config tauri.signing.json --config tauri.models.conf.json --bundles nsis`.
+The model files live in `dist-models/inat21/` (gitignored) — build them on the
+shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./MODELS.md)).
+That is why the default config references only the committed detector.
 
 Releases are built by `.github/workflows/release.yml` (Windows x64, macOS arm64
-and x64). Windows code signing is **wired up** — set `WINDOWS_CERTIFICATE` +
-`WINDOWS_CERTIFICATE_PASSWORD` (base64 `.pfx`) and the app exe and both
-installers are signed; without the secrets the build stays unsigned so forks
-keep working. macOS signing/notarization is ready but untested (needs an Apple
-Developer certificate). Full instructions: [`SIGNING.md`](./SIGNING.md).
+and x64); those runners do not have the 820 MB model, so they produce the default
+(detector-only) bundles. Windows code signing is **wired up** — set
+`WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD` (base64 `.pfx`) and the
+app exe and installers are signed; without the secrets the build stays unsigned
+so forks keep working. macOS signing/notarization is ready but untested (needs an
+Apple Developer certificate). Full instructions: [`SIGNING.md`](./SIGNING.md).
 Until a certificate is configured, macOS Gatekeeper needs right-click → Open and
 Windows may show a SmartScreen warning.
 
