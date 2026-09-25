@@ -1160,38 +1160,59 @@ async fn train(state: State<'_, AppState>, folder: Option<i64>) -> Result<TrainR
     .await
 }
 
-/// Copy the bundled detector into the model directory on first run, so the app
-/// has subject detection without any download. Species models stay on-demand.
-fn seed_bundled_models(app: &AppHandle) {
-    let Ok(dir) = registry::default_model_dir() else {
-        return;
-    };
-    let dest = dir.join(DETECTOR_ONNX);
+/// Copy a bundled model file into the model directory if it is not there yet.
+///
+/// Looks in the bundle's resource directory first, then next to the executable,
+/// then in a local `models/` folder (useful when running `cargo run`).
+fn seed_model_file(app: &AppHandle, dir: &Path, name: &str) -> bool {
+    let dest = dir.join(name);
     if dest.is_file() {
-        return;
+        return true;
     }
-
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(res) = app.path().resolve(
-        format!("models/{DETECTOR_ONNX}"),
+        format!("models/{name}"),
         tauri::path::BaseDirectory::Resource,
     ) {
         candidates.push(res);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("models").join(DETECTOR_ONNX));
-            candidates.push(parent.join(DETECTOR_ONNX));
+            candidates.push(parent.join("models").join(name));
+            candidates.push(parent.join(name));
         }
     }
-    candidates.push(PathBuf::from("models").join(DETECTOR_ONNX));
+    candidates.push(PathBuf::from("models").join(name));
 
     for src in candidates {
         if src.is_file()
-            && std::fs::create_dir_all(&dir).is_ok()
+            && std::fs::create_dir_all(dir).is_ok()
             && std::fs::copy(&src, &dest).is_ok()
         {
-            return;
+            return true;
+        }
+    }
+    false
+}
+
+/// Copy the bundled models into the model directory on first run, so the app
+/// works out of the box: the detector plus the iNaturalist 2021 species model
+/// (shipped in the tester build).
+fn seed_bundled_models(app: &AppHandle) {
+    let Ok(dir) = registry::default_model_dir() else {
+        return;
+    };
+    if !seed_model_file(app, &dir, DETECTOR_ONNX) {
+        eprintln!("bundled detector not found; subject detection needs a model");
+    }
+    // The species bundle is optional (a dev build may omit it).
+    for name in [
+        birdsorter_core::analysis::species::SPECIES_ONNX,
+        birdsorter_core::analysis::species::SPECIES_LABELS,
+        birdsorter_core::analysis::species::SPECIES_META,
+    ] {
+        if !seed_model_file(app, &dir, name) {
+            break;
         }
     }
 }
@@ -1206,6 +1227,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             seed_bundled_models(app.handle());
             Ok(())

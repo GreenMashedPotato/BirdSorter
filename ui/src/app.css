@@ -486,10 +486,12 @@ input {
   position: absolute;
   border: 2px solid rgba(76, 141, 255, 0.85);
   cursor: pointer;
+  z-index: 1;
 }
 .box.sel {
   border-color: #ffd166;
   border-width: 3px;
+  z-index: 2;
 }
 .boxtag {
   position: absolute;
@@ -655,6 +657,17 @@ input {
 }
 .disclaimer-head .tier {
   font-size: 11px;
+}
+
+/* Inline link-styled button (external links open via the opener plugin). */
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
 }
 .mini {
   font-size: 12px;
