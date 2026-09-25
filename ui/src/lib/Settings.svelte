@@ -164,7 +164,9 @@
         <p class="status">
           Small birds far away vanish when the frame is scaled down for the detector.
           <strong>Smart</strong> retries those frames on a grid of overlapping tiles, so you pay the
-          extra time only where a bird was actually missed. Takes effect on the next analysis run.
+          extra time only where a bird was actually missed. An edge pass also proposes small
+          subjects in otherwise-empty frames (a bird in flight against sky) and skips tiles that
+          are uniform, so sky shots are both faster and more likely to find the bird.
         </p>
         <div class="row">
           <label for="slice-mode">Detection</label>

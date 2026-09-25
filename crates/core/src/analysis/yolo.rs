@@ -12,6 +12,7 @@
 use ndarray::Array3;
 
 use crate::analysis::detector::{dedupe_detections, nms, BBox, Detection, Letterbox};
+use crate::analysis::edges::EdgeConfig;
 
 /// COCO class index for "bird".
 pub const COCO_BIRD: usize = 14;
@@ -161,6 +162,11 @@ pub struct YoloConfig {
     /// Regions (full frame + tiles) pushed through the model in one call.
     /// Requires a model with a dynamic batch axis; falls back to one at a time.
     pub region_batch: usize,
+    /// Propose small subjects from the edge map (birds against empty sky/water)
+    /// and skip empty tiles. Catches flying/distant birds the full frame misses.
+    pub edge_proposal: bool,
+    /// Tuning for the edge-proposal pass.
+    pub edge: EdgeConfig,
 }
 
 impl Default for YoloConfig {
@@ -174,6 +180,8 @@ impl Default for YoloConfig {
             pad_value: 114,
             slice: SliceMode::default(),
             region_batch: 16,
+            edge_proposal: true,
+            edge: EdgeConfig::default(),
         }
     }
 }

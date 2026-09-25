@@ -16,6 +16,7 @@ use ort::value::Tensor;
 use crate::analysis::detector::{
     dedupe_detections, nms, BBox, Detection, Letterbox, SubjectDetector,
 };
+use crate::analysis::edges;
 use crate::analysis::yolo::{self, SliceMode, YoloConfig};
 use crate::{CoreError, Result};
 
@@ -347,14 +348,32 @@ impl OnnxDetector {
         let (h, w, _) = rgb.dim();
         let full = [(0usize, 0usize, w, h)];
 
+        // Cheap edge map for proposals and empty-tile skipping.
+        let edge = if self.config.edge_proposal {
+            let gray = edges::downsample_gray(rgb, EDGE_LONG_SIDE);
+            let (energy, proposals, gmag) = edges::analyze_full(&gray, &self.config.edge);
+            Some(EdgeMap {
+                scale_x: w as f32 / gray.dim().1.max(1) as f32,
+                scale_y: h as f32 / gray.dim().0.max(1) as f32,
+                energy,
+                gmag,
+                proposals,
+            })
+        } else {
+            None
+        };
+
         match self.config.slice {
             SliceMode::Off => self.detect_regions(rgb, &full),
             SliceMode::Always(cfg) => {
+                let mut regions = vec![(0usize, 0usize, w, h)];
+                self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
                 let mut rects = yolo::region_rects(w, h, &cfg);
-                if rects.is_empty() {
-                    rects = full.to_vec();
+                if !rects.is_empty() {
+                    rects.remove(0); // the full frame is already in
                 }
-                self.detect_regions(rgb, &rects)
+                self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
+                self.detect_regions(rgb, &regions)
             }
             SliceMode::Fallback(cfg) => {
                 // Phase 1: the cheap full-frame pass. Most frames resolve here.
@@ -362,20 +381,91 @@ impl OnnxDetector {
                 if !dets.is_empty() || cfg.grid <= 1 {
                     return Ok(dets);
                 }
-                // Phase 2: nothing found, so this is exactly the frame worth
-                // paying for — retry on the tile grid (skipping the full frame,
-                // which we already know yields nothing).
+                // Phase 2: nothing found — this is exactly the frame worth
+                // paying for. Edge proposals first (targeted, high-res crops),
+                // then the tile grid minus the empty tiles.
+                let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
+                self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
                 let mut rects = yolo::region_rects(w, h, &cfg);
                 if !rects.is_empty() {
                     rects.remove(0);
                 }
-                if rects.is_empty() {
+                self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
+                if regions.is_empty() {
                     return Ok(dets);
                 }
-                self.detect_regions(rgb, &rects)
+                self.detect_regions(rgb, &regions)
             }
         }
     }
+
+    /// Add edge-proposed subject crops (birds against empty sky) to `regions`.
+    fn push_edge_proposals(
+        &self,
+        rgb: &Array3<u8>,
+        edge: Option<&EdgeMap>,
+        regions: &mut Vec<(usize, usize, usize, usize)>,
+    ) {
+        let Some(edge) = edge else { return };
+        if edge.proposals.is_empty() {
+            return;
+        }
+        let (h, w, _) = rgb.dim();
+        for p in &edge.proposals {
+            let x0 = ((p[1] as f32 * edge.scale_x) as usize).min(w);
+            let y0 = ((p[0] as f32 * edge.scale_y) as usize).min(h);
+            let x1 = ((p[3] as f32 * edge.scale_x).ceil() as usize).min(w);
+            let y1 = ((p[2] as f32 * edge.scale_y).ceil() as usize).min(h);
+            if x1 > x0 && y1 > y0 && (x1 - x0) >= 8 && (y1 - y0) >= 8 {
+                regions.push((x0, y0, x1 - x0, y1 - y0));
+            }
+        }
+    }
+
+    /// Add tiles that are not obviously empty (uniform sky/water).
+    fn push_tiles(
+        &self,
+        rgb: &Array3<u8>,
+        edge: Option<&EdgeMap>,
+        rects: &[(usize, usize, usize, usize)],
+        regions: &mut Vec<(usize, usize, usize, usize)>,
+    ) {
+        let _ = rgb;
+        let Some(edge) = edge else {
+            regions.extend_from_slice(rects);
+            return;
+        };
+        let threshold = edge.energy * EMPTY_TILE_RATIO;
+        for &(x0, y0, rw, rh) in rects {
+            if rw < 8 || rh < 8 {
+                continue;
+            }
+            // Map the tile into edge-map coordinates and measure its energy.
+            let ex0 = (x0 as f32 / edge.scale_x) as usize;
+            let ey0 = (y0 as f32 / edge.scale_y) as usize;
+            let ex1 = ((x0 + rw) as f32 / edge.scale_x).ceil() as usize;
+            let ey1 = ((y0 + rh) as f32 / edge.scale_y).ceil() as usize;
+            if edges::mean_energy(&edge.gmag, ey0, ex0, ey1, ex1) >= threshold {
+                regions.push((x0, y0, rw, rh));
+            }
+        }
+    }
+}
+
+/// Long side of the downscaled edge map. Large enough to catch a small bird,
+/// small enough that the edge analysis is negligible next to decoding.
+const EDGE_LONG_SIDE: usize = 384;
+/// A tile whose mean edge energy is below this fraction of the frame mean is
+/// treated as empty (uniform sky/water) and skipped.
+const EMPTY_TILE_RATIO: f32 = 0.12;
+
+/// Precomputed edge analysis for one image.
+struct EdgeMap {
+    scale_x: f32,
+    scale_y: f32,
+    energy: f32,
+    gmag: ndarray::Array2<f32>,
+    proposals: Vec<edges::Proposal>,
 }
 
 /// Region width carried alongside a preprocessed input (letterbox records the
