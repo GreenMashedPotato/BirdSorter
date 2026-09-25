@@ -191,27 +191,24 @@ fn scan_folder_impl(db_path: &Path, folder: i64) -> Result<ScanReportDto, String
 
 fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String> {
     let conn = open(db_path)?;
-    // Worst score first, so culling targets are at the top.
-    let files = library::list_files(&conn, folder, false, true).map_err(err)?;
-    let mut out = Vec::with_capacity(files.len());
-    for lf in files {
-        let analysis = analysis_store::get_analysis(&conn, lf.file.id).map_err(err)?;
-        let label = labels::latest_label(&conn, lf.file.id).map_err(err)?;
-        out.push(FileDto {
-            id: lf.file.id,
-            filename: lf.file.filename,
-            format: lf.file.format,
-            trashed: lf.file.trashed_at.is_some(),
-            analyzed: analysis.is_some(),
-            label: label.map(|l| l.as_str().to_string()),
-            predicted: analysis.as_ref().map(|a| a.predicted_label.clone()),
-            score: analysis.as_ref().map(|a| a.sharpness_score),
-            has_bokeh: analysis.as_ref().map(|a| a.has_bokeh).unwrap_or(false),
-            species: analysis.as_ref().and_then(|a| a.species_name.clone()),
-            subject_class: analysis.as_ref().and_then(|a| a.subject_class.clone()),
-        });
-    }
-    Ok(out)
+    // Single join query replaces N+1 per-file lookups.
+    let rows = library::list_files_with_details(&conn, folder, false, true).map_err(err)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| FileDto {
+            id: r.file.file.id,
+            filename: r.file.file.filename,
+            format: r.file.file.format,
+            trashed: r.file.file.trashed_at.is_some(),
+            analyzed: r.analyzed,
+            label: r.user_label,
+            predicted: r.predicted_label,
+            score: r.sharpness_score,
+            has_bokeh: r.has_bokeh,
+            species: r.species_name,
+            subject_class: r.subject_class,
+        })
+        .collect())
 }
 
 fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {

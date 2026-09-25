@@ -79,15 +79,14 @@ pub fn features_to_vector(f: &SharpnessFeatures) -> [f32; 12] {
 /// Consensus of the independent subject estimators (Laplacian, Tenengrad, FFT,
 /// and Brenner when present).
 fn voted_subject_sharp(f: &SharpnessFeatures) -> f32 {
-    let mut parts = vec![
-        f.tenengrad_subject,
-        f.laplacian_subject,
-        f.fft_high_freq_subject,
-    ];
+    // Fixed-size accumulator avoids a heap allocation for 3-4 values.
+    let mut sum = f.tenengrad_subject + f.laplacian_subject + f.fft_high_freq_subject;
+    let mut n = 3usize;
     if f.brenner_subject > 0.0 {
-        parts.push(f.brenner_subject);
+        sum += f.brenner_subject;
+        n += 1;
     }
-    parts.iter().sum::<f32>() / parts.len() as f32
+    sum / n as f32
 }
 
 /// A human-readable trace of how the rule scorer reached its verdict. Powers the

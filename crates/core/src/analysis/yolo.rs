@@ -211,26 +211,32 @@ pub fn preprocess<S: ndarray::Data<Elem = u8>>(
 
     let ts = size as usize;
     let pad = cfg.pad_value as f32 / 255.0;
-    // Letterbox canvas in HWC, then converted to CHW below.
-    let mut buf = vec![0.0f32; 3 * ts * ts];
-    for c in 0..3 {
-        for y in 0..ts {
-            for x in 0..ts {
-                buf[c * ts * ts + y * ts + x] = pad;
-            }
-        }
-    }
+    // Fill the entire CHW buffer with the padding value in one pass — this is
+    // sequential in memory and much faster than per-pixel assignment.
+    let total = 3 * ts * ts;
+    let mut buf = vec![pad; total];
+
+    // Copy the resized image into the letterbox canvas. Channel-outer loop
+    // keeps writes to `buf` sequential within each plane.
     let px = lb.pad_x.round() as usize;
     let py = lb.pad_y.round() as usize;
-    for y in 0..lb.new_h as usize {
-        for x in 0..lb.new_w as usize {
+    let rw = lb.new_w as usize;
+    let rh = lb.new_h as usize;
+    let plane = ts * ts;
+    for c in 0..3usize {
+        let plane_offset = c * plane;
+        for y in 0..rh {
             let ty = py + y;
-            let tx = px + x;
-            if ty >= ts || tx >= ts {
-                continue;
+            if ty >= ts {
+                break;
             }
-            for c in 0..3 {
-                buf[c * ts * ts + ty * ts + tx] = resized[[y, x, c]] as f32 / 255.0;
+            let dst_row = plane_offset + ty * ts + px;
+            for x in 0..rw {
+                let tx = px + x;
+                if tx >= ts {
+                    break;
+                }
+                buf[dst_row + (tx - px)] = resized[[y, x, c]] as f32 / 255.0;
             }
         }
     }
