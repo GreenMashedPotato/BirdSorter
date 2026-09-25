@@ -29,6 +29,7 @@ demosaic = "0.3"
 sha2 = "0.10"
 ureq = "3"
 zip = "2"
+trash = "5"
 
 # --- dev ---
 approx = "0.5"
