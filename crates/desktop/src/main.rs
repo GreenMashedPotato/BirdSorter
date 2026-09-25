@@ -26,6 +26,7 @@ use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
+use birdsorter_core::io::export::{export_files, ExportMode};
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::learning::trainer;
@@ -746,6 +747,42 @@ async fn set_detection_settings(settings: DetectionSettings) -> Result<(), Strin
     blocking(move || settings.save_default().map_err(err)).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheReportDto {
+    removed: usize,
+    bytes_before: u64,
+    bytes_after: u64,
+}
+
+/// Thumbnail cache maintenance: `clear_all` wipes it, otherwise only entries
+/// whose content hash is no longer in the library are removed.
+#[tauri::command]
+async fn clean_cache(
+    state: State<'_, AppState>,
+    clear_all: bool,
+) -> Result<CacheReportDto, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    blocking(move || {
+        let cache = ThumbCache::new(cache_root);
+        let bytes_before = cache.size_bytes();
+        let removed = if clear_all {
+            cache.clear().map_err(err)?
+        } else {
+            let conn = open(&db_path)?;
+            let live = library::all_content_hashes(&conn).map_err(err)?;
+            cache.retain(&live).map_err(err)?
+        };
+        Ok(CacheReportDto {
+            removed,
+            bytes_before,
+            bytes_after: cache.size_bytes(),
+        })
+    })
+    .await
+}
+
 /// Recompute verdicts for a folder from stored features (no re-decode).
 #[tauri::command]
 async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, String> {
@@ -754,6 +791,59 @@ async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, Strin
         let conn = open(&db_path)?;
         let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
         rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportResultDto {
+    exported: usize,
+    failed: Vec<String>,
+    destination: String,
+}
+
+/// Copy or move the keepers in `folder` into `dest`.
+///
+/// With `predicted` set, selection is by the scorer's verdict (so it works
+/// before the user has labelled anything); otherwise it is by latest user label.
+#[tauri::command]
+async fn export_keepers(
+    state: State<'_, AppState>,
+    folder: i64,
+    dest: String,
+    label: Option<String>,
+    mode: Option<String>,
+    predicted: Option<String>,
+) -> Result<ExportResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let mode = ExportMode::parse(mode.as_deref().unwrap_or("copy"))
+            .ok_or_else(|| "mode must be 'copy' or 'move'".to_string())?;
+        let files = match predicted
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            Some(pred) => library::files_with_predicted_label(&conn, folder, pred).map_err(err)?,
+            None => {
+                let label: labels::UserLabel =
+                    label.as_deref().unwrap_or("sharp").parse().map_err(err)?;
+                library::files_with_latest_label(&conn, folder, label).map_err(err)?
+            }
+        };
+        let paths: Vec<PathBuf> = files.into_iter().map(|f| f.absolute_path).collect();
+        let report = export_files(&paths, Path::new(&dest), mode).map_err(err)?;
+        Ok(ExportResultDto {
+            exported: report.exported,
+            failed: report
+                .failed
+                .iter()
+                .map(|(p, e)| format!("{}: {e}", p.display()))
+                .collect(),
+            destination: report.destination.to_string_lossy().to_string(),
+        })
     })
     .await
 }
@@ -868,7 +958,9 @@ fn main() {
             set_settings,
             get_detection_settings,
             set_detection_settings,
+            clean_cache,
             rescore,
+            export_keepers,
             train,
             models_status,
             download_model,

@@ -40,9 +40,7 @@ fn bench_compute_features(c: &mut Criterion) {
             (h / 4) as i32,
         );
         group.bench_with_input(BenchmarkId::new("with_subject", side), &img, |b, img| {
-            b.iter(|| {
-                compute_features(std::hint::black_box(img), Some(Subject::from_bbox(bbox)))
-            })
+            b.iter(|| compute_features(std::hint::black_box(img), Some(Subject::from_bbox(bbox))))
         });
     }
     group.finish();
@@ -52,7 +50,10 @@ fn bench_preprocess(c: &mut Criterion) {
     let mut group = c.benchmark_group("yolo_preprocess");
     let cfg = YoloConfig::default();
     // A full-frame 26 MP image and one slice tile.
-    for (name, w, h) in [("full_8192x5464", 8192usize, 5464usize), ("tile_2048x1365", 2048, 1365)] {
+    for (name, w, h) in [
+        ("full_8192x5464", 8192usize, 5464usize),
+        ("tile_2048x1365", 2048, 1365),
+    ] {
         let img = texture(w, h);
         group.throughput(Throughput::Elements((w * h) as u64));
         group.bench_with_input(BenchmarkId::new("letterbox_640", name), &img, |b, img| {
@@ -72,19 +73,28 @@ fn bench_metrics(c: &mut Criterion) {
     group.bench_function("variance_of_laplacian", |b| {
         b.iter(|| variance_of_laplacian(std::hint::black_box(&gray)))
     });
-    group.bench_function("tenengrad", |b| b.iter(|| tenengrad(std::hint::black_box(&gray))));
+    group.bench_function("tenengrad", |b| {
+        b.iter(|| tenengrad(std::hint::black_box(&gray)))
+    });
     group.bench_function("fft_high_freq_ratio", |b| {
         b.iter(|| fft_high_freq_ratio(std::hint::black_box(&gray)))
     });
     group.bench_function("local_contrast", |b| {
         b.iter(|| local_contrast(std::hint::black_box(&gray), 32))
     });
-    group.bench_function("brenner", |b| b.iter(|| brenner_gradient(std::hint::black_box(&gray))));
+    group.bench_function("brenner", |b| {
+        b.iter(|| brenner_gradient(std::hint::black_box(&gray)))
+    });
     group.bench_function("directionality", |b| {
         b.iter(|| gradient_directionality(std::hint::black_box(&gray)))
     });
     group.finish();
 }
 
-criterion_group!(benches, bench_compute_features, bench_preprocess, bench_metrics);
+criterion_group!(
+    benches,
+    bench_compute_features,
+    bench_preprocess,
+    bench_metrics
+);
 criterion_main!(benches);

@@ -91,6 +91,24 @@ python tools/train_bird_detector.py --task detect --from-coco \
 
 Both fixes compose: a fine-tuned model *and* tiling.
 
+### Species model batching
+
+The app classifies all bird crops from one image in a **single batched ONNX
+call** when the model allows it, and falls back to per-crop inference otherwise.
+The bundled ViT export has a **fixed batch dimension of 1**, so it takes the
+fallback today. Re-export with a dynamic batch axis to get the win:
+
+```python
+torch.onnx.export(
+    model, dummy, "bird_species.onnx",
+    input_names=["pixel_values"], output_names=["logits"],
+    dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},
+    opset_version=17,
+)
+```
+
+The fallback is logged with `BIRDSORTER_DEBUG_ONNX=1`.
+
 ## Notes
 
 - **Use ops the bundled ONNX Runtime supports.** A ViT classifier works; an

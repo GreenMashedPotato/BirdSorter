@@ -155,6 +155,15 @@ input {
 .tile.selected {
   outline: 2px solid var(--accent);
 }
+/* Keyboard cursor (arrow keys); a dashed ring distinguishes it from selection. */
+.tile.focused {
+  outline: 2px dashed #ffd479;
+  outline-offset: 1px;
+}
+.tile.focused.selected {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px #ffd479aa;
+}
 .tile .thumb {
   aspect-ratio: 4 / 3;
   background: #0c0e12;

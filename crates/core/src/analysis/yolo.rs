@@ -240,11 +240,7 @@ pub fn preprocess<S: ndarray::Data<Elem = u8>>(
         .map(|x| {
             let sx = x as f32 * x_ratio;
             let x0 = sx as usize;
-            (
-                x0.min(w - 1),
-                (x0 + 1).min(w - 1),
-                sx - x0 as f32,
-            )
+            (x0.min(w - 1), (x0 + 1).min(w - 1), sx - x0 as f32)
         })
         .collect();
 
