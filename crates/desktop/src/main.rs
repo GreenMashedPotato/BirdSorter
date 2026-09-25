@@ -760,6 +760,8 @@ struct ModelStatusDto {
     status: String,
     files: Vec<String>,
     url: String,
+    /// A planned model with no artefact yet (needs a training run).
+    planned: bool,
 }
 
 #[tauri::command]
@@ -779,6 +781,7 @@ async fn models_status() -> Result<Vec<ModelStatusDto>, String> {
                     status: format!("{status:?}").to_lowercase(),
                     files: s.files.clone(),
                     url: s.url.clone(),
+                    planned: s.tags.iter().any(|t| t == "planned"),
                 }
             })
             .collect())
