@@ -18,12 +18,19 @@ use crate::io::hash::hash_file;
 use crate::{CoreError, Result};
 
 /// Extensions we treat as RAW photographs.
-pub const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"];
+///
+/// Covers the brands bird photographers actually use: Canon (`cr3`, `cr2`,
+/// `crw`), Nikon (`nef`, `nrw`), Sony (`arw`, `sr2`, `srf`), OM System / Olympus
+/// (`orf`), plus Fujifilm (`raf`), Panasonic (`rw2`), Pentax (`pef`) and DNG.
+pub const RAW_EXTENSIONS: &[&str] = &[
+    "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef", "dng",
+];
 
 /// Extensions the scanner picks up: RAW plus common JPEG. (Birders sometimes
 /// shoot JPEG, and it makes the pipeline easy to exercise in tests.)
 pub const PHOTO_EXTENSIONS: &[&str] = &[
-    "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng", "jpg", "jpeg",
+    "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef", "dng",
+    "jpg", "jpeg",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -811,6 +818,23 @@ mod tests {
 
         let missing = dir.path().join("nope");
         assert!(add_folder(&conn, &missing).is_err());
+    }
+
+    #[test]
+    fn scanner_accepts_the_major_raw_brands() {
+        // Canon, Nikon, Sony and OM System / Olympus must all be picked up;
+        // decoding is delegated to rawler, which has a dedicated decoder for
+        // each of these formats (cr2/cr3/crw, nef/nrw, arw/srw, orf).
+        for ext in [
+            "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "rw2", "raf", "pef",
+            "dng",
+        ] {
+            assert!(PHOTO_EXTENSIONS.contains(&ext), "missing extension: {ext}");
+            assert!(
+                RAW_EXTENSIONS.contains(&ext),
+                "missing RAW extension: {ext}"
+            );
+        }
     }
 
     #[test]

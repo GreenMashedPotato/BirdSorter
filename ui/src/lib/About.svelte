@@ -1,11 +1,24 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { appInfo, type AppInfo } from "./api";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { inTauri, appInfo, type AppInfo } from "./api";
 
   let { onClose }: { onClose: () => void } = $props();
 
   let info = $state<AppInfo | null>(null);
   let error = $state("");
+
+  async function openContact(url: string) {
+    try {
+      if (inTauri) {
+        await openUrl(url);
+      } else {
+        window.open(url, "_blank");
+      }
+    } catch (e) {
+      error = `could not open the link: ${e}`;
+    }
+  }
 
   onMount(async () => {
     try {
@@ -42,7 +55,9 @@
           <p>
             <strong>Contact:</strong>
             {#if info.contact}
-              <a href={info.contact} target="_blank" rel="noreferrer">{info.contactLabel}</a>
+              <button class="link" onclick={() => info && openContact(info.contact)}>
+                {info.contactLabel}
+              </button>
             {:else}
               <span class="status">—</span>
             {/if}

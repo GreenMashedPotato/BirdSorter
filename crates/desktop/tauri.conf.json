@@ -22,10 +22,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "resources": {
-      "../../models/bird_det_v1.onnx": "models/bird_det_v1.onnx"
+      "../../models/bird_det_v1.onnx": "models/bird_det_v1.onnx",
+      "../../dist-models/inat21/bird_species.onnx": "models/bird_species.onnx",
+      "../../dist-models/inat21/bird_species.labels.json": "models/bird_species.labels.json",
+      "../../dist-models/inat21/bird_species.meta.json": "models/bird_species.meta.json"
     }
   }
 }

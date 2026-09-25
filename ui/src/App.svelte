@@ -322,6 +322,9 @@
 
   function onPanStart(e: PointerEvent) {
     if (!stageEl) return;
+    // Panning must not steal the pointer from a subject box, otherwise its
+    // click never fires and you cannot switch boxes.
+    if ((e.target as HTMLElement | null)?.closest?.(".box")) return;
     panning = true;
     panStart = { x: e.clientX, y: e.clientY, tx, ty };
     stageEl.setPointerCapture(e.pointerId);
@@ -1276,7 +1279,17 @@
                     style="left:{(b.x / boxW) * 100}%; top:{(b.y / boxH) * 100}%; width:{(b.w / boxW) * 100}%; height:{(b.h / boxH) * 100}%"
                     role="button"
                     tabindex="0"
-                    onclick={() => (selectedBox = i)}
+                    title="Select this subject"
+                    onpointerdown={(e) => {
+                      // Select on pointerdown (before the stage can capture the
+                      // pointer for panning) and keep the event from the stage.
+                      e.stopPropagation();
+                      selectedBox = i;
+                    }}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      selectedBox = i;
+                    }}
                     onkeydown={(e) => e.key === "Enter" && (selectedBox = i)}
                   >
                     <span class="boxtag"
