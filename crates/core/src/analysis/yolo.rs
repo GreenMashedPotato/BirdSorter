@@ -152,6 +152,10 @@ impl YoloConfig {
 }
 
 /// Bilinear resize of an RGB image.
+///
+/// Kept for callers that want the image on its own; `preprocess` fuses resize,
+/// letterbox padding and NCHW normalisation into a single pass instead.
+#[allow(dead_code)]
 fn resize_bilinear<S: ndarray::Data<Elem = u8>>(
     src: &ndarray::ArrayBase<S, ndarray::Ix3>,
     nw: usize,
@@ -198,6 +202,11 @@ fn resize_bilinear<S: ndarray::Data<Elem = u8>>(
 
 /// Letterbox an image and convert it to a normalised NCHW `f32` buffer.
 ///
+/// Resize, padding and CHW normalisation happen in **one pass** (no intermediate
+/// resized image), and the source is read with unchecked indexing after the
+/// letterbox geometry has been validated. This matters for sliced inference,
+/// where one image becomes ~17 tiles.
+///
 /// Returns the buffer (`3 * size * size`, RGB planes) and the [`Letterbox`] used
 /// to map boxes back to source coordinates.
 pub fn preprocess<S: ndarray::Data<Elem = u8>>(
@@ -207,36 +216,72 @@ pub fn preprocess<S: ndarray::Data<Elem = u8>>(
     let (h, w, _) = rgb.dim();
     let size = cfg.input_size;
     let lb = Letterbox::new(w as u32, h as u32, size);
-    let resized = resize_bilinear(rgb, lb.new_w as usize, lb.new_h as usize);
-
     let ts = size as usize;
     let pad = cfg.pad_value as f32 / 255.0;
-    // Fill the entire CHW buffer with the padding value in one pass — this is
-    // sequential in memory and much faster than per-pixel assignment.
-    let total = 3 * ts * ts;
-    let mut buf = vec![pad; total];
+    let mut buf = vec![pad; 3 * ts * ts];
+    if h == 0 || w == 0 || ts == 0 || lb.new_w == 0 || lb.new_h == 0 {
+        return (buf, lb);
+    }
 
-    // Copy the resized image into the letterbox canvas. Channel-outer loop
-    // keeps writes to `buf` sequential within each plane.
+    // Precompute the source column/row mappings once per output axis.
+    let nw = lb.new_w as usize;
+    let nh = lb.new_h as usize;
+    let x_ratio = if nw > 1 {
+        (w as f32 - 1.0) / (nw as f32 - 1.0)
+    } else {
+        0.0
+    };
+    let y_ratio = if nh > 1 {
+        (h as f32 - 1.0) / (nh as f32 - 1.0)
+    } else {
+        0.0
+    };
+    let cols: Vec<(usize, usize, f32)> = (0..nw)
+        .map(|x| {
+            let sx = x as f32 * x_ratio;
+            let x0 = sx as usize;
+            (
+                x0.min(w - 1),
+                (x0 + 1).min(w - 1),
+                sx - x0 as f32,
+            )
+        })
+        .collect();
+
     let px = lb.pad_x.round() as usize;
     let py = lb.pad_y.round() as usize;
-    let rw = lb.new_w as usize;
-    let rh = lb.new_h as usize;
     let plane = ts * ts;
-    for c in 0..3usize {
-        let plane_offset = c * plane;
-        for y in 0..rh {
-            let ty = py + y;
-            if ty >= ts {
+    let inv255 = 1.0f32 / 255.0;
+
+    for y in 0..nh {
+        let ty = py + y;
+        if ty >= ts {
+            break;
+        }
+        let sy = y as f32 * y_ratio;
+        let y0 = (sy as usize).min(h - 1);
+        let y1 = (y0 + 1).min(h - 1);
+        let fy = sy - y0 as f32;
+        let dst_row = ty * ts;
+        for (x, &(x0, x1, fx)) in cols.iter().enumerate() {
+            let tx = px + x;
+            if tx >= ts {
                 break;
             }
-            let dst_row = plane_offset + ty * ts + px;
-            for x in 0..rw {
-                let tx = px + x;
-                if tx >= ts {
-                    break;
+            // SAFETY: x0/x1 < w and y0/y1 < h (clamped above); the destination
+            // index `c*plane + ty*ts + tx` is in bounds because ty < ts and
+            // tx < ts (both checked here).
+            unsafe {
+                for c in 0..3usize {
+                    let p00 = *rgb.uget([y0, x0, c]) as f32;
+                    let p01 = *rgb.uget([y0, x1, c]) as f32;
+                    let p10 = *rgb.uget([y1, x0, c]) as f32;
+                    let p11 = *rgb.uget([y1, x1, c]) as f32;
+                    let top = p00 + (p01 - p00) * fx;
+                    let bottom = p10 + (p11 - p10) * fx;
+                    let v = (top + (bottom - top) * fy).round().clamp(0.0, 255.0);
+                    *buf.get_unchecked_mut(c * plane + dst_row + tx) = v * inv255;
                 }
-                buf[dst_row + (tx - px)] = resized[[y, x, c]] as f32 / 255.0;
             }
         }
     }
