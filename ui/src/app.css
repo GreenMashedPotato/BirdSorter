@@ -558,6 +558,47 @@ input {
 .other input {
   flex: 1;
 }
+/* Species autocomplete: the list hangs below the field. */
+.ac-wrap {
+  position: relative;
+  flex-wrap: wrap;
+}
+.ac {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 2px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0009;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ac li {
+  margin: 0;
+}
+.ac button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.ac button.active,
+.ac button:hover {
+  background: var(--accent);
+  color: #fff;
+}
 .mini {
   font-size: 12px;
   padding: 4px 8px;
