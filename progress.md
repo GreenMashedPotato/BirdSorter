@@ -74,6 +74,8 @@ detection → sharpness verdict → species ID → grid/review UI).
   resamples from the full-resolution bitmap instead of magnifying a small raster.
 - **Virtualized grid**: only the on-screen rows (plus overscan) are rendered, so
   folders with thousands of images stay responsive.
+- **Eye heuristic**: computed on a size-normalised subject crop (512 px), so eye
+  sharpness is comparable across subjects of very different sizes.
 - **Packaging**: `tauri build` produces an NSIS setup (18 MB) and an MSI (32 MB);
   the detector ships as a bundled resource. Release workflow added for Windows
   x64 + macOS arm64/x64. Unsigned for now.
@@ -103,8 +105,12 @@ detection → sharpness verdict → species ID → grid/review UI).
 1. **Signing / notarization** — macOS Developer ID + notarization ($99/yr) and a
    Windows code-signing cert, so installers open without SmartScreen/Gatekeeper
    warnings. Auto-updater (tauri-plugin-updater) after that.
-2. **Eye focus model** (v2) to replace the heuristic; fine-tuned single-class bird
-   detector for small/distant birds (needs a labelled dataset + training).
+2. **Eye focus / bird detector v2 — needs training.** Registry slots and a
+   size-normalised eye heuristic are in place (`bird_eye`, `bird_detector_v2`),
+   but there is no labelled dataset or training run yet. A future session needs:
+   a bird detection dataset (iNat21 Aves / CUB-200 / public sets) fine-tuned into
+   a single-class YOLO11n, and an eye/head landmark dataset for the eye model;
+   the `demosaic`-style export path (`tools/`) then drops them in as ONNX.
 3. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
 4. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
 5. **Asset protocol for previews** — only worth it if very large previews return;

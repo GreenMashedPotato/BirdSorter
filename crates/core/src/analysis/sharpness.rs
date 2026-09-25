@@ -28,6 +28,9 @@ const BRENNER_SCALE: f32 = 1500.0;
 const LOCAL_CONTRAST_SCALE: f32 = 80.0;
 const LOCAL_CONTRAST_PATCH: usize = 32;
 const MIN_EYE_DIM: usize = 16;
+/// The subject crop is normalised to this long side before the eye search, so
+/// eye sharpness is comparable across subjects of very different sizes.
+const EYE_NORM_LONG_SIDE: usize = 512;
 const BG_EPS: f32 = 1e-3;
 
 /// A detected subject region to analyse, independent of the detector that
@@ -441,22 +444,25 @@ fn ratio_from_grid(grid: &[[f32; 3]; 3]) -> f32 {
 /// Pose-robust eye-sharpness heuristic: the max over three head/eye candidate
 /// crops. Returns 0.0 when the subject is too small to measure.
 fn eye_region_sharpness(subj: &Array2<f32>) -> f32 {
-    let (h, w) = subj.dim();
+    // Normalise so the score is comparable across subject sizes (a 300 px and a
+    // 3000 px bird should not be judged on different scales).
+    let norm = normalise_size(subj, EYE_NORM_LONG_SIDE);
+    let (h, w) = norm.dim();
     if h < MIN_EYE_DIM || w < MIN_EYE_DIM {
         return 0.0;
     }
     let hf = h as f32;
     let wf = w as f32;
     let candidates = [
-        subj.slice(s![
+        norm.slice(s![
             0..((hf * 0.45) as usize).max(1),
             (wf * 0.20) as usize..((wf * 0.80) as usize).min(w)
         ]),
-        subj.slice(s![
+        norm.slice(s![
             (hf * 0.10) as usize..((hf * 0.70) as usize).min(h),
             0..((wf * 0.40) as usize).max(1)
         ]),
-        subj.slice(s![
+        norm.slice(s![
             (hf * 0.10) as usize..((hf * 0.70) as usize).min(h),
             (wf * 0.60) as usize..w
         ]),
