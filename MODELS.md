@@ -72,6 +72,25 @@ YOLO("yolo11n.pt").export(format="onnx", imgsz=640, opset=12, simplify=False)
 Export at opset 12 and **without** the NMS/end2end head — the app does
 letterboxing, decoding, NMS and de-duplication itself.
 
+### Fine-tuning the detector (v2)
+
+The stock COCO `bird` class misses small/distant birds. Two independent fixes:
+
+1. **Sliced inference** — already built into the app (Settings ▸ Distant birds);
+   no training needed. On a real 26 MP frame this recovered a distant raptor the
+   frame-wide run missed entirely (0 → 1 bird at 0.92).
+2. **Fine-tune** — `tools/train_bird_detector.py` trains a single-class bird
+   detector (or eye/head keypoints) and exports `bird_det_v2.onnx` /
+   `bird_eye_v1.onnx`, ready for the `bird_detector_v2` / `bird_eye` registry
+   slots:
+
+```bash
+python tools/train_bird_detector.py --task detect --from-coco \
+    --coco-json instances_val2017.json --images val2017 --epochs 100 --export-int8
+```
+
+Both fixes compose: a fine-tuned model *and* tiling.
+
 ## Notes
 
 - **Use ops the bundled ONNX Runtime supports.** A ViT classifier works; an

@@ -224,8 +224,14 @@ Every milestone lands with criterion benches for its hot path; CI tracks them an
 
 1. **Detection** — v1: yolo11n ONNX filtered to COCO `bird`, own post-process;
    prototype's `dedupe_detections` (IoU ≥ 0.5 or containment ≥ 0.7 drop) ported as-is.
-   v2: fine-tuned single-class bird detector (iNat21 Aves + CUB-200 + public sets) for
+   v2: fine-tuned single-class bird detector (iNat21 Aves / COCO / public sets) for
    small/distant perched-bird recall; shipped as registry entry `bird_det_v2.onnx`.
+   **Delivered without training: sliced (tiled) inference** — the detector also
+   runs on an overlapping tile grid, merged with a cross-region NMS, and is on
+   by default when a GPU EP is active. Verified: a distant raptor missed at
+   full frame (0 birds) is found at 0.92 with a 6×6 grid; a larger input size
+   does not help, so tiling is the right lever. Fine-tuning tooling is in
+   `tools/train_bird_detector.py` (needs a dataset).
 2. **Sharpness features** (identical vector to prototype — keeps golden tests transferable):
    laplacian var / tenengrad / FFT high-freq / local contrast / Brenner, each for
    full–subject–background; `subject_to_bg_ratio` (bokeh, >2.5); 3×3 edge grid;
@@ -286,6 +292,9 @@ Every milestone lands with criterion benches for its hot path; CI tracks them an
   `onnxruntime_providers_dml.dll` on Windows; CoreML EP is inside the mac dylib.
 - **Signing**: macOS Developer ID + notarization ($99/yr — required, else Gatekeeper);
   Windows code-signing cert when budget allows (SmartScreen warning documented until then).
+  **Wired up** in `release.yml` behind optional secrets — see `SIGNING.md`. Windows
+  is done pending a certificate; macOS is scripted but unverified
+  (`MACOS_TODO.md`).
 - **Auto-update**: tauri-plugin-updater with signed manifest on GitHub Releases.
 - **CI matrix** (`ci.yml`): `windows-latest`, `windows-11-arm`, `macos-14`, `macos-13`,
   `ubuntu-latest` (core+cli only). Per PR: fmt, clippy `-D warnings`, `cargo test`
