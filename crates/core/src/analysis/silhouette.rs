@@ -39,9 +39,12 @@ pub struct SilhouetteConfig {
 impl Default for SilhouetteConfig {
     fn default() -> Self {
         Self {
-            long_side: 1024,
-            contrast: 0.20,
-            min_area_px: 24,
+            // The analysis decode is already ~2400 px on the long side, so this
+            // means "work at full analysis resolution" - a 10 px bird must not
+            // be downscaled away.
+            long_side: 2400,
+            contrast: 0.15,
+            min_area_px: 16,
             max_area_frac: 0.05,
             max_bg_std: 16.0,
             max_subjects: 5,

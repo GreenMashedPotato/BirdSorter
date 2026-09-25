@@ -41,7 +41,11 @@
           </p>
           <p>
             <strong>Contact:</strong>
-            <a href={info.contact} target="_blank" rel="noreferrer">{info.contact}</a>
+            {#if info.contact}
+              <a href={info.contact} target="_blank" rel="noreferrer">{info.contactLabel}</a>
+            {:else}
+              <span class="status">—</span>
+            {/if}
           </p>
         </section>
 

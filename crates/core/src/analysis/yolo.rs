@@ -155,6 +155,9 @@ pub struct YoloConfig {
     pub iou_threshold: f32,
     /// COCO indices to keep, or `None` for all.
     pub class_filter: Option<Vec<usize>>,
+    /// Keep at most this many detections (after NMS/dedupe). A busy frame with
+    /// the lowered fallback threshold can otherwise produce dozens of spurious
+    /// boxes.
     pub max_detections: usize,
     /// Letterbox padding value (Ultralytics uses 114).
     pub pad_value: u8,
@@ -187,7 +190,7 @@ impl Default for YoloConfig {
             conf_threshold: 0.25,
             iou_threshold: 0.45,
             class_filter: Some(vec![COCO_BIRD]),
-            max_detections: 300,
+            max_detections: 32,
             pad_value: 114,
             slice: SliceMode::default(),
             region_batch: 16,

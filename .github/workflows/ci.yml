@@ -1,9 +1,24 @@
 name: CI
 
+# Cost note: this repo is private, so Actions minutes are billed (macOS at 10x
+# the Linux rate). The matrix is therefore deliberately small - Linux + Windows
+# only. macOS is validated by hand (see MACOS_TODO.md) instead of per-push.
 on:
   push:
     branches: [main]
+    # Documentation-only changes should not spend CI minutes.
+    paths-ignore:
+      - "**/*.md"
+      - "dist-models/**"
+      - "models/**"
+      - "LICENSE*"
   pull_request:
+
+# A new push to the same branch cancels the previous run, so a rapid series of
+# commits cannot multiply the bill.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14, macos-13, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -51,17 +66,16 @@ jobs:
       - name: Install
         working-directory: ui
         run: npm ci
+      - name: Type-check
+        working-directory: ui
+        run: npx svelte-check --tsconfig ./tsconfig.json
       - name: Build
         working-directory: ui
         run: npm run build
 
   desktop:
-    name: desktop (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-14]
+    name: desktop (windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 

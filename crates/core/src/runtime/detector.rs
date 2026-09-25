@@ -378,43 +378,59 @@ impl OnnxDetector {
             None
         };
 
-        // The "look harder" pass (tiles + edge proposals) uses a lower
-        // confidence threshold: small in-flight birds score weakly, and we have
-        // already decided these frames are worth the extra scrutiny.
+        // The "look harder" pass uses a lower confidence threshold for
+        // *targeted* edge proposals - small in-flight birds score weakly. Generic
+        // tiles keep the normal threshold, otherwise a busy frame floods with
+        // dozens of spurious boxes.
         let recall = self.config.recall_pass();
+        let phase2 = |proposals: &[(usize, usize, usize, usize)],
+                      tiles: &[(usize, usize, usize, usize)]|
+         -> Result<Vec<Detection>> {
+            let mut all: Vec<Detection> = Vec::new();
+            if !proposals.is_empty() {
+                all.extend(self.detect_regions(rgb, proposals, &recall)?);
+            }
+            if !tiles.is_empty() {
+                all.extend(self.detect_regions(rgb, tiles, &self.config)?);
+            }
+            let merged = nms(all, self.config.iou_threshold);
+            Ok(dedupe_detections(merged, 0.5, 0.7))
+        };
 
         let dets = match self.config.slice {
             SliceMode::Off => self.detect_regions(rgb, &full, &self.config)?,
             SliceMode::Always(cfg) => {
-                let mut regions = vec![(0usize, 0usize, w, h)];
-                self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
+                let mut proposals = Vec::new();
+                self.push_edge_proposals(rgb, edge.as_ref(), &mut proposals);
                 let mut rects = yolo::region_rects(w, h, &cfg);
                 if !rects.is_empty() {
-                    rects.remove(0); // the full frame is already in
+                    rects.remove(0); // the full frame is handled separately
                 }
-                self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
-                self.detect_regions(rgb, &regions, &recall)?
+                let mut tiles = Vec::new();
+                self.push_tiles(rgb, edge.as_ref(), &rects, &mut tiles);
+                let mut all = self.detect_regions(rgb, &full, &self.config)?;
+                all.extend(phase2(&proposals, &tiles)?);
+                let merged = nms(all, self.config.iou_threshold);
+                dedupe_detections(merged, 0.5, 0.7)
             }
             SliceMode::Fallback(cfg) => {
                 // Phase 1: the cheap full-frame pass. Most frames resolve here.
-                let dets = self.detect_regions(rgb, &full, &self.config)?;
-                if !dets.is_empty() || cfg.grid <= 1 {
-                    dets
+                let first = self.detect_regions(rgb, &full, &self.config)?;
+                if !first.is_empty() || cfg.grid <= 1 {
+                    first
                 } else {
-                    // Phase 2: nothing found — this is exactly the frame worth
-                    // paying for. Edge proposals first (targeted, high-res
-                    // crops), then the tile grid minus the empty tiles.
-                    let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
-                    self.push_edge_proposals(rgb, edge.as_ref(), &mut regions);
+                    let mut proposals = Vec::new();
+                    self.push_edge_proposals(rgb, edge.as_ref(), &mut proposals);
                     let mut rects = yolo::region_rects(w, h, &cfg);
                     if !rects.is_empty() {
                         rects.remove(0);
                     }
-                    self.push_tiles(rgb, edge.as_ref(), &rects, &mut regions);
-                    if regions.is_empty() {
-                        dets
+                    let mut tiles = Vec::new();
+                    self.push_tiles(rgb, edge.as_ref(), &rects, &mut tiles);
+                    if proposals.is_empty() && tiles.is_empty() {
+                        first
                     } else {
-                        self.detect_regions(rgb, &regions, &recall)?
+                        phase2(&proposals, &tiles)?
                     }
                 }
             }
