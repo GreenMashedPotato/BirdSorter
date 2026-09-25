@@ -2,7 +2,7 @@
 
 Living status doc for BirdSorter. See `README.md` for the architecture and roadmap.
 
-_Last updated: 2026-09-24_
+_Last updated: 2026-09-25_
 
 ## Where we are
 
@@ -10,9 +10,11 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **141 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- **158 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
+- GPU: DirectML verified on a real NVIDIA GPU; sliced inference recovers distant
+  birds the frame-wide run misses
 - App runs in release (`cargo run --release -p birdsorter-desktop`)
 
 ## Milestones
@@ -24,8 +26,8 @@ detection → sharpness verdict → species ID → grid/review UI).
 | M2 | UI v1 (grid, review, labels, filters) | ✅ done |
 | M3 | Compute tiers + model manager | ✅ model registry + Model Manager (download / install from file / remove) |
 | M4 | Species ID | ✅ done (ViT, 526 species) |
-| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst UI + learning loop done; eye model pending |
-| M6 | Release engineering (installers, signing) | 🟡 installers build (unsigned); signing/notarization pending |
+| M5 | Bird upgrades (burst UI, eye model, learning loop) | 🟡 burst UI + learning loop + sliced detection done; eye model needs a dataset |
+| M6 | Release engineering (installers, signing) | 🟡 installers build; **Windows signing wired** (needs a cert); notarization pending |
 
 ## Done
 
@@ -89,10 +91,27 @@ detection → sharpness verdict → species ID → grid/review UI).
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each
   sequence. CLI: `birdsorter bursts <folder>`.
+- **Sliced (tiled) detection for distant birds**: the detector also runs on an
+  overlapping tile grid and merges the results, so birds that vanish when the
+  whole frame is letterboxed to 640 px are still found. Measured on a real 26 MP
+  frame: frame-wide = **0 birds**, `--slice 6` = **1 bird at 0.92**. A larger
+  input size does **not** help (verified), so tiling is the lever. Defaults to
+  **Auto** — tiles only when a GPU EP is active, so CPU-only machines keep the
+  old speed. Settings ▸ **Distant birds** (off / auto / 2–6); CLI
+  `probe --slice auto|off|on|<n> [--imgsz n]`.
+- **Training tooling for the planned models**: `tools/train_bird_detector.py`
+  fine-tunes and exports `bird_det_v2.onnx` (single-class bird detector) or
+  `bird_eye_v1.onnx` (eye/head keypoints), including a COCO→YOLO converter
+  (`--from-coco`) and optional int8 export. It only needs a labelled dataset.
+- **Windows code signing is wired** (`.github/workflows/release.yml`): a
+  `.pfx` secret is imported, a merge config enables `certificateThumbprint`, and
+  the app exe + NSIS + MSI are signed. With no secret it builds unsigned, so
+  forks keep working. Full guide in `SIGNING.md`.
 
 ## In progress
 
-- Next up: Model Manager UI, burst UI, packaging (see backlog).
+- Nothing actively in flight. Next: point the training script at a dataset, or
+  hand `MACOS_TODO.md` to an agent on a Mac.
 
 ## Done (continued)
 
@@ -108,21 +127,30 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ### Other
 
-1. **Signing / notarization** — macOS Developer ID + notarization ($99/yr) and a
-   Windows code-signing cert, so installers open without SmartScreen/Gatekeeper
-   warnings. Auto-updater (tauri-plugin-updater) after that.
-2. **Eye focus / bird detector v2 — needs training.** Registry slots and a
-   size-normalised eye heuristic are in place (`bird_eye`, `bird_detector_v2`),
-   but there is no labelled dataset or training run yet. A future session needs:
-   a bird detection dataset (iNat21 Aves / CUB-200 / public sets) fine-tuned into
-   a single-class YOLO11n, and an eye/head landmark dataset for the eye model;
-   the `demosaic`-style export path (`tools/`) then drops them in as ONNX.
-3. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-4. **macOS CoreML validation** — Windows/DirectML is verified; CoreML needs a Mac.
-5. **Asset protocol for previews** — only worth it if very large previews return;
-   the current 3.7 MB embedded preview over base64 is fine.
-6. **Developed preview, round 2** (if wanted) — RL deconvolution sharpening,
-   chroma denoise, lens corrections, better demosaic (LibRaw DHT/DCB).
+1. **Model training run** — the tooling is done
+   (`tools/train_bird_detector.py`, see `MODELS.md`) but there is still no
+   labelled dataset. Needed: a single-class bird detection set (COCO
+   `--from-coco` gets ~2.7k bird instances for free; your own labelled frames
+   are better) and ~200–400 hand-labelled eye/head keypoints for `bird_eye`.
+   Then: train → export → install via Model Manager → re-analyse and compare.
+2. **macOS** — see `MACOS_TODO.md` (a self-contained brief for an agent on a
+   Mac). CoreML validation, `.app`/`.dmg`, notarization, Intel + Apple Silicon,
+   and HEIC input via ImageIO. Build + note: the desktop build already enables
+   CoreML on macOS; it is **unverified**.
+3. **Signing/notarization** — Windows is wired and only needs a certificate
+   (`SIGNING.md` §1; Azure Trusted Signing is ~$10/month). macOS needs the
+   Apple Developer Program + the §2 steps. Auto-updater
+   (`tauri-plugin-updater`) after signing works.
+4. **HEIC input** — needs `libheif` (no mature pure-Rust decoder; the `image`
+   crate has no HEIC). Easiest on macOS via system ImageIO (see
+   `MACOS_TODO.md`). JPEG is already a first-class input.
+5. **Asset protocol for previews** — still not worth it: previews come from
+   embedded JPEGs, and the largest (native camera preview) is ~3.7 MB base64.
+6. **Developed preview round 3** — evaluated: the `demosaic` crate's **DHT and
+   Markesteijn variants are X-Trans only**, so a true Bayer DHT/DCB needs LibRaw
+   FFI. What *is* available is wired up: `preview --develop --max-quality`
+   (VNG + RL deconvolution). Non-Bayer sensors now get a clear error instead of
+   "unsupported CFA".
 
 ## Known issues / notes
 
@@ -156,6 +184,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 birdsorter analyze <folder> --model yolo11n.onnx
 birdsorter list <folder>
 birdsorter probe <one.cr3> --model yolo11n.onnx   # detections + features + species
+birdsorter probe <one.cr3> --slice 6             # tiled detection for distant birds
+
+# developed preview (Bayer only; --max-quality = VNG + RL deconvolution)
+birdsorter preview <one.cr3> out.jpg --develop --max-quality
 
 # desktop app (release!)
 cd ui && npm install && npm run build && cd ..

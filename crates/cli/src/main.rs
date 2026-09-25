@@ -43,7 +43,10 @@ Commands:
   train [--db <path>]         Train a verdict model from your labels
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
   preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+      --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
+      --imgsz <n>               Detector input size (default 640)
+      --slice auto|off|on|<n>   Sliced inference for distant birds
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
   version                     Print version
@@ -112,7 +115,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).
-        let algo = if args.iter().any(|a| a == "--bilinear") {
+        // `--max-quality` = the strongest available: VNG demosaic + RL deconvolution.
+        let max_quality = args.iter().any(|a| a == "--max-quality");
+        let algo = if max_quality {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Vng
+        } else if args.iter().any(|a| a == "--bilinear") {
             birdsorter_core::io::develop::DemosaicAlgorithm::Bilinear
         } else if args.iter().any(|a| a == "--vng") {
             birdsorter_core::io::develop::DemosaicAlgorithm::Vng
@@ -121,7 +128,9 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         } else {
             birdsorter_core::io::develop::DemosaicAlgorithm::Ahd
         };
-        let sharpen = if args.iter().any(|a| a == "--no-sharpen") {
+        let sharpen = if max_quality {
+            birdsorter_core::io::develop::SharpenMode::Deconvolve
+        } else if args.iter().any(|a| a == "--no-sharpen") {
             birdsorter_core::io::develop::SharpenMode::Off
         } else if args.iter().any(|a| a == "--unsharp") {
             birdsorter_core::io::develop::SharpenMode::Unsharp
@@ -239,7 +248,9 @@ fn cmd_probe(args: &[String]) -> ExitCode {
         }
     }
     let Some(file) = file else {
-        eprintln!("probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--slice auto|off|on]");
+        eprintln!(
+            "probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--imgsz <n>] [--slice auto|off|on|<grid>]"
+        );
         return ExitCode::FAILURE;
     };
     match run_probe(&file, model.as_deref(), no_detect, slice, imgsz) {

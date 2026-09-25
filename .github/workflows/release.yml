@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            args: ""
+            args: "--config tauri.signing.json"
           - os: macos-14
             args: "--target aarch64-apple-darwin"
           - os: macos-13
@@ -36,11 +36,52 @@ jobs:
         working-directory: ui
         run: npm ci && npm run build
 
-      # Unsigned for now — see progress.md for signing/notarization notes.
+      # Windows: import the .pfx (if the secret is set) and write a config that
+      # Tauri merges over tauri.conf.json, so both the app exe and the
+      # installers are signed. With no secret it writes `{}` and builds
+      # unsigned, so forks/PRs keep working. See SIGNING.md.
+      - name: Configure Windows code signing
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CERT_PW: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $cfg = "{}"
+          if ($env:CERT_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP "birdsorter.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
+            $secure = ConvertTo-SecureString $env:CERT_PW -AsPlainText -Force
+            Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure | Out-Null
+            $cert = Get-PfxCertificate -FilePath $pfx -Password $secure
+            $cfg = @{
+              bundle = @{
+                windows = @{
+                  certificateThumbprint = $cert.Thumbprint
+                  digestAlgorithm       = "sha256"
+                  timestampUrl          = "http://timestamp.digicert.com"
+                }
+              }
+            } | ConvertTo-Json -Depth 6 -Compress
+            Write-Host "Windows signing enabled: $($cert.Subject) [$($cert.Thumbprint)]"
+          } else {
+            Write-Host "WINDOWS_CERTIFICATE not set - building unsigned."
+          }
+          Set-Content -Path tauri.signing.json -Value $cfg -Encoding utf8
+
+      # macOS signing + notarization are driven by env vars: Tauri imports the
+      # .p12 into a temporary keychain and notarizes with notarytool. All of
+      # these are optional; without them the mac builds are unsigned.
       - name: Build bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: crates/desktop
           args: ${{ matrix.args }}

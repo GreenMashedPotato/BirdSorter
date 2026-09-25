@@ -74,6 +74,39 @@ impl DevelopOptions {
             sharpen: SharpenMode::Off,
         }
     }
+
+    /// Highest quality: VNG demosaic (the best Bayer algorithm the crate offers)
+    /// plus Richardson-Lucy deconvolution. Pair with [`DemosaicQuality::Best`].
+    pub fn max_quality() -> Self {
+        Self {
+            sharpen: SharpenMode::Deconvolve,
+            ..Self::default()
+        }
+    }
+}
+
+/// Demosaic effort for the developed preview. All three are Bayer algorithms:
+/// the crate's DHT and Markesteijn variants are **X-Trans only** and are not
+/// reachable here, so a true Bayer DHT/DCB would need LibRaw (see progress.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DemosaicQuality {
+    /// Bilinear - fastest, softest.
+    Fast,
+    /// AHD - the default balance of speed and detail.
+    #[default]
+    Balanced,
+    /// VNG - slower, the strongest Bayer algorithm available.
+    Best,
+}
+
+impl DemosaicQuality {
+    pub fn algorithm(self) -> Algorithm {
+        match self {
+            DemosaicQuality::Fast => Algorithm::Bilinear,
+            DemosaicQuality::Balanced => Algorithm::Ahd,
+            DemosaicQuality::Best => Algorithm::Vng,
+        }
+    }
 }
 
 fn color_code(c: CFAColor) -> u8 {
@@ -140,7 +173,11 @@ pub fn develop_srgb(
     if raw.cpp != 1 {
         return Err(CoreError::raw_decode(
             path,
-            format!("expected a Bayer CFA image (cpp=1), got cpp={}", raw.cpp),
+            format!(
+                "developed preview supports Bayer sensors only (cpp=1), got cpp={}; \
+                 X-Trans/Foveon sensors still work for culling via the camera preview",
+                raw.cpp
+            ),
         ));
     }
     raw.apply_scaling()
@@ -158,7 +195,12 @@ pub fn develop_srgb(
     let pattern = {
         let config = match &raw.photometric {
             RawPhotometricInterpretation::Cfa(c) => c,
-            _ => return Err(CoreError::raw_decode(path, "not a CFA (Bayer) image")),
+            _ => {
+                return Err(CoreError::raw_decode(
+                    path,
+                    "not a CFA sensor; the developed preview needs a Bayer mosaic",
+                ))
+            }
         };
         bayer_from_colors(
             color_code(config.cfa.cfa_color_at(0, 0)),
@@ -166,7 +208,13 @@ pub fn develop_srgb(
             color_code(config.cfa.cfa_color_at(1, 0)),
             color_code(config.cfa.cfa_color_at(1, 1)),
         )
-        .ok_or_else(|| CoreError::raw_decode(path, "unsupported Bayer CFA pattern"))?
+        .ok_or_else(|| {
+            CoreError::raw_decode(
+                path,
+                "unsupported CFA layout (X-Trans/Fuji is not a 2x2 Bayer pattern); \
+                 use the camera preview for these files",
+            )
+        })?
     };
 
     // 1. Demosaic (planar CHW).
@@ -446,6 +494,21 @@ mod tests {
         assert!(bayer_from_colors(1, 0, 2, 1).is_some()); // GRBG
         assert!(bayer_from_colors(1, 2, 0, 1).is_some()); // GBRG
         assert!(bayer_from_colors(0, 0, 1, 2).is_none());
+    }
+
+    #[test]
+    fn demosaic_quality_maps_to_the_expected_algorithms() {
+        assert_eq!(DemosaicQuality::Fast.algorithm(), Algorithm::Bilinear);
+        assert_eq!(DemosaicQuality::Balanced.algorithm(), Algorithm::Ahd);
+        assert_eq!(DemosaicQuality::Best.algorithm(), Algorithm::Vng);
+        assert_eq!(DemosaicQuality::default(), DemosaicQuality::Balanced);
+    }
+
+    #[test]
+    fn max_quality_enables_deconvolution() {
+        let opts = DevelopOptions::max_quality();
+        assert_eq!(opts.sharpen, SharpenMode::Deconvolve);
+        assert!(opts.tone_curve && opts.auto_brightness && opts.saturation);
     }
 
     #[test]
