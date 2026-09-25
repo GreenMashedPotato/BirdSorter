@@ -172,6 +172,12 @@ detection → sharpness verdict → species ID → grid/review UI).
 - **Species preprocessing is now model-driven**: `meta.json` can select
   CLIP-style shortest-side resize + centre-crop and bicubic filtering (the
   difference between 0.011 and 0.947 on the egret).
+- **Edge-based "bird in flight" detection** (`analysis::edges`): a downscaled
+  Sobel edge map proposes small subjects in otherwise-empty frames (crops fed to
+  the detector at full resolution, which catches distant/flying birds the whole
+  frame misses) and lets the detector **skip tiles that are uniform sky/water**.
+  Unit-tested on synthetic sky/blob/busy-scene images. This is the empty-sky
+  performance win: sky shots scan far fewer tiles.
 - **`tools/train_species.py`**: fine-tune a ViT on a folder-per-class set (or an
   HF dataset) and export `bird_species.onnx` + labels + meta, including iNat-2021
   Aves (~1,486 species) guidance.

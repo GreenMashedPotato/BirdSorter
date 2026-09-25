@@ -3,6 +3,7 @@
 
 pub mod burst;
 pub mod detector;
+pub mod edges;
 pub mod saliency;
 pub mod scorer;
 pub mod sharpness;
