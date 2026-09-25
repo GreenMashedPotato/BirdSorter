@@ -13,6 +13,7 @@
     analysisDetail,
     setSpecies,
     labelFiles,
+    trashFiles,
     getSettings,
     setSettings,
     rescoreFolder,
@@ -397,6 +398,34 @@
     }
   }
 
+  /// Move the selected files to the OS recycle bin.
+  async function trashSelected() {
+    if (selected.size === 0) return;
+    const n = selected.size;
+    if (!confirm(`Move ${n} file${n === 1 ? "" : "s"} to the trash?`)) return;
+    try {
+      const r = await trashFiles([...selected]);
+      status = `moved ${r.moved} to trash${r.failures.length ? ` · ${r.failures.length} failed` : ""}`;
+      setSelected(new Set());
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Move the file open in the review view to the trash.
+  async function trashCurrent() {
+    if (reviewFile === null) return;
+    if (!confirm(`Move ${detail?.filename ?? "this file"} to the trash?`)) return;
+    try {
+      await trashFiles([reviewFile]);
+      closeReview();
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   function setSelected(next: Set<number>) {
     selected = next;
   }
@@ -531,6 +560,10 @@
       if (e.key === "Escape") closeReview();
       else if (e.key === "j" || e.key === "ArrowRight") nav(1);
       else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
+      else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        trashCurrent();
+      }
       else if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         zoomByFactor(1.25);
@@ -658,6 +691,9 @@
       <button onclick={() => applyLabel("blurry")} disabled={selected.size === 0}>Blurry</button>
       <button onclick={() => applyLabel("bokeh_ok")} disabled={selected.size === 0}>Bokeh OK</button>
       <button onclick={() => applyLabel("reject")} disabled={selected.size === 0}>Reject</button>
+      <button onclick={trashSelected} disabled={selected.size === 0} title="Move to the OS trash">
+        Delete
+      </button>
     </div>
 
     <div
@@ -746,6 +782,7 @@
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
         <button onclick={closeReview}>Close (Esc)</button>
+        <button onclick={trashCurrent} title="Move to the OS trash">Delete (Del)</button>
       </div>
 
       <div class="review-body">

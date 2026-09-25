@@ -209,6 +209,16 @@ export async function removeModel(key: string): Promise<number> {
   return invoke("remove_model", { key });
 }
 
+export interface TrashResult {
+  moved: number;
+  failures: string[];
+}
+
+/** Move files to the OS recycle bin and mark them trashed. */
+export async function trashFiles(files: number[]): Promise<TrashResult> {
+  return invoke("trash_files", { files });
+}
+
 export interface ScoreExplanation {
   hasSubject: boolean;
   features: [string, number][];

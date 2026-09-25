@@ -516,6 +516,47 @@ fn label_files(state: State<AppState>, files: Vec<i64>, label: String) -> Result
     labels::add_labels_bulk(&conn, &files, label).map_err(err)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashResultDto {
+    moved: usize,
+    failures: Vec<String>,
+}
+
+/// Soft-delete files: move them to the OS recycle bin and mark them trashed.
+#[tauri::command]
+async fn trash_files(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+) -> Result<TrashResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let mut moved = 0usize;
+        let mut mark: Vec<i64> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        for id in &files {
+            let Some(lf) = library::get_file(&conn, *id).map_err(err)? else {
+                failures.push(format!("file {id} not found"));
+                continue;
+            };
+            if lf.absolute_path.exists() {
+                if let Err(e) = birdsorter_core::io::trash::move_to_trash(&lf.absolute_path) {
+                    failures.push(format!("{}: {e}", lf.file.filename));
+                    continue;
+                }
+            }
+            moved += 1;
+            mark.push(*id);
+        }
+        if !mark.is_empty() {
+            library::set_trashed(&conn, &mark, true).map_err(err)?;
+        }
+        Ok(TrashResultDto { moved, failures })
+    })
+    .await
+}
+
 /// Kick off analysis on a background thread, streaming progress as events.
 #[tauri::command]
 fn analyze_folder(
@@ -813,6 +854,7 @@ fn main() {
             bursts,
             set_species,
             label_files,
+            trash_files,
             analyze_folder,
             cancel_analysis,
             get_settings,

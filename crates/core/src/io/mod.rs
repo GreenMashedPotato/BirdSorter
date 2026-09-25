@@ -7,3 +7,4 @@ pub mod exif;
 pub mod hash;
 pub mod raw;
 pub mod thumb;
+pub mod trash;
