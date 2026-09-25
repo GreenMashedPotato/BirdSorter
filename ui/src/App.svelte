@@ -16,6 +16,9 @@
     trashFiles,
     getSettings,
     setSettings,
+    getDetectionSettings,
+    setDetectionSettings,
+    type DetectionSettings,
     rescoreFolder,
     train,
     scoreBreakdown,
@@ -179,25 +182,33 @@
     }
   }
   let settings = $state<ScoreSettings | null>(null);
+  let detection = $state<DetectionSettings | null>(null);
   let settingsSaving = $state(false);
 
   async function openSettings() {
     try {
       settings = await getSettings();
+      detection = await getDetectionSettings();
       showSettings = true;
     } catch (e) {
       status = `error: ${e}`;
     }
   }
 
-  async function saveSettings(next: ScoreSettings) {
+  async function saveSettings(next: ScoreSettings, nextDetection: DetectionSettings) {
     settingsSaving = true;
     try {
+      const detectionChanged =
+        detection !== null && detection.slice_grid !== nextDetection.slice_grid;
       await setSettings(next);
+      await setDetectionSettings(nextDetection);
       settings = next;
+      detection = nextDetection;
       if (activeFolder !== null) {
         const n = await rescoreFolder(activeFolder);
-        status = `settings saved · re-scored ${n} files`;
+        status = detectionChanged
+          ? `settings saved · re-scored ${n} · distant-bird change applies to the next analysis run`
+          : `settings saved · re-scored ${n} files`;
         await refreshFiles();
       } else {
         status = "settings saved";
@@ -908,9 +919,10 @@
     </div>
   {/if}
 
-  {#if showSettings && settings}
+  {#if showSettings && settings && detection}
     <Settings
       {settings}
+      {detection}
       saving={settingsSaving}
       onSave={saveSettings}
       onClose={() => (showSettings = false)}

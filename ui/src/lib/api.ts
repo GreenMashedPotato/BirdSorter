@@ -165,6 +165,28 @@ export async function setSettings(settings: ScoreSettings): Promise<void> {
   return invoke("set_settings", { settings });
 }
 
+/** Detector settings (mirrors `birdsorter_core::data::settings::DetectionSettings`). */
+export interface DetectionSettings {
+  /** `0` off, `1` auto (GPU only), `n > 1` an `n x n` tile grid. */
+  slice_grid: number;
+}
+
+export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = { slice_grid: 1 };
+
+export function sliceGridLabel(grid: number): string {
+  if (grid <= 0) return "Off (fastest)";
+  if (grid === 1) return "Auto — GPU only";
+  return `${grid} × ${grid} tiles`;
+}
+
+export async function getDetectionSettings(): Promise<DetectionSettings> {
+  return invoke("get_detection_settings");
+}
+
+export async function setDetectionSettings(settings: DetectionSettings): Promise<void> {
+  return invoke("set_detection_settings", { settings });
+}
+
 /** Recompute verdicts for a folder from stored features (no re-decode). */
 export async function rescoreFolder(folder: number): Promise<number> {
   return invoke("rescore", { folder });

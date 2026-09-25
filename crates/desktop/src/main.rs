@@ -20,9 +20,8 @@ use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
-use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::registry;
-use birdsorter_core::data::settings::ScoreSettings;
+use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
@@ -596,14 +595,13 @@ fn run_analysis(
         Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
     ]);
 
+    let yolo = DetectionSettings::load_default().yolo_config();
     let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) => Box::new(
-            OnnxDetector::from_file(Path::new(m), YoloConfig::default(), DevicePreference::Auto)
+            OnnxDetector::from_file(Path::new(m), yolo.clone(), DevicePreference::Auto)
                 .map_err(err)?,
         ),
-        None => match OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)
-            .map_err(err)?
-        {
+        None => match OnnxDetector::load_default(yolo, DevicePreference::Auto).map_err(err)? {
             Some(d) => Box::new(d),
             None => Box::new(SaliencyDetector::default()),
         },
@@ -739,6 +737,18 @@ async fn set_settings(settings: ScoreSettings) -> Result<(), String> {
     blocking(move || settings.save_default().map_err(err)).await
 }
 
+/// Current detector settings (sliced inference for distant birds).
+#[tauri::command]
+fn get_detection_settings() -> DetectionSettings {
+    DetectionSettings::load_default()
+}
+
+/// Persist detector settings. Takes effect on the next analysis run.
+#[tauri::command]
+async fn set_detection_settings(settings: DetectionSettings) -> Result<(), String> {
+    blocking(move || settings.save_default().map_err(err)).await
+}
+
 /// Recompute verdicts for a folder from stored features (no re-decode).
 #[tauri::command]
 async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, String> {
@@ -859,6 +869,8 @@ fn main() {
             cancel_analysis,
             get_settings,
             set_settings,
+            get_detection_settings,
+            set_detection_settings,
             rescore,
             train,
             models_status,

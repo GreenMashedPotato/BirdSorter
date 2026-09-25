@@ -1,21 +1,30 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { DEFAULT_SETTINGS, type ScoreSettings } from "./api";
+  import {
+    DEFAULT_DETECTION_SETTINGS,
+    DEFAULT_SETTINGS,
+    sliceGridLabel,
+    type DetectionSettings,
+    type ScoreSettings,
+  } from "./api";
 
   let {
     settings,
+    detection,
     saving = false,
     onSave,
     onClose,
   }: {
     settings: ScoreSettings;
+    detection: DetectionSettings;
     saving?: boolean;
-    onSave: (s: ScoreSettings) => void;
+    onSave: (s: ScoreSettings, d: DetectionSettings) => void;
     onClose: () => void;
   } = $props();
 
-  // Editable snapshot of the incoming settings (intentionally not reactive).
+  // Editable snapshots of the incoming settings (intentionally not reactive).
   let local = $state<ScoreSettings>(untrack(() => ({ ...settings })));
+  let localDetection = $state<DetectionSettings>(untrack(() => ({ ...detection })));
 
   type NumKey = keyof ScoreSettings;
   const RULES: {
@@ -90,6 +99,7 @@
 
   function reset() {
     local = { ...DEFAULT_SETTINGS };
+    localDetection = { ...DEFAULT_DETECTION_SETTINGS };
   }
 </script>
 
@@ -100,7 +110,7 @@
       <div class="spacer"></div>
       <button onclick={reset}>Reset to defaults</button>
       <button onclick={onClose}>Close</button>
-      <button class="primary" onclick={() => onSave(local)} disabled={saving}>
+      <button class="primary" onclick={() => onSave(local, localDetection)} disabled={saving}>
         {saving ? "Saving…" : "Save & re-score"}
       </button>
     </div>
@@ -129,9 +139,31 @@
         </p>
       </section>
 
+      <section>
+        <h3>Distant birds</h3>
+        <p class="status">
+          Small birds far away can be missed at full-frame resolution. This runs the detector on a
+          grid of overlapping tiles so they are found too. Takes effect on the next analysis run.
+        </p>
+        <div class="row">
+          <input
+            type="range"
+            min="0"
+            max="6"
+            step="1"
+            value={localDetection.slice_grid}
+            oninput={(e) =>
+              (localDetection = { slice_grid: Number(e.currentTarget.value) })}
+          />
+          <span class="val">{sliceGridLabel(localDetection.slice_grid)}</span>
+        </div>
+        <p class="status">
+          0 = off · 1 = only when a GPU is used (CPU stays fast) · 4–6 = most thorough, slowest.
+        </p>
+      </section>
+
       <details>
-        <summary>Advanced rules — every parameter the scorer uses</summary>
-        {#each RULES as group (group.section)}
+        <summary>Advanced rules — every parameter the scorer uses</summary>        {#each RULES as group (group.section)}
           <section>
             <h3>{group.section}</h3>
             {#each group.items as item (item.key)}
