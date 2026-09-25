@@ -17,7 +17,56 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 | Key | Tier | Source | Installs |
 |---|---|---|---|
 | `bird_detector` | T1 | **bundled with the app** (no download) | `bird_det_v1.onnx` |
-| `bird_species` | T2 | local file (or a release asset once hosted) | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
+| `bird_species` | T2 | bundled bundle / local file (hosted URL is a TODO) | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
+
+### What ships today (exact provenance)
+
+**Detector — `bird_det_v1.onnx` (10.1 MB)**
+- **Stock Ultralytics YOLO11n**, COCO-pretrained (`nc=80`, `coco.yaml`, 600 epochs,
+  saved by ultralytics 8.2.100). Not fine-tuned.
+- Upstream weights: <https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt>
+  (AGPL-3.0 — see the licence note in `plan.md`).
+- Re-exported locally to ONNX at **opset 12, imgsz 640, `dynamic=True`, no NMS head**
+  (the app does letterboxing, decoding, NMS and de-duplication itself). Only COCO
+  class 14 (`bird`) is kept.
+- sha256 `58b3655e…` (the previous static-batch export; the dynamic-batch
+  re-export supersedes it).
+- **Dynamic batch matters**: `region_batch` pushes the full frame plus all slice
+  tiles through the network in one call.
+
+**Species — `bird_species.onnx` (85 MB, int8)**
+- **ViT-B/16**, 224×224, mean/std `0.5`, **526 classes** of all-caps English
+  common names. Preprocessing sidecar: `{"size":224,"mean":[0.5,…],"std":[0.5,…]}`.
+- Architecture lineage: `google/vit-base-patch16-224` fine-tuned for bird species.
+- The label set is the widely-used **525-species bird dataset** (Kaggle, CC0, ~90k
+  images) popularised by the Hugging Face model
+  <https://huggingface.co/chriamue/bird-species-classifier> (MIT). The shipped
+  model has 526 labels in its own order (`vit.labels.json`), so labels and logits
+  are consistent.
+- Exported with PyTorch 2.4.1 (opset 17) then quantized to int8 by
+  `onnxruntime.quant`. **No upstream repo id is recorded for this exact ViT** —
+  the ONNX artifacts (`vit.onnx` → `vit_int8.onnx`) live in the build workspace,
+  not the repo. If you need to reproduce or retrain it, start from the dataset
+  above and fine-tune `google/vit-base-patch16-224-in21k`.
+- sha256 `422dbe87…`.
+
+### Want more species?
+
+The 525/526-class model is a good balance of size and accuracy, but it is not
+the ceiling. Options, roughly in order of effort:
+
+| Option | Species | Notes |
+|---|---|---|
+| **iNat-2021 Aves** | **~1,486** | 414k train / 15k test images. Fine-tune a ViT-B/16 the same way; same inference cost, ~3× the classes. Best next step. |
+| **NABirds** | 555 | North America only, 48k photos — comparable to what we ship. |
+| **CUB-200-2011** | 200 | Small (11.8k images); mostly a benchmark. |
+| **BioCLIP 2 / 2.5** (2025–26) | **450k+ taxa** (TreeOfLife-10M; 214M images in v2) | Vision-language foundation model. Zero-shot / few-shot over *any* species — no fixed head — with strong rare-species accuracy. Bigger (ViT-B/16 ≈ 350 MB) and needs text-prompt machinery; the best long-term answer. |
+| **SpeciesNet** (Google, 2024) | ~2,000 (incl. birds) | Built for camera traps; EfficientNet-based, ONNX-friendly, but trained on very different imagery. |
+
+Practical recommendation: keep the current model as the default, add
+**iNat-2021 Aves (1,486 species)** as an alternative `bird_species` bundle, and
+treat **BioCLIP 2** as the future path for rare/travelled species.
+
 
 The detector ships inside the app and is copied into the model directory on first
 run, so subject detection works out of the box with no download. "Install from
@@ -66,11 +115,15 @@ Steps once a public URL exists:
 
 ```python
 from ultralytics import YOLO
-YOLO("yolo11n.pt").export(format="onnx", imgsz=640, opset=12, simplify=False)
+# dynamic=True gives the batch axis the app needs for batched slice tiles.
+YOLO("yolo11n.pt").export(format="onnx", imgsz=640, opset=12,
+                          simplify=False, dynamic=True)
 ```
 
-Export at opset 12 and **without** the NMS/end2end head — the app does
-letterboxing, decoding, NMS and de-duplication itself.
+Export at opset 12, **with `dynamic=True`**, and **without** the NMS/end2end head
+— the app does letterboxing, decoding, NMS and de-duplication itself. A model
+with a fixed batch dimension still works (the detector falls back to one region
+at a time) but loses the batched-tile speedup.
 
 ### Fine-tuning the detector (v2)
 
@@ -117,4 +170,9 @@ The fallback is logged with `BIRDSORTER_DEBUG_ONNX=1`.
 - **int8 quantization** cut the species model from 345 MB to 85 MB with the
   top-1 unchanged. Quantize **MatMul weights only** — ORT's CPU EP cannot run
   `ConvInteger` (the patch-embed Conv must stay fp32).
+- **The detector is batched.** Sliced inference makes ~17 regions per image; the
+  app stacks them into one `[N,3,640,640]` call (chunks of
+  `YoloConfig::region_batch`, default 16) instead of 17 separate runs, and falls
+  back to one-at-a-time for models with a fixed batch axis. Together with the
+  dynamic-batch export this removes 16 round-trips into ORT per image.
 - Models are never committed to git; `dist-models/` and `*.onnx` are ignored.

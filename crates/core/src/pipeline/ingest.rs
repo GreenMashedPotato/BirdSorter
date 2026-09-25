@@ -183,7 +183,7 @@ fn run_sequential(
         }
         progress.current_file = lf.file.filename.clone();
 
-        match ctx.decoder.decode(&lf.absolute_path) {
+        match catch_decode(|| ctx.decoder.decode(&lf.absolute_path)) {
             Ok(img) => {
                 progress.decoded += 1;
                 batch.push(PendingItem {
@@ -253,7 +253,7 @@ fn run_parallel(
                     break;
                 }
                 let lf = &queue[i];
-                let res = decoder.decode(&lf.absolute_path);
+                let res = catch_decode(|| decoder.decode(&lf.absolute_path));
                 // Blocking send: backpressure keeps peak memory bounded.
                 if tx.send((i, res)).is_err() {
                     break;
@@ -302,6 +302,28 @@ fn run_parallel(
     })
 }
 
+/// Decode through a panic boundary: a single bad file (or a bug in a decoder
+/// backend) must not take down a multi-thousand-file run.
+fn catch_decode(f: impl FnOnce() -> Result<DecodedImage>) -> Result<DecodedImage> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => Err(CoreError::Other(
+            "decoder panicked on this file (skipped)".into(),
+        )),
+    }
+}
+
+/// Analyse one item through a panic boundary, for the same reason as
+/// [`catch_decode`] — feature extraction runs on untrusted image geometry.
+fn catch_analyze(f: impl FnOnce() -> Result<AnalysisRecord>) -> Result<AnalysisRecord> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => Err(CoreError::Other(
+            "analysis panicked on this file (skipped)".into(),
+        )),
+    }
+}
+
 fn flush_batch(
     conn: &Connection,
     ctx: &IngestContext<'_>,
@@ -312,15 +334,17 @@ fn flush_batch(
         return Ok(());
     }
     let images: Vec<&Array3<u8>> = batch.iter().map(|b| &b.rgb).collect();
-    let detections = match ctx.detector.detect_batch(&images) {
-        Ok(d) if d.len() == batch.len() => d,
-        // A detector failure (or a shape mismatch) degrades to "no subject"
-        // for this batch rather than failing the run.
+    let detections = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ctx.detector.detect_batch(&images)
+    })) {
+        Ok(Ok(d)) if d.len() == batch.len() => d,
+        // A detector failure (or panic, or a shape mismatch) degrades to
+        // "no subject" for this batch rather than failing the run.
         _ => vec![Vec::new(); batch.len()],
     };
 
     for (item, dets) in batch.iter().zip(detections) {
-        let record = match analyze_one(item, dets, ctx.scorer, ctx.species) {
+        let record = match catch_analyze(|| analyze_one(item, dets, ctx.scorer, ctx.species)) {
             Ok(record) => record,
             Err(e) => {
                 progress.failed += 1;

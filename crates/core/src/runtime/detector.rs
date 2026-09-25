@@ -13,7 +13,9 @@ use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 use ort::value::Tensor;
 
-use crate::analysis::detector::{dedupe_detections, nms, BBox, Detection, SubjectDetector};
+use crate::analysis::detector::{
+    dedupe_detections, nms, BBox, Detection, Letterbox, SubjectDetector,
+};
 use crate::analysis::yolo::{self, YoloConfig};
 use crate::{CoreError, Result};
 
@@ -31,6 +33,20 @@ pub enum DevicePreference {
     Cpu,
     /// Require a GPU provider (compile-time feature).
     Gpu,
+}
+
+impl DevicePreference {
+    /// Map a user-facing setting string: `"auto"`, `"gpu"`, anything else =
+    /// CPU. The default is CPU because these models are small enough that GPU
+    /// execution-provider overhead dominates (measured: a 640×640 YOLO11n is
+    /// ~1.7× faster on CPU than DirectML on a modern desktop).
+    pub fn from_setting(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => DevicePreference::Auto,
+            "gpu" => DevicePreference::Gpu,
+            _ => DevicePreference::Cpu,
+        }
+    }
 }
 
 fn intra_threads() -> usize {
@@ -158,6 +174,8 @@ impl OnnxDetector {
     }
 
     /// Run the model on one region and map its boxes back to image coordinates.
+    ///
+    /// Kept for the single-region fallback path.
     fn run_region(
         &self,
         rgb: &Array3<u8>,
@@ -197,6 +215,73 @@ impl OnnxDetector {
         }
         Ok(dets)
     }
+}
+
+/// One preprocessed region: where it came from plus its model input.
+struct RegionInput {
+    x0: usize,
+    y0: usize,
+    buf: Vec<f32>,
+    letterbox: Letterbox,
+}
+
+impl OnnxDetector {
+    /// Push several preprocessed regions through the model in **one** call.
+    ///
+    /// Sliced inference makes ~17 regions per image, so batching them removes
+    /// 16 round-trips into ONNX Runtime (and lets a GPU provider do one wide
+    /// kernel launch instead of 17 tiny ones).
+    fn run_region_batch(
+        &self,
+        regions: &[RegionInput],
+        img_w: usize,
+        img_h: usize,
+    ) -> Result<Vec<Detection>> {
+        let n = regions.len();
+        let ts = self.config.input_size as i64;
+        let stride = 3 * self.config.input_size as usize * self.config.input_size as usize;
+        let mut batch: Vec<f32> = Vec::with_capacity(n * stride);
+        for r in regions {
+            batch.extend_from_slice(&r.buf);
+        }
+        let tensor = Tensor::from_array(([n as i64, 3, ts, ts], batch)).map_err(ort_err)?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
+        let outputs = session
+            .run(ort::inputs![self.input_name.clone() => &tensor])
+            .map_err(ort_err)?;
+        let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+        let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
+        if dims.first().copied().unwrap_or(0) != n {
+            return Err(CoreError::Other(format!(
+                "detector returned batch {} for {} regions",
+                dims.first().copied().unwrap_or(0),
+                n
+            )));
+        }
+
+        let mut all: Vec<Detection> = Vec::new();
+        for (i, r) in regions.iter().enumerate() {
+            let mut dets = yolo::decode_batched(data, &dims, i, &r.letterbox, &self.config);
+            for d in dets.iter_mut() {
+                if let Some(clamped) = BBox::new(
+                    d.bbox.x + r.x0 as i32,
+                    d.bbox.y + r.y0 as i32,
+                    d.bbox.w,
+                    d.bbox.h,
+                )
+                .clamp_to(img_w as i32, img_h as i32)
+                {
+                    d.bbox = clamped;
+                }
+            }
+            all.extend(dets);
+        }
+        Ok(all)
+    }
 
     fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
@@ -205,16 +290,52 @@ impl OnnxDetector {
             None => vec![(0, 0, w, h)],
         };
 
-        let mut all: Vec<Detection> = Vec::new();
+        // Preprocess every region once; skip degenerate ones.
+        let mut inputs: Vec<RegionInput> = Vec::with_capacity(regions.len());
         for (x0, y0, rw, rh) in regions {
             if rw < 8 || rh < 8 {
                 continue;
             }
-            match self.run_region(rgb, x0, y0, rw, rh) {
+            let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
+            let (buf, letterbox) = yolo::preprocess(&crop, &self.config);
+            inputs.push(RegionInput {
+                x0,
+                y0,
+                buf,
+                letterbox,
+            });
+        }
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Batched inference in chunks; a model with a fixed batch axis falls
+        // back to one region at a time rather than failing the image.
+        let chunk = self.config.region_batch.max(1);
+        let mut all: Vec<Detection> = Vec::new();
+        let mut i = 0;
+        while i < inputs.len() {
+            let end = (i + chunk).min(inputs.len());
+            match self.run_region_batch(&inputs[i..end], w, h) {
                 Ok(dets) => all.extend(dets),
-                // One bad tile must not fail the image.
-                Err(e) => eprintln!("detector region failed ({x0},{y0},{rw},{rh}): {e}"),
+                Err(batch_err) => {
+                    if end - i > 1 {
+                        eprintln!(
+                            "detector batch of {} failed ({batch_err}); falling back per region",
+                            end - i
+                        );
+                    }
+                    for r in &inputs[i..end] {
+                        match self.run_region(rgb, r.x0, r.y0, region_w(r), region_h(r)) {
+                            Ok(dets) => all.extend(dets),
+                            Err(e) => {
+                                eprintln!("detector region failed ({},{}): {e}", r.x0, r.y0)
+                            }
+                        }
+                    }
+                }
             }
+            i = end;
         }
 
         // A bird visible in several tiles appears multiple times: suppress the
@@ -222,6 +343,17 @@ impl OnnxDetector {
         let merged = nms(all, self.config.iou_threshold);
         Ok(dedupe_detections(merged, 0.5, 0.7))
     }
+}
+
+/// Region width carried alongside a preprocessed input (letterbox records the
+/// source size it was built from).
+fn region_w(r: &RegionInput) -> usize {
+    r.letterbox.src_w as usize
+}
+
+/// Region height counterpart of [`region_w`].
+fn region_h(r: &RegionInput) -> usize {
+    r.letterbox.src_h as usize
 }
 
 impl SubjectDetector for OnnxDetector {

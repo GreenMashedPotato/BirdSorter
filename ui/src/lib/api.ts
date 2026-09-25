@@ -31,6 +31,12 @@ export interface ScanReport {
   added: number;
   updated: number;
   untouched: number;
+  restored: number;
+}
+
+export interface ScanProgress {
+  done: number;
+  total: number;
 }
 
 export interface Progress {
@@ -115,8 +121,28 @@ export async function addFolder(path: string): Promise<number> {
   return invoke("add_folder", { path });
 }
 
-export async function scanFolder(folder: number): Promise<ScanReport> {
+/** Start a scan. It runs on a background thread: progress arrives through
+ *  `onScanProgress`, completion through `onScanDone`, failures through
+ *  `onScanError`. Returns as soon as the scan is under way. */
+export async function startScan(folder: number): Promise<void> {
   return invoke("scan_folder", { folder });
+}
+
+/** Abort an in-flight scan (the library keeps whatever was already recorded). */
+export async function cancelScan(): Promise<void> {
+  return invoke("cancel_scan");
+}
+
+export function onScanProgress(cb: (p: ScanProgress) => void): Promise<UnlistenFn> {
+  return listen<ScanProgress>("scan-progress", (e) => cb(e.payload));
+}
+
+export function onScanDone(cb: (r: ScanReport) => void): Promise<UnlistenFn> {
+  return listen<ScanReport>("scan-done", (e) => cb(e.payload));
+}
+
+export function onScanError(cb: (message: string) => void): Promise<UnlistenFn> {
+  return listen<string>("scan-error", (e) => cb(e.payload));
 }
 
 export async function analyzeFolder(
@@ -169,9 +195,14 @@ export async function setSettings(settings: ScoreSettings): Promise<void> {
 export interface DetectionSettings {
   /** `0` off, `1` auto (GPU only), `n > 1` an `n x n` tile grid. */
   slice_grid: number;
+  /** `"cpu"` (default), `"auto"` or `"gpu"`. */
+  device: string;
 }
 
-export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = { slice_grid: 1 };
+export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
+  slice_grid: 1,
+  device: "cpu",
+};
 
 export function sliceGridLabel(grid: number): string {
   if (grid <= 0) return "Off (fastest)";

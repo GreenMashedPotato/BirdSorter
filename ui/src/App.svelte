@@ -4,7 +4,11 @@
     inTauri,
     listFolders,
     addFolder,
-    scanFolder,
+    startScan,
+    cancelScan,
+    onScanProgress,
+    onScanDone,
+    onScanError,
     analyzeFolder,
     cancelAnalysis,
     queryFiles,
@@ -91,6 +95,8 @@
   }
   let status = $state("");
   let busy = $state(false);
+  /// Long-running work shown as a progress bar (scan hashing, analysis).
+  let progress = $state<{ label: string; done: number; total: number } | null>(null);
   let newPath = $state("");
   let model = $state("");
 
@@ -202,7 +208,9 @@
     settingsSaving = true;
     try {
       const detectionChanged =
-        detection !== null && detection.slice_grid !== nextDetection.slice_grid;
+        detection !== null &&
+        (detection.slice_grid !== nextDetection.slice_grid ||
+          detection.device !== nextDetection.device);
       await setSettings(next);
       await setDetectionSettings(nextDetection);
       settings = next;
@@ -541,20 +549,22 @@
 
   async function addAndScan() {
     const path = newPath.trim();
-    if (!path) return;
+    if (!path || !inTauri) return;
     busy = true;
     try {
       const id = await addFolder(path);
-      const report = await scanFolder(id);
-      status = `scanned ${report.seen} files (${report.added} new, ${report.updated} updated)`;
       newPath = "";
       activeFolder = id;
       await refreshFolders();
-      await refreshFiles();
+      status = "scanning…";
+      progress = { label: "Scanning", done: 0, total: 0 };
+      // Fire-and-forget: progress/completion arrive as events, so the window
+      // keeps painting while thousands of files are hashed.
+      await startScan(id);
     } catch (e) {
       status = `error: ${e}`;
-    } finally {
       busy = false;
+      progress = null;
     }
   }
 
@@ -576,16 +586,16 @@
   }
 
   async function rescan() {
-    if (activeFolder === null) return;
+    if (activeFolder === null || !inTauri) return;
     busy = true;
+    status = "scanning…";
+    progress = { label: "Scanning", done: 0, total: 0 };
     try {
-      const report = await scanFolder(activeFolder);
-      status = `scanned ${report.seen} files (${report.added} new, ${report.updated} updated)`;
-      await refreshFiles();
+      await startScan(activeFolder);
     } catch (e) {
       status = `error: ${e}`;
-    } finally {
       busy = false;
+      progress = null;
     }
   }
 
@@ -593,17 +603,21 @@
     if (activeFolder === null) return;
     busy = true;
     status = "analysing…";
+    progress = { label: "Analysing", done: 0, total: 0 };
     try {
       await analyzeFolder(activeFolder, model.trim() || null);
     } catch (e) {
       status = `error: ${e}`;
       busy = false;
+      progress = null;
     }
   }
 
   async function cancel() {
     try {
-      await cancelAnalysis();
+      // The progress label tells us which background job to stop.
+      if (progress?.label === "Scanning") await cancelScan();
+      else await cancelAnalysis();
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -708,16 +722,40 @@
     await refreshFiles();
 
     onProgress((p) => {
+      progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
       status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
     });
     onDone(async () => {
       busy = false;
+      progress = null;
       status = "done";
       await refreshFiles();
     });
     onError((message) => {
       busy = false;
+      progress = null;
       status = `error: ${message}`;
+    });
+
+    onScanProgress((p) => {
+      progress = { label: "Scanning", done: p.done, total: p.total };
+      status = p.total
+        ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
+        : "scanning…";
+    });
+    onScanDone(async (r) => {
+      busy = false;
+      progress = null;
+      status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
+        r.restored ? `, ${r.restored} restored` : ""
+      })`;
+      await refreshFolders();
+      await refreshFiles();
+    });
+    onScanError((message) => {
+      busy = false;
+      progress = null;
+      status = `scan error: ${message}`;
     });
   });
 
@@ -789,6 +827,26 @@
       <div class="spacer"></div>
       <span class="status">{status}</span>
     </div>
+
+    {#if progress}
+      <div class="progress">
+        <span class="status"
+          >{progress.label}{progress.total > 0
+            ? ` ${progress.done}/${progress.total}`
+            : "…"}</span
+        >
+        <div class="bar" class:indeterminate={progress.total === 0} role="progressbar"
+          aria-valuemin={0} aria-valuemax={progress.total || 0} aria-valuenow={progress.done}>
+          {#if progress.total > 0}
+            <div
+              class="fill"
+              style="width:{Math.min(100, (progress.done / progress.total) * 100)}%"
+            ></div>
+          {/if}
+        </div>
+        <button class="mini" onclick={cancel}>Stop</button>
+      </div>
+    {/if}
 
     <div class="chips">
       {#each FILTERS as f (f.key)}

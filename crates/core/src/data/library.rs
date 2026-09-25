@@ -63,6 +63,8 @@ pub struct ScanReport {
     pub updated: usize,
     pub untouched: usize,
     pub seen: usize,
+    /// Trashed rows whose file is back on disk (restored from the OS trash).
+    pub restored: usize,
 }
 
 fn detect_format(path: &Path) -> String {
@@ -253,15 +255,29 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
 
 /// Walk `folder_id`'s directory and insert/update file rows.
 pub fn scan_folder(conn: &Connection, folder_id: i64) -> Result<ScanReport> {
-    scan_folder_with(conn, folder_id, &mut |_seen, _total| {})
+    scan_folder_with(conn, folder_id, &mut |_done, _total| {})
 }
 
-/// [`scan_folder`] with a progress callback `(seen, total_estimate)` throttled
-/// by the caller. `total` is unknown until the walk completes, so `seen` is
-/// passed for both, matching the prototype's rolling counter.
+/// [`scan_folder`] with a progress callback `(done, total)`.
+///
+/// The walk runs first (cheap: directory entries + metadata), so `total` is
+/// known before any file is hashed and the UI can show a real progress bar.
 pub fn scan_folder_with(
     conn: &Connection,
     folder_id: i64,
+    on_progress: &mut dyn FnMut(usize, usize),
+) -> Result<ScanReport> {
+    scan_folder_streaming(conn, folder_id, &|| false, on_progress)
+}
+
+/// [`scan_folder_with`] plus cooperative cancellation.
+///
+/// A first scan hashes every file, which for a large shoot (hundreds of GB) is
+/// minutes of work — the caller can let the user abort.
+pub fn scan_folder_streaming(
+    conn: &Connection,
+    folder_id: i64,
+    cancel: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(usize, usize),
 ) -> Result<ScanReport> {
     let base: String = conn
@@ -271,6 +287,47 @@ pub fn scan_folder_with(
         .optional()?
         .ok_or_else(|| CoreError::Other(format!("unknown folder_id {folder_id}")))?;
     let base = PathBuf::from(base);
+
+    // Files the user restored from the OS trash are back on disk: clear their
+    // marker before the walk so they show up in the grid again.
+    let restored = reconcile_trashed(conn, folder_id).unwrap_or(0);
+
+    // Phase 1 — enumerate candidates. Cheap (metadata only), and it gives us the
+    // total for the progress bar.
+    struct Candidate {
+        path: PathBuf,
+        rel: String,
+        size: i64,
+        mtime: f64,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !PHOTO_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        candidates.push(Candidate {
+            rel: path
+                .strip_prefix(&base)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+            path: path.to_path_buf(),
+            size: meta.len() as i64,
+            mtime: mtime_secs(&meta),
+        });
+    }
+    let total = candidates.len();
+    on_progress(0, total);
 
     // (relative_path -> (id, content_hash, filesize, mtime, captured_at))
     let mut existing: HashMap<String, (i64, String, i64, f64, Option<String>)> = HashMap::new();
@@ -297,35 +354,28 @@ pub fn scan_folder_with(
         }
     }
 
-    let mut report = ScanReport::default();
+    // Phase 2 — hash changed/new files and write rows, reporting progress.
+    let mut report = ScanReport {
+        seen: total,
+        restored,
+        ..Default::default()
+    };
     let mut pending: Vec<Pending> = Vec::new();
     const FLUSH_EVERY: usize = 10;
 
-    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
+    for (done, cand) in candidates.iter().enumerate() {
+        if cancel() {
+            break;
         }
-        let path = entry.path();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !PHOTO_EXTENSIONS.contains(&ext.as_str()) {
-            continue;
-        }
+        let Candidate {
+            path,
+            rel,
+            size,
+            mtime,
+        } = cand;
+        let (size, mtime) = (*size, *mtime);
 
-        report.seen += 1;
-        let rel = path
-            .strip_prefix(&base)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let Ok(meta) = entry.metadata() else { continue };
-        let size = meta.len() as i64;
-        let mtime = mtime_secs(&meta);
-
-        match existing.get(&rel) {
+        match existing.get(rel) {
             // Untouched only when the capture time has already been computed
             // (an empty string means "computed, but no EXIF timestamp"), so a
             // rescan backfills capture times for older libraries.
@@ -335,6 +385,7 @@ pub fn scan_folder_with(
                     && prev_captured.is_some() =>
             {
                 report.untouched += 1;
+                let _ = id;
             }
             Some((id, _hash, _, _, _)) => {
                 let hash = hash_file(path)?;
@@ -350,7 +401,7 @@ pub fn scan_folder_with(
             None => {
                 let hash = hash_file(path)?;
                 pending.push(Pending::Insert {
-                    rel,
+                    rel: rel.clone(),
                     name: path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -368,7 +419,7 @@ pub fn scan_folder_with(
         if pending.len() >= FLUSH_EVERY {
             flush_pending(conn, folder_id, &mut pending)?;
         }
-        on_progress(report.seen, report.seen);
+        on_progress(done + 1, total);
     }
     flush_pending(conn, folder_id, &mut pending)?;
 
@@ -739,15 +790,54 @@ mod tests {
         write(dir.path(), "a.cr3", b"a");
         write(dir.path(), "b.cr3", b"b");
         let fid = add_folder(&conn, dir.path()).unwrap();
-        let mut seen_total = 0;
         let mut calls = 0;
-        scan_folder_with(&conn, fid, &mut |seen, total| {
+        let mut last = (0usize, 0usize);
+        scan_folder_with(&conn, fid, &mut |done, total| {
             calls += 1;
-            seen_total = seen + total;
+            last = (done, total);
         })
         .unwrap();
-        assert_eq!(calls, 2);
-        assert_eq!(seen_total, 4); // 1+1 then 2+2
+        // (0, 2) from the walk, then (1, 2) and (2, 2): the total is known up
+        // front, which is what the UI progress bar needs.
+        assert_eq!(calls, 3);
+        assert_eq!(last, (2, 2));
+    }
+
+    #[test]
+    fn streaming_scan_can_be_cancelled() {
+        let (dir, conn) = setup();
+        for i in 0..6 {
+            write(dir.path(), &format!("f{i}.cr3"), b"x");
+        }
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        // Cancel after the first hashed file.
+        let cancel = std::cell::Cell::new(false);
+        let report = scan_folder_streaming(&conn, fid, &|| cancel.get(), &mut |done, total| {
+            assert!(done <= total);
+            if done >= 1 {
+                cancel.set(true);
+            }
+        })
+        .unwrap();
+        assert!(report.added < 6, "should have stopped early");
+    }
+
+    #[test]
+    fn scan_restores_files_returned_to_disk() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+
+        // Mark trashed (the file itself stays on disk, as if restored).
+        set_trashed(&conn, &[id], true).unwrap();
+        assert!(list_files(&conn, fid, false, false).unwrap().is_empty());
+
+        // A rescan clears the marker.
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.restored, 1);
+        assert_eq!(list_files(&conn, fid, false, false).unwrap().len(), 1);
     }
 
     #[test]
