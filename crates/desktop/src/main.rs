@@ -670,12 +670,16 @@ fn analyze_folder(
             Ok(Err(message)) => {
                 let _ = app.emit("analysis-error", message);
             }
-            Err(_) => {
+            Err(payload) => {
                 // A panic in a decoder or the runtime must not leave the UI
-                // stuck on "analysing" forever.
+                // stuck on "analysing" forever - and the message must be
+                // actionable (the release build has no console).
                 let _ = app.emit(
                     "analysis-error",
-                    "analysis crashed (see the console); re-run to continue".to_string(),
+                    format!(
+                        "analysis crashed: {} (details in crash.log)",
+                        panic_message(payload.as_ref())
+                    ),
                 );
             }
         }
@@ -1311,7 +1315,39 @@ fn seed_bundled_models(app: &AppHandle) {
     }
 }
 
+/// Log panics to `<user data>/BirdSorter/crash.log`: a windows-subsystem
+/// release build has no console, so the message would otherwise vanish.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(db) = db::default_db_path() {
+            if let Some(dir) = db.parent() {
+                let _ = std::fs::create_dir_all(dir);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("crash.log"))
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "[panic] {info}");
+                }
+            }
+        }
+        previous(info);
+    }));
+}
+
+/// Human-readable text from a caught panic payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
 fn main() {
+    install_panic_hook();
     let db_path = db::default_db_path().unwrap_or_else(|_| PathBuf::from("birdsorter.db"));
     let cache = ThumbCache::open_default()
         .unwrap_or_else(|_| ThumbCache::new(std::env::temp_dir().join("birdsorter-thumbs")));

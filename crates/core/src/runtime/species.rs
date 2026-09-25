@@ -30,6 +30,10 @@ pub struct OnnxSpeciesClassifier {
     labels: Vec<String>,
     preprocess: SpeciesPreprocess,
     top_k: usize,
+    /// Where the model came from, so the session can be rebuilt on CPU.
+    model: std::path::PathBuf,
+    /// True while the session uses a GPU execution provider.
+    gpu: std::sync::atomic::AtomicBool,
 }
 
 impl OnnxSpeciesClassifier {
@@ -40,7 +44,7 @@ impl OnnxSpeciesClassifier {
         preprocess: SpeciesPreprocess,
         device: DevicePreference,
     ) -> Result<Self> {
-        let (session, _ep) = build_session(model, device)?;
+        let (session, ep) = build_session(model, device)?;
         let input_name = session
             .inputs()
             .first()
@@ -59,7 +63,43 @@ impl OnnxSpeciesClassifier {
             labels,
             preprocess,
             top_k: 5,
+            model: model.to_path_buf(),
+            gpu: std::sync::atomic::AtomicBool::new(ep.is_some()),
         })
+    }
+
+    /// Run the model, falling back to a CPU session if a GPU execution provider
+    /// cannot actually run it (some models hit provider bugs, e.g. DirectML on
+    /// the iNaturalist ConvNeXt `Reshape`). The swap is permanent for this
+    /// session, so only the first inference pays the cost.
+    fn infer(&self, tensor: &Tensor<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+        use std::sync::atomic::Ordering;
+        let attempt = |session: &mut Session| -> Result<(Vec<usize>, Vec<f32>)> {
+            let outputs = session
+                .run(ort::inputs![self.input_name.clone() => tensor])
+                .map_err(ort_err)?;
+            let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+            Ok((
+                shape.iter().map(|&d| d.max(0) as usize).collect(),
+                data.to_vec(),
+            ))
+        };
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
+        match attempt(&mut session) {
+            Ok(out) => Ok(out),
+            Err(e) if self.gpu.load(Ordering::Relaxed) => {
+                eprintln!("species model failed on the GPU provider ({e}); retrying on CPU");
+                let (cpu, _) = build_session(&self.model, DevicePreference::Cpu)?;
+                *session = cpu;
+                self.gpu.store(false, Ordering::Relaxed);
+                attempt(&mut session)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Load the classifier from the default model directory, if the files are
@@ -126,15 +166,7 @@ impl OnnxSpeciesClassifier {
         ))
         .map_err(ort_err)?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = session
-            .run(ort::inputs![self.input_name.clone() => &tensor])
-            .map_err(ort_err)?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
+        let (dims, data) = self.infer(&tensor)?;
         let num_classes = dims.get(1).copied().unwrap_or(0);
         if num_classes == 0 || data.len() < n * num_classes {
             return Err(CoreError::Other(
@@ -161,14 +193,7 @@ impl OnnxSpeciesClassifier {
         }
         let tensor = Tensor::from_array(([1i64, 3, side, side], buf)).map_err(ort_err)?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = session
-            .run(ort::inputs![self.input_name.clone() => &tensor])
-            .map_err(ort_err)?;
-        let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+        let (_dims, data) = self.infer(&tensor)?;
         if debug_onnx() {
             let head: Vec<f32> = data.iter().take(5).copied().collect();
             let mean = data.iter().sum::<f32>() / data.len() as f32;
@@ -181,7 +206,7 @@ impl OnnxSpeciesClassifier {
                 head
             );
         }
-        Ok(self.result_from_row(data))
+        Ok(self.result_from_row(&data))
     }
 }
 
