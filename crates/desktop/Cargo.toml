@@ -17,10 +17,19 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 birdsorter-core = { path = "../core" }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.3"
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
 base64 = "0.22"
 image.workspace = true
 ndarray.workspace = true
-tauri-plugin-dialog = "2.7.3"
+
+# Enable a GPU execution provider per platform at build time. The runtime probes
+# it on startup and falls back to CPU automatically when the provider or driver
+# is unavailable, so this never blocks a machine without a usable GPU.
+[target.'cfg(windows)'.dependencies]
+birdsorter-core = { path = "../core", features = ["gpu-directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+birdsorter-core = { path = "../core", features = ["gpu-coreml"] }

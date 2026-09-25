@@ -79,6 +79,12 @@ detection → sharpness verdict → species ID → grid/review UI).
 - **Packaging**: `tauri build` produces an NSIS setup (18 MB) and an MSI (32 MB);
   the detector ships as a bundled resource. Release workflow added for Windows
   x64 + macOS arm64/x64. Unsigned for now.
+- **GPU acceleration**: the desktop build enables **DirectML on Windows** and
+  **CoreML on macOS**; the runtime probes the EP and **falls back to CPU
+  automatically** (verified: DirectML ran both detector and species on a real
+  NVIDIA GPU with identical results). CPU-only machines are unaffected.
+- **Delete to trash**: selection Delete button, and Delete/Del in the review
+  view, move files to the OS recycle bin (`trash` crate) and mark them trashed.
 - **Bursts**: EXIF capture time is extracted at scan (schema v7; rescans backfill
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each
@@ -112,7 +118,7 @@ detection → sharpness verdict → species ID → grid/review UI).
    a single-class YOLO11n, and an eye/head landmark dataset for the eye model;
    the `demosaic`-style export path (`tools/`) then drops them in as ONNX.
 3. **JPEG/HEIC** as first-class inputs (JPEG already scanned; HEIC pending).
-4. **GPU EPs** — validate DirectML (Windows) / CoreML (macOS) builds.
+4. **macOS CoreML validation** — Windows/DirectML is verified; CoreML needs a Mac.
 5. **Asset protocol for previews** — only worth it if very large previews return;
    the current 3.7 MB embedded preview over base64 is fine.
 6. **Developed preview, round 2** (if wanted) — RL deconvolution sharpening,
