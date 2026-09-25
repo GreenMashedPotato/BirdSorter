@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **169 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- **190 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - Feature extraction is **~50% faster** than the first cut (criterion benches in
@@ -273,10 +273,25 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   spending limit in GitHub → Settings → Billing, **or make the repo public**
   (free unlimited minutes, and it matches the AGPL plan anyway). macOS is now
   validated by hand per `MACOS_TODO.md`.
+- **DirectML cannot run the iNat21 ConvNeXt**: `session.run` fails on a
+  `Reshape` node with a native `{Application Error}` (0x8007023E) in the DML
+  provider. With **Compute device = Auto/GPU** every species inference failed.
+  `OnnxSpeciesClassifier` now detects a GPU-session run failure, rebuilds the
+  session on **CPU** once, and retries — self-healing, so Auto works again.
 - **The iNat21 species model is expensive**: fp32, 818 MB, ~350 ms per crop on
   CPU (roughly doubles analysis time; DirectML does not help it on this
   machine). `MIN_SPECIES_CROP` is now 110 px so distant specks are not sent
   through it at all.
+- **Settings live under `config/`**: `directories::ProjectDirs` appends a
+  subdirectory on Windows, so the detection settings are at
+  `%APPDATA%\BirdSorter\config\detection_settings.json` (and the DB at
+  `%APPDATA%\BirdSorter\data\library.db`). A legacy `"slice_grid": 1` means
+  "no tiling", which silently defeated two-phase detection; `SliceMode` now
+  treats a fallback grid below 2 as the default grid (6).
+- **Panics are logged**: the release build is a windows-subsystem binary with no
+  console, so panics were invisible. A panic hook appends to
+  `%APPDATA%\BirdSorter\crash.log` and the analysis error now carries the panic
+  message instead of a generic string.
 - **EfficientNet ONNX collapses in `ort`**: the bundled ONNX Runtime returns
   constant logits for the EfficientNet bird classifier, while the same file is
   correct under `onnxruntime` 1.23.2 and PyTorch. **Workaround: use the ViT

@@ -82,7 +82,13 @@ impl SliceMode {
         match mode.trim().to_ascii_lowercase().as_str() {
             "off" | "none" => SliceMode::Off,
             "always" | "tiles" => SliceMode::Always(cfg),
-            "fallback" | "smart" => SliceMode::Fallback(cfg),
+            // A "fallback" grid below 2 cannot tile anything, which is the same
+            // as off - treat a legacy 0/1 as the intended default grid instead.
+            "fallback" | "smart" => SliceMode::Fallback(if grid < 2 {
+                SliceConfig::default()
+            } else {
+                cfg
+            }),
             other => match other.parse::<u32>() {
                 Ok(0) => SliceMode::Off,
                 Ok(1) => SliceMode::Fallback(SliceConfig {
