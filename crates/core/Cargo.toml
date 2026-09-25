@@ -32,6 +32,11 @@ ort = { version = "2.0.0-rc.9", features = ["ndarray", "download-binaries"] }
 approx.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "analysis"
+harness = false
 
 [features]
 default = []

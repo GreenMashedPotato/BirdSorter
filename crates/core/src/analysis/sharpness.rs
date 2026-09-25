@@ -15,6 +15,7 @@ use ndarray::{s, Array2, Array3, ArrayBase, ArrayView3, Data, Ix2, Ix3};
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 
 use crate::analysis::detector::BBox;
 
@@ -348,29 +349,33 @@ pub fn brenner_gradient<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f32 {
 
 /// High-frequency FFT energy ratio. Bokeh lowers this globally, a sharp
 /// subject keeps localised high frequency. Returns a value in `[0, 1]`.
+///
+/// The FFT plan is cached per thread (sizes repeat across a folder, and
+/// `FftPlanner` re-derives the same plan every call otherwise).
 pub fn fft_high_freq_ratio(gray: &Array2<f32>) -> f32 {
     let (h, w) = gray.dim();
     if h == 0 || w == 0 {
         return 0.0;
     }
-    let mut planner = FftPlanner::<f32>::new();
-    let fft_row = planner.plan_fft_forward(w);
-    let fft_col = planner.plan_fft_forward(h);
+    thread_local! {
+        static PLANNER: RefCell<FftPlanner<f32>> = RefCell::new(FftPlanner::new());
+    }
+    let (fft_row, fft_col) = PLANNER.with(|p| {
+        let mut p = p.borrow_mut();
+        (p.plan_fft_forward(w), p.plan_fft_forward(h))
+    });
 
     let mut buf: Vec<Complex<f32>> = gray.iter().map(|&v| Complex::new(v, 0.0)).collect();
     for y in 0..h {
         fft_row.process(&mut buf[y * w..(y + 1) * w]);
     }
-    let mut col = vec![Complex::new(0.0f32, 0.0f32); h];
+    // Column transform via a cache-friendly transpose instead of strided
+    // gather/scatter: after this, row `x` of `col_buf` holds column `x`.
+    let mut col_buf = transpose_complex(&buf, h, w);
     for x in 0..w {
-        for y in 0..h {
-            col[y] = buf[y * w + x];
-        }
-        fft_col.process(&mut col);
-        for y in 0..h {
-            buf[y * w + x] = col[y];
-        }
+        fft_col.process(&mut col_buf[x * h..(x + 1) * h]);
     }
+    // `col_buf[x * h + y]` is the 2D coefficient at (y, x).
 
     let box_h = h / 8;
     let box_w = w / 8;
@@ -379,27 +384,47 @@ pub fn fft_high_freq_ratio(gray: &Array2<f32>) -> f32 {
     let mut total = 0.0f64;
     let mut low = 0.0f64;
     for sy in 0..h {
+        let shifted_y = sy as isize - cy;
+        let in_box_y = shifted_y >= -(box_h as isize) && shifted_y < box_h as isize;
+        let uy = (sy + h / 2) % h;
         for sx in 0..w {
-            // `fftshift`: shifted coordinate -> unshifted index.
-            let uy = (sy + h / 2) % h;
             let ux = (sx + w / 2) % w;
-            let mag = buf[uy * w + ux].norm() as f64;
+            let mag = col_buf[ux * h + uy].norm() as f64;
             total += mag;
-            // Central low-frequency box around DC in the shifted layout.
-            let shifted_y = sy as isize - cy;
-            let shifted_x = sx as isize - cx;
-            if shifted_y >= -(box_h as isize)
-                && shifted_y < box_h as isize
-                && shifted_x >= -(box_w as isize)
-                && shifted_x < box_w as isize
-            {
-                low += mag;
+            if in_box_y {
+                let shifted_x = sx as isize - cx;
+                if shifted_x >= -(box_w as isize) && shifted_x < box_w as isize {
+                    low += mag;
+                }
             }
         }
     }
     let total = total + 1e-9;
     let high = total - low;
     (high / total) as f32
+}
+
+/// Transpose an `h x w` row-major complex buffer into `w x h` (row-major).
+fn transpose_complex(buf: &[Complex<f32>], h: usize, w: usize) -> Vec<Complex<f32>> {
+    let mut out = vec![Complex::new(0.0f32, 0.0f32); h * w];
+    // Blocked transpose keeps both reads and writes cache-friendly.
+    const BLOCK: usize = 32;
+    let mut by = 0;
+    while by < h {
+        let ye = (by + BLOCK).min(h);
+        let mut bx = 0;
+        while bx < w {
+            let xe = (bx + BLOCK).min(w);
+            for y in by..ye {
+                for x in bx..xe {
+                    out[x * h + y] = buf[y * w + x];
+                }
+            }
+            bx = xe;
+        }
+        by = ye;
+    }
+    out
 }
 
 /// Mean standard deviation of non-overlapping `patch`x`patch` tiles.
@@ -441,17 +466,24 @@ pub fn local_contrast<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>, patch: usiz
 ///
 /// `0.0` ~ isotropic (sharp natural image or uniform defocus blur);
 /// `1.0` ~ purely linear (strong motion blur smears edges along one axis).
+///
+/// Uses the double-angle identities to avoid `atan2`/`cos`/`sin` per pixel
+/// (which dominated this function's cost):
+///   `|g|·cos 2θ = (a² − b²)/|g|`,  `|g|·sin 2θ = 2ab/|g|`,  `θ = atan2(b, a)`
+/// so only one `sqrt` per pixel is needed.
 pub fn gradient_directionality<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f32 {
     let (gx, gy) = sobel_pair(gray);
     let mut cx = 0.0f64;
     let mut cy = 0.0f64;
     let mut total = 0.0f64;
     for (&a, &b) in gx.iter().zip(gy.iter()) {
-        let mag = ((a * a + b * b) as f64).sqrt() + 1e-6;
-        // 2*theta so opposite gradient directions collapse to one axis.
-        let theta2 = 2.0 * (b as f64).atan2(a as f64);
-        cx += mag * theta2.cos();
-        cy += mag * theta2.sin();
+        let (a, b) = (a as f64, b as f64);
+        let mag = (a * a + b * b).sqrt();
+        if mag <= 1e-12 {
+            continue;
+        }
+        cx += (a * a - b * b) / mag;
+        cy += 2.0 * a * b / mag;
         total += mag;
     }
     if total <= 0.0 {
@@ -539,43 +571,118 @@ fn eye_region_sharpness(subj: &Array2<f32>) -> f32 {
 // Top-level feature computation
 // ---------------------------------------------------------------------------
 
+/// Whole-image metric bundle.
+struct FullMetrics {
+    lap: f32,
+    ten: f32,
+    fft: f32,
+    lc: f32,
+    bren: f32,
+    dir: f32,
+}
+
+fn full_metrics(gray: &Array2<f32>) -> FullMetrics {
+    FullMetrics {
+        lap: variance_of_laplacian(gray),
+        ten: tenengrad(gray),
+        fft: fft_high_freq_ratio(gray),
+        lc: local_contrast(gray, LOCAL_CONTRAST_PATCH),
+        bren: brenner_gradient(gray),
+        dir: gradient_directionality(gray),
+    }
+}
+
+/// Subject-region metric bundle.
+struct SubjectMetrics {
+    lap: f32,
+    ten: f32,
+    fft: f32,
+    lc: f32,
+    bren: f32,
+    grid: [[f32; 3]; 3],
+    eye: f32,
+}
+
+fn subject_metrics(subj_gray: &Array2<f32>) -> SubjectMetrics {
+    let norm = normalise_size(subj_gray, TARGET_LONG_SIDE);
+    SubjectMetrics {
+        lap: variance_of_laplacian(&norm),
+        ten: tenengrad(&norm),
+        fft: fft_high_freq_ratio(&norm),
+        lc: local_contrast(&norm, LOCAL_CONTRAST_PATCH),
+        bren: brenner_gradient(&norm),
+        // The grid and eye search use the un-normalised crop, matching the
+        // prototype (they normalise internally where needed).
+        grid: grid_3x3(subj_gray),
+        eye: eye_region_sharpness(subj_gray),
+    }
+}
+
+/// Background reference = the largest single rectangle outside the bbox,
+/// normalised to the same long side as the subject so the ratio is comparable.
+fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32, f32) {
+    let (x0, y0, x1, y1) = (
+        bbox.x as usize,
+        bbox.y as usize,
+        bbox.x1() as usize,
+        bbox.y1() as usize,
+    );
+    let mut pieces: Vec<ArrayView3<u8>> = Vec::with_capacity(4);
+    if y0 > 0 {
+        pieces.push(rgb.slice(s![0..y0, .., ..]));
+    }
+    if y1 < h {
+        pieces.push(rgb.slice(s![y1..h, .., ..]));
+    }
+    if x0 > 0 {
+        pieces.push(rgb.slice(s![y0..y1, 0..x0, ..]));
+    }
+    if x1 < w {
+        pieces.push(rgb.slice(s![y0..y1, x1..w, ..]));
+    }
+    match pieces.iter().max_by_key(|p| p.len()) {
+        Some(p) => {
+            let bg_gray = normalise_size(&to_gray(p), TARGET_LONG_SIDE);
+            (variance_of_laplacian(&bg_gray), tenengrad(&bg_gray))
+        }
+        None => (f32::NAN, f32::NAN), // caller substitutes subject values
+    }
+}
+
 /// Compute the full feature vector for one RGB image.
 ///
 /// `subject` is the bbox chosen by the detector. When `None`, only full-image
 /// metrics are populated and subject metrics equal the full-image values.
+///
+/// The full-image, subject and background metric groups are independent, so
+/// they run in parallel on larger images (`rayon::join`).
 pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> SharpnessFeatures {
     let (h, w, _) = rgb.dim();
     let gray = to_gray(rgb);
     let gray_norm = normalise_size(&gray, TARGET_LONG_SIDE);
 
-    let lap_full = variance_of_laplacian(&gray_norm);
-    let ten_full = tenengrad(&gray_norm);
-    let fft_full = fft_high_freq_ratio(&gray_norm);
-    let lc_full = local_contrast(&gray_norm, LOCAL_CONTRAST_PATCH);
-    let bren_full = brenner_gradient(&gray_norm);
-    let motion_dir = gradient_directionality(&gray_norm);
-
     let Some(subject) = subject else {
+        let m = full_metrics(&gray_norm);
         return SharpnessFeatures {
-            laplacian_full: lap_full,
-            tenengrad_full: ten_full,
-            fft_high_freq_full: fft_full,
-            local_contrast_full: lc_full,
-            laplacian_subject: lap_full,
-            tenengrad_subject: ten_full,
-            fft_high_freq_subject: fft_full,
-            local_contrast_subject: lc_full,
-            laplacian_bg: lap_full,
-            tenengrad_bg: ten_full,
+            laplacian_full: m.lap,
+            tenengrad_full: m.ten,
+            fft_high_freq_full: m.fft,
+            local_contrast_full: m.lc,
+            laplacian_subject: m.lap,
+            tenengrad_subject: m.ten,
+            fft_high_freq_subject: m.fft,
+            local_contrast_subject: m.lc,
+            laplacian_bg: m.lap,
+            tenengrad_bg: m.ten,
             subject_to_bg_ratio: 1.0,
             has_subject: false,
             subject_area_fraction: 0.0,
             edge_sharpness_grid: [[0.0; 3]; 3],
             eye_sharpness_worst: 0.0,
             center_edge_ratio: 1.0,
-            brenner_full: bren_full,
-            brenner_subject: bren_full,
-            motion_directionality: motion_dir,
+            brenner_full: m.bren,
+            brenner_subject: m.bren,
+            motion_directionality: m.dir,
             subject_edge_distance: 1.0,
         };
     };
@@ -591,51 +698,44 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
         bbox.y1() as usize,
     );
 
-    let subj_rgb = rgb.slice(s![y0..y1, x0..x1, ..]);
-    let subj_gray = to_gray(&subj_rgb);
-    let subj_gray_norm = normalise_size(&subj_gray, TARGET_LONG_SIDE);
+    let subj_gray = to_gray(&rgb.slice(s![y0..y1, x0..x1, ..]));
 
-    let lap_s = variance_of_laplacian(&subj_gray_norm);
-    let ten_s = tenengrad(&subj_gray_norm);
-    let fft_s = fft_high_freq_ratio(&subj_gray_norm);
-    let lc_s = local_contrast(&subj_gray_norm, LOCAL_CONTRAST_PATCH);
-    let bren_s = brenner_gradient(&subj_gray_norm);
-
-    // Background reference = the largest single rectangle outside the bbox.
-    let mut pieces: Vec<ArrayView3<u8>> = Vec::with_capacity(4);
-    if y0 > 0 {
-        pieces.push(rgb.slice(s![0..y0, .., ..]));
-    }
-    if y1 < h {
-        pieces.push(rgb.slice(s![y1..h, .., ..]));
-    }
-    if x0 > 0 {
-        pieces.push(rgb.slice(s![y0..y1, 0..x0, ..]));
-    }
-    if x1 < w {
-        pieces.push(rgb.slice(s![y0..y1, x1..w, ..]));
-    }
-    let (lap_bg, ten_bg) = match pieces.iter().max_by_key(|p| p.len()) {
-        Some(p) => {
-            // Normalize background to the same long side as the subject so that
-            // subject_to_bg_ratio compares metrics at a consistent scale.
-            let bg_gray_raw = to_gray(p);
-            let bg_gray = normalise_size(&bg_gray_raw, TARGET_LONG_SIDE);
-            (variance_of_laplacian(&bg_gray), tenengrad(&bg_gray))
-        }
-        None => (lap_s, ten_s),
+    // Small images are cheap enough that the join overhead is not worth it.
+    let parallel = gray_norm.len() >= 256 * 256;
+    let (full, (subj, bg)) = if parallel {
+        rayon::join(
+            || full_metrics(&gray_norm),
+            || {
+                rayon::join(
+                    || subject_metrics(&subj_gray),
+                    || background_metrics(rgb, bbox, w, h),
+                )
+            },
+        )
+    } else {
+        (
+            full_metrics(&gray_norm),
+            (
+                subject_metrics(&subj_gray),
+                background_metrics(rgb, bbox, w, h),
+            ),
+        )
     };
 
-    let ratio = (ten_s + BG_EPS) / (ten_bg + BG_EPS);
+    let (lap_bg, ten_bg) = if bg.0.is_nan() {
+        (subj.lap, subj.ten)
+    } else {
+        bg
+    };
+
+    let ratio = (subj.ten + BG_EPS) / (ten_bg + BG_EPS);
     let area_fraction = subject.effective_area() as f32 / (w as f32 * h as f32).max(1.0);
 
-    let edge_grid = grid_3x3(&subj_gray);
-    let center_edge_r = if edge_grid.iter().flatten().any(|&v| v != 0.0) {
-        ratio_from_grid(&edge_grid)
+    let center_edge_r = if subj.grid.iter().flatten().any(|&v| v != 0.0) {
+        ratio_from_grid(&subj.grid)
     } else {
         1.0
     };
-    let eye_sharp = eye_region_sharpness(&subj_gray);
 
     let edge_px = (x0 as i64)
         .min(y0 as i64)
@@ -645,25 +745,25 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
     let edge_dist = edge_px / (w.min(h).max(1) as f32);
 
     SharpnessFeatures {
-        laplacian_full: lap_full,
-        tenengrad_full: ten_full,
-        fft_high_freq_full: fft_full,
-        local_contrast_full: lc_full,
-        laplacian_subject: lap_s,
-        tenengrad_subject: ten_s,
-        fft_high_freq_subject: fft_s,
-        local_contrast_subject: lc_s,
+        laplacian_full: full.lap,
+        tenengrad_full: full.ten,
+        fft_high_freq_full: full.fft,
+        local_contrast_full: full.lc,
+        laplacian_subject: subj.lap,
+        tenengrad_subject: subj.ten,
+        fft_high_freq_subject: subj.fft,
+        local_contrast_subject: subj.lc,
         laplacian_bg: lap_bg,
         tenengrad_bg: ten_bg,
         subject_to_bg_ratio: ratio,
         has_subject: true,
         subject_area_fraction: area_fraction,
-        edge_sharpness_grid: edge_grid,
-        eye_sharpness_worst: eye_sharp,
+        edge_sharpness_grid: subj.grid,
+        eye_sharpness_worst: subj.eye,
         center_edge_ratio: center_edge_r,
-        brenner_full: bren_full,
-        brenner_subject: bren_s,
-        motion_directionality: motion_dir,
+        brenner_full: full.bren,
+        brenner_subject: subj.bren,
+        motion_directionality: full.dir,
         subject_edge_distance: edge_dist,
     }
 }
