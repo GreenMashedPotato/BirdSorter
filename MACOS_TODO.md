@@ -77,10 +77,24 @@ Known CoreML caveats to check explicitly:
 ## 2. Build the app bundle
 
 ```bash
+cd ui && npm install && npm run build && cd ..    # Tauri embeds ui/dist
 cd crates/desktop
 ../../ui/node_modules/.bin/tauri build            # aarch64 on Apple Silicon
 ../../ui/node_modules/.bin/tauri build --target x86_64-apple-darwin  # Intel
 ```
+
+**Default build = detector only, and that is the one to use here.** The
+model-bundled flavour (`--config tauri.models.conf.json`) needs the 818 MB
+iNaturalist file in `dist-models/inat21/`, which is gitignored and therefore
+**absent on a fresh clone** — the build would fail with a missing resource. If
+you want a fully self-contained macOS installer, either:
+
+1. copy `bird_species.onnx` + `.labels.json` + `.meta.json` from the Windows
+   machine's `dist-models/inat21/` (or `<user data>/BirdSorter/data/models/`), or
+2. regenerate them here: `python tools/export_inat21.py` (~856 MB download) then
+   `python tools/enrich_common_names.py dist-models/inat21/bird_species.labels.json`,
+
+then build with `--config tauri.models.conf.json --bundles dmg`.
 
 Check:
 - `target/release/bundle/macos/BirdSorter.app` launches from Finder (double

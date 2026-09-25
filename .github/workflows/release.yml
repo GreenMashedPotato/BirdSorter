@@ -74,6 +74,10 @@ jobs:
       # macOS signing + notarization are driven by env vars: Tauri imports the
       # .p12 into a temporary keychain and notarizes with notarytool. All of
       # these are optional; without them the mac builds are unsigned.
+      # Bundles the default flavour (detector only): the CI runners do not have
+      # the 820 MB species model, which is gitignored. For a model-bundled
+      # installer, build locally with `--config tauri.models.conf.json` (see
+      # README ▸ Building installers).
       - name: Build bundles
         uses: tauri-apps/tauri-action@v0
         env:
