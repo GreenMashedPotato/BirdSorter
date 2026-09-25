@@ -347,7 +347,14 @@ fn flush_batch(
     };
 
     for (item, dets) in batch.iter().zip(detections) {
-        let record = match catch_analyze(|| analyze_one(item, dets, ctx.scorer, ctx.species)) {
+        // Stop promptly on cancel: a long batch must not keep working after the
+        // user asked it to stop.
+        if ctx.cancelled() {
+            break;
+        }
+        let record = match catch_analyze(|| {
+            analyze_one(item.file_id, &item.rgb, dets, ctx.scorer, ctx.species)
+        }) {
             Ok(record) => record,
             Err(e) => {
                 progress.failed += 1;
@@ -372,7 +379,8 @@ fn flush_batch(
 /// Build the analysis record for one image: evaluate every detected subject and
 /// keep the sharpest (mirrors the prototype's "best of N subjects").
 fn analyze_one(
-    item: &PendingItem,
+    file_id: i64,
+    rgb: &Array3<u8>,
     dets: Vec<Detection>,
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
@@ -380,7 +388,7 @@ fn analyze_one(
     let all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
     let (features, best_bbox, subject_class) = if dets.is_empty() {
-        (compute_features(&item.rgb, None), None, None)
+        (compute_features(rgb, None), None, None)
     } else {
         let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
         for det in &dets {
@@ -388,7 +396,7 @@ fn analyze_one(
                 bbox: det.bbox,
                 area_px: det.area_px,
             };
-            let f = compute_features(&item.rgb, Some(subject));
+            let f = compute_features(rgb, Some(subject));
             let sharp = f.tenengrad_subject.max(f.laplacian_subject);
             if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
                 best = Some((f, det.bbox, det.class_name.clone(), sharp));
@@ -396,13 +404,13 @@ fn analyze_one(
         }
         match best {
             Some((f, bbox, class, _)) => (f, Some(bbox), Some(class)),
-            None => (compute_features(&item.rgb, None), None, None),
+            None => (compute_features(rgb, None), None, None),
         }
     };
 
     let score = scorer.score(&features)?;
 
-    let (img_h, img_w, _) = item.rgb.dim();
+    let (img_h, img_w, _) = rgb.dim();
 
     // Species identification for each detected bird subject.
     let mut subject_species: Vec<SubjectSpecies> = Vec::new();
@@ -421,7 +429,7 @@ fn analyze_one(
                         && d.bbox.w >= MIN_SPECIES_CROP
                         && d.bbox.h >= MIN_SPECIES_CROP
                 })
-                .filter_map(|(i, d)| crop_rgb(&item.rgb, d.bbox).map(|c| (i, c)))
+                .filter_map(|(i, d)| crop_rgb(rgb, d.bbox).map(|c| (i, c)))
                 .collect();
 
             // One entry per detected box (parallel to `all_bboxes`).
@@ -466,7 +474,7 @@ fn analyze_one(
     }
 
     Ok(AnalysisRecord {
-        file_id: item.file_id,
+        file_id,
         features,
         score,
         subject_bbox: best_bbox,
@@ -479,6 +487,45 @@ fn analyze_one(
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
     })
+}
+
+/// Decode one file and (re)analyse it, optionally forcing the subject box (a
+/// rectangle the user drew) and/or dropping detections the user removed.
+///
+/// Used by the review view's box editing: a drawn box becomes the subject, and
+/// removing a box re-evaluates the image without it.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_file_with(
+    conn: &Connection,
+    file: &LibraryFile,
+    decoder: &dyn ImageDecoder,
+    detector: &dyn SubjectDetector,
+    scorer: &dyn VerdictScorer,
+    species: Option<&dyn SpeciesClassifier>,
+    manual_box: Option<BBox>,
+    exclude: &[BBox],
+) -> Result<AnalysisRecord> {
+    let img = decoder.decode(&file.absolute_path)?;
+    let (h, w, _) = img.rgb.dim();
+    let dets: Vec<Detection> = if let Some(box_) = manual_box {
+        let Some(clamped) = box_.clamp_to(w as i32, h as i32) else {
+            return Err(CoreError::Other(
+                "the drawn box is outside the image".into(),
+            ));
+        };
+        vec![Detection::new(clamped, "manual", 1.0)]
+    } else {
+        let mut dets = detector
+            .detect_batch(&[&img.rgb])?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        dets.retain(|d| !exclude.contains(&d.bbox));
+        dets
+    };
+    let record = analyze_one(file.file.id, &img.rgb, dets, scorer, species)?;
+    upsert_analysis(conn, &record)?;
+    Ok(record)
 }
 
 /// Convenience helper for callers that only have settings, not a scorer object.

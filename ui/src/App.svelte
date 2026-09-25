@@ -15,6 +15,9 @@
     getThumbnail,
     previewImage,
     analysisDetail,
+    setSubjectBox,
+    removeSubject,
+    identifySubject,
     setSpecies,
     speciesLabels,
     labelFiles,
@@ -330,6 +333,117 @@
     stageEl.setPointerCapture(e.pointerId);
   }
 
+  // --- box editing (draw / remove / identify) ------------------------------
+  let drawing = $state(false);
+  let dragRect = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  let boxBusy = $state(false);
+
+  function localPoint(e: PointerEvent) {
+    const r = stageEl!.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  /// Stage pointerdown: either start drawing a box or start panning.
+  function onStageDown(e: PointerEvent) {
+    if (!stageEl) return;
+    if ((e.target as HTMLElement | null)?.closest?.(".box")) return;
+    if (drawing) {
+      const p = localPoint(e);
+      dragRect = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      stageEl.setPointerCapture(e.pointerId);
+      return;
+    }
+    onPanStart(e);
+  }
+
+  function onStageMove(e: PointerEvent) {
+    if (dragRect) {
+      const p = localPoint(e);
+      dragRect = { ...dragRect, x1: p.x, y1: p.y };
+      return;
+    }
+    onPanMove(e);
+  }
+
+  async function onStageUp(e: PointerEvent) {
+    if (stageEl?.hasPointerCapture(e.pointerId)) {
+      stageEl.releasePointerCapture(e.pointerId);
+    }
+    if (dragRect) {
+      const r = dragRect;
+      dragRect = null;
+      await applyDrawnBox(r);
+      return;
+    }
+    onPanEnd(e);
+  }
+
+  /// Turn a stage-space rectangle into analysis coordinates and re-score it.
+  async function applyDrawnBox(r: { x0: number; y0: number; x1: number; y1: number }) {
+    if (reviewFile === null) return;
+    const scaleW = fit.w * zoom;
+    const scaleH = fit.h * zoom;
+    if (scaleW <= 0 || scaleH <= 0) return;
+    const x0 = Math.min(r.x0, r.x1);
+    const y0 = Math.min(r.y0, r.y1);
+    const x1 = Math.max(r.x0, r.x1);
+    const y1 = Math.max(r.y0, r.y1);
+    const bx = Math.round(((x0 - tx) / scaleW) * boxW);
+    const by = Math.round(((y0 - ty) / scaleH) * boxH);
+    const bw = Math.round(((x1 - x0) / scaleW) * boxW);
+    const bh = Math.round(((y1 - y0) / scaleH) * boxH);
+    if (bw < 8 || bh < 8) {
+      status = "box too small — drag a larger rectangle";
+      return;
+    }
+    boxBusy = true;
+    status = "re-scoring the drawn box…";
+    try {
+      detail = await setSubjectBox(reviewFile, bx, by, bw, bh);
+      selectedBox = 0;
+      await refreshFiles();
+      status = "drawn box applied";
+      drawing = false;
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      boxBusy = false;
+    }
+  }
+
+  async function removeBox(i: number) {
+    if (reviewFile === null || !detail) return;
+    const b = detail.boxes[i];
+    if (!b) return;
+    boxBusy = true;
+    try {
+      detail = await removeSubject(reviewFile, b.x, b.y, b.w, b.h);
+      selectedBox = 0;
+      await refreshFiles();
+      status = "box removed";
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      boxBusy = false;
+    }
+  }
+
+  async function identifyCurrent() {
+    if (reviewFile === null) return;
+    boxBusy = true;
+    status = "identifying…";
+    try {
+      detail = await identifySubject(reviewFile);
+      selectedBox = 0;
+      await refreshFiles();
+      status = "identification refreshed";
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      boxBusy = false;
+    }
+  }
+
   function onPanMove(e: PointerEvent) {
     if (!panning) return;
     tx = panStart.tx + (e.clientX - panStart.x);
@@ -449,22 +563,21 @@
     }
   }
 
-  /// Ranked matches: prefix hits first, then substring hits (capped).
+  /// Ranked matches: prefix hits first, then substring hits. Capped generously
+  /// so the dropdown is a scrollable list rather than a short guess.
   const speciesMatches = $derived.by(() => {
     const q = speciesInput.trim().toLowerCase();
     if (q.length < 2 || speciesList.length === 0) return [] as string[];
     const starts: string[] = [];
     const contains: string[] = [];
+    const CAP = 300;
     for (const s of speciesList) {
       const low = s.toLowerCase();
-      if (low.startsWith(q)) {
-        if (starts.length < 8) starts.push(s);
-      } else if (low.includes(q) && contains.length < 8) {
-        contains.push(s);
-      }
-      if (starts.length >= 8 && contains.length >= 8) break;
+      if (low.startsWith(q)) starts.push(s);
+      else if (low.includes(q)) contains.push(s);
+      if (starts.length >= CAP && contains.length >= CAP) break;
     }
-    return [...starts, ...contains].slice(0, 8);
+    return [...starts, ...contains].slice(0, CAP);
   });
 
   function onSpeciesInput() {
@@ -816,10 +929,23 @@
   }
 
   async function cancel() {
+    const scanning = progress?.label === "Scanning";
     try {
       // The progress label tells us which background job to stop.
-      if (progress?.label === "Scanning") await cancelScan();
+      if (scanning) await cancelScan();
       else await cancelAnalysis();
+      status = "stopping…";
+      // A single slow file (or a rawler hang) can delay the backend's "stopped"
+      // event, which would leave the UI frozen and un-actionable. Un-stick the
+      // UI after a grace period; the backend keeps its own cancellation and a
+      // new run supersedes it.
+      window.setTimeout(() => {
+        if (busy) {
+          busy = false;
+          progress = null;
+          status = `${scanning ? "scan" : "analysis"} stopped (the current file may still be finishing)`;
+        }
+      }, 8000);
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -1237,6 +1363,16 @@
         </select>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
+        <button
+          class:active={drawing}
+          onclick={() => (drawing = !drawing)}
+          title="Drag on the image to mark the bird yourself"
+        >
+          {drawing ? "Drawing… (click to stop)" : "Draw box"}
+        </button>
+        <button onclick={identifyCurrent} disabled={boxBusy} title="Re-run detection and species ID">
+          Identify
+        </button>
         <button onclick={closeReview}>Close (Esc)</button>
         <button onclick={trashCurrent} title="Move to the OS trash">Delete (Del)</button>
       </div>
@@ -1247,13 +1383,20 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="stage"
+              class:drawing
               bind:this={stageEl}
               onwheel={onWheel}
-              onpointerdown={onPanStart}
-              onpointermove={onPanMove}
-              onpointerup={onPanEnd}
-              onpointercancel={onPanEnd}
+              onpointerdown={onStageDown}
+              onpointermove={onStageMove}
+              onpointerup={onStageUp}
+              onpointercancel={onStageUp}
             >
+              {#if dragRect}
+                <div
+                  class="drawrect"
+                  style="left:{Math.min(dragRect.x0, dragRect.x1)}px; top:{Math.min(dragRect.y0, dragRect.y1)}px; width:{Math.abs(dragRect.x1 - dragRect.x0)}px; height:{Math.abs(dragRect.y1 - dragRect.y0)}px"
+                ></div>
+              {/if}
               <div
                 class="imgwrap"
                 style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
@@ -1297,6 +1440,17 @@
                         ? ` ${(b.confidence * 100).toFixed(0)}%`
                         : ""}</span
                     >
+                    {#if i === selectedBox}
+                      <button
+                        class="boxx"
+                        title="Remove this box and re-score"
+                        onpointerdown={(e) => e.stopPropagation()}
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          removeBox(i);
+                        }}>✕</button
+                      >
+                    {/if}
                   </div>
                 {/each}
               </div>

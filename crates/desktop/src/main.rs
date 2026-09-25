@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use base64::Engine as _;
+use birdsorter_core::analysis::detector::BBox;
 use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
@@ -32,7 +33,8 @@ use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_
 use birdsorter_core::io::xmp;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
-    ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
+    analyze_file_with, ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
+    VerdictScorer,
 };
 use birdsorter_core::runtime::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
 use rusqlite::Connection;
@@ -641,7 +643,15 @@ fn analyze_folder(
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
     let cancel = CancelToken::new();
-    *state.cancel.lock().map_err(err)? = Some(cancel.clone());
+    {
+        // Supersede any run that is still winding down, so restarting after a
+        // Stop always wins.
+        let mut slot = state.cancel.lock().map_err(err)?;
+        if let Some(previous) = slot.take() {
+            previous.cancel();
+        }
+        *slot = Some(cancel.clone());
+    }
     let force = force.unwrap_or(false);
 
     std::thread::spawn(move || {
@@ -673,34 +683,33 @@ fn analyze_folder(
     Ok(())
 }
 
-fn run_analysis(
-    app: &AppHandle,
-    db_path: &Path,
-    folder: i64,
-    model: Option<&str>,
-    cancel: &CancelToken,
-) -> Result<(), String> {
-    let conn = open(db_path)?;
+/// The analysis pipeline pieces, built once and reused (also for the review
+/// view's "re-evaluate this image" actions).
+struct Pipeline {
+    decoder: CompositeDecoder,
+    detector: Box<dyn SubjectDetector>,
+    scorer: Box<dyn VerdictScorer>,
+    species: Option<Box<dyn SpeciesClassifier>>,
+}
 
+/// Build the decoder/detector/scorer/species stack from the current settings.
+fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, String> {
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
         Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
     ]);
-
     let det = DetectionSettings::load_default();
-    let yolo = det.yolo_config();
     let device = DevicePreference::from_setting(&det.device);
     let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) => {
-            Box::new(OnnxDetector::from_file(Path::new(m), yolo.clone(), device).map_err(err)?)
+            Box::new(OnnxDetector::from_file(Path::new(m), det.yolo_config(), device).map_err(err)?)
         }
-        None => match OnnxDetector::load_default(yolo, device).map_err(err)? {
+        None => match OnnxDetector::load_default(det.yolo_config(), device).map_err(err)? {
             Some(d) => Box::new(d),
             None => Box::new(SaliencyDetector::default()),
         },
     };
-
-    let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
+    let scorer = scorer_for(conn, ScoreSettings::load_default()).map_err(err)?;
     let species: Option<Box<dyn SpeciesClassifier>> =
         match birdsorter_core::runtime::load_species_classifier(device) {
             Ok(s) => s,
@@ -709,6 +718,24 @@ fn run_analysis(
                 None
             }
         };
+    Ok(Pipeline {
+        decoder,
+        detector,
+        scorer,
+        species,
+    })
+}
+
+fn run_analysis(
+    app: &AppHandle,
+    db_path: &Path,
+    folder: i64,
+    model: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<(), String> {
+    let conn = open(db_path)?;
+    let pipe = build_pipeline(&conn, model)?;
+
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -717,8 +744,8 @@ fn run_analysis(
         batch_size: 8,
         decode_threads: threads,
         cancel: Some(cancel),
-        species: species.as_deref(),
-        ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
+        species: pipe.species.as_deref(),
+        ..IngestContext::new(&pipe.decoder, pipe.detector.as_ref(), pipe.scorer.as_ref())
     };
 
     let handle = app.clone();
@@ -736,6 +763,73 @@ fn run_analysis(
     })
     .map_err(err)?;
     Ok(())
+}
+
+/// Re-evaluate one file with an optional forced subject box (drawn by the user)
+/// or a list of boxes to drop, then return the refreshed detail.
+fn reevaluate(
+    db_path: &Path,
+    file: i64,
+    manual: Option<BBox>,
+    exclude: &[BBox],
+) -> Result<AnalysisDetailDto, String> {
+    let conn = open(db_path)?;
+    let lf = library::get_file(&conn, file)
+        .map_err(err)?
+        .ok_or_else(|| "file not found".to_string())?;
+    let pipe = build_pipeline(&conn, None)?;
+    analyze_file_with(
+        &conn,
+        &lf,
+        &pipe.decoder,
+        pipe.detector.as_ref(),
+        pipe.scorer.as_ref(),
+        pipe.species.as_deref(),
+        manual,
+        exclude,
+    )
+    .map_err(err)?;
+    drop(conn);
+    analysis_detail_impl(db_path, file)
+}
+
+/// Set a user-drawn subject box and re-score/species that region.
+#[tauri::command]
+async fn set_subject_box(
+    state: State<'_, AppState>,
+    file: i64,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<AnalysisDetailDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || reevaluate(&db_path, file, Some(BBox::new(x, y, w, h)), &[])).await
+}
+
+/// Drop one subject box (and re-score the rest); removing the last one leaves
+/// the file with no subject.
+#[tauri::command]
+async fn remove_subject(
+    state: State<'_, AppState>,
+    file: i64,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<AnalysisDetailDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || reevaluate(&db_path, file, None, &[BBox::new(x, y, w, h)])).await
+}
+
+/// Re-run detection + species ID for one file (the review view's "Identify").
+#[tauri::command]
+async fn identify_subject(
+    state: State<'_, AppState>,
+    file: i64,
+) -> Result<AnalysisDetailDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || reevaluate(&db_path, file, None, &[])).await
 }
 
 #[tauri::command]
@@ -1254,6 +1348,9 @@ fn main() {
             trash_files,
             analyze_folder,
             cancel_analysis,
+            set_subject_box,
+            remove_subject,
+            identify_subject,
             get_settings,
             set_settings,
             get_detection_settings,

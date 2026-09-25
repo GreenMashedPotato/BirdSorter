@@ -387,6 +387,33 @@ export async function speciesLabels(): Promise<string[]> {
   return invoke("species_labels");
 }
 
+/** Re-run detection + species ID for one file (the review "Identify" button). */
+export async function identifySubject(file: number): Promise<AnalysisDetail> {
+  return invoke("identify_subject", { file });
+}
+
+/** Force the subject box (a rectangle the user drew) and re-score that region. */
+export async function setSubjectBox(
+  file: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): Promise<AnalysisDetail> {
+  return invoke("set_subject_box", { file, x, y, w, h });
+}
+
+/** Drop one detected subject box and re-score the rest. */
+export async function removeSubject(
+  file: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): Promise<AnalysisDetail> {
+  return invoke("remove_subject", { file, x, y, w, h });
+}
+
 export interface RatingResult {
   changed: number;
   xmpWritten: number;
