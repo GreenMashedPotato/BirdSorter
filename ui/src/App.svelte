@@ -209,7 +209,8 @@
     try {
       const detectionChanged =
         detection !== null &&
-        (detection.slice_grid !== nextDetection.slice_grid ||
+        (detection.slice_mode !== nextDetection.slice_mode ||
+          detection.slice_grid !== nextDetection.slice_grid ||
           detection.device !== nextDetection.device);
       await setSettings(next);
       await setDetectionSettings(nextDetection);

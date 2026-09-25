@@ -67,17 +67,54 @@ pub struct SpeciesPreprocess {
     /// Per-channel mean (applied after scaling to `[0, 1]`).
     pub mean: [f32; 3],
     pub std: [f32; 3],
+    /// `"clip"` for an open-vocabulary CLIP-style model (see
+    /// [`crate::runtime::OnnxClipClassifier`]); anything else is a plain
+    /// image classifier whose ONNX output *is* the logits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// CLIP only: file holding the `[N, D]` f32 text embeddings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_file: Option<String>,
+    /// CLIP only: sidecar JSON with `{"rows","cols","scale"}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_meta: Option<String>,
+    /// CLIP only: the model's logit scale (`logit_scale.exp()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
+    /// Resize layout: `"squash"` (default) or `"center"` (CLIP-style
+    /// shortest-side resize + centre crop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resize: Option<String>,
+    /// Resampling kernel: `"nearest"` (default), `"triangle"` or `"bicubic"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 impl Default for SpeciesPreprocess {
     fn default() -> Self {
-        // Matches the model's image processor exactly (verified against the
-        // reference: NEAREST resize to 260 + standard ImageNet normalisation).
+        // Matches the bundled ViT's image processor exactly (224 px, mean/std
+        // 0.5). CLIP models override all of this from their meta sidecar.
         Self {
-            size: 260,
-            mean: [0.485, 0.456, 0.406],
-            std: [0.229, 0.224, 0.225],
+            size: 224,
+            mean: [0.5, 0.5, 0.5],
+            std: [0.5, 0.5, 0.5],
+            kind: None,
+            text_file: None,
+            text_meta: None,
+            scale: None,
+            resize: None,
+            filter: None,
         }
+    }
+}
+
+impl SpeciesPreprocess {
+    /// True when this describes an open-vocabulary CLIP classifier.
+    pub fn is_clip(&self) -> bool {
+        self.kind
+            .as_deref()
+            .map(|k| k.eq_ignore_ascii_case("clip"))
+            .unwrap_or(false)
     }
 }
 
@@ -99,13 +136,22 @@ pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {
     Some(view.to_owned())
 }
 
-/// Resize a crop to `size x size` (bilinear) and normalise to NCHW `f32`.
+/// Resize a crop to `size x size` and normalise to NCHW `f32`.
+///
+/// Two layouts are supported, selected by [`SpeciesPreprocess::resize`]:
+/// * `"squash"` (default) — stretch to a square, which is what the bundled
+///   EfficientNet/ViT models were trained with;
+/// * `"center"` — resize the *shortest* side to `size` and centre-crop, which is
+///   what CLIP/BioCLIP expect (preserves aspect ratio).
+///
+/// [`SpeciesPreprocess::filter`] picks the resampling kernel (`nearest`,
+/// `triangle` or `bicubic`).
 pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
     let (h, w, _) = crop.dim();
     let s = cfg.size as usize;
     let mut out = vec![0.0f32; 3 * s * s];
 
-    if h == 0 || w == 0 {
+    if h == 0 || w == 0 || s == 0 {
         return out;
     }
     let raw: Vec<u8> = crop.iter().copied().collect();
@@ -113,12 +159,24 @@ pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
         Some(img) => img,
         None => return out,
     };
-    let resized = image::imageops::resize(
-        &img,
-        cfg.size,
-        cfg.size,
-        image::imageops::FilterType::Nearest,
-    );
+    let filter = match cfg.filter.as_deref() {
+        Some("bicubic") => image::imageops::FilterType::CatmullRom,
+        Some("triangle") | Some("bilinear") => image::imageops::FilterType::Triangle,
+        _ => image::imageops::FilterType::Nearest,
+    };
+
+    let resized = if cfg.resize.as_deref() == Some("center") {
+        let short = h.min(w) as f32;
+        let scale = s as f32 / short.max(1.0);
+        let rw = ((w as f32 * scale).round() as u32).max(s as u32);
+        let rh = ((h as f32 * scale).round() as u32).max(s as u32);
+        let tmp = image::imageops::resize(&img, rw, rh, filter);
+        let x0 = (rw - s as u32) / 2;
+        let y0 = (rh - s as u32) / 2;
+        image::imageops::crop_imm(&tmp, x0, y0, s as u32, s as u32).to_image()
+    } else {
+        image::imageops::resize(&img, cfg.size, cfg.size, filter)
+    };
 
     for y in 0..s {
         for x in 0..s {
@@ -237,7 +295,8 @@ mod tests {
         let crop = solid(50, 40, 255);
         let cfg = SpeciesPreprocess::default();
         let buf = preprocess_crop(&crop, &cfg);
-        assert_eq!(buf.len(), 3 * 260 * 260);
+        let s = cfg.size as usize;
+        assert_eq!(buf.len(), 3 * s * s);
         // 255/255 = 1.0 -> (1 - mean) / std
         let expected = (1.0 - cfg.mean[0]) / cfg.std[0];
         assert!((buf[0] - expected).abs() < 1e-4, "got {}", buf[0]);
@@ -246,8 +305,10 @@ mod tests {
     #[test]
     fn preprocess_handles_empty_crop() {
         let empty = Array3::<u8>::zeros((0, 0, 3));
-        let buf = preprocess_crop(&empty, &SpeciesPreprocess::default());
-        assert_eq!(buf.len(), 3 * 260 * 260);
+        let cfg = SpeciesPreprocess::default();
+        let buf = preprocess_crop(&empty, &cfg);
+        let s = cfg.size as usize;
+        assert_eq!(buf.len(), 3 * s * s);
         assert!(buf.iter().all(|&v| v == 0.0));
     }
 
@@ -295,6 +356,34 @@ mod tests {
     fn prettify_only_touches_all_caps() {
         assert_eq!(prettify_label("ABBOTTS BABBLER"), "Abbotts Babbler");
         assert_eq!(prettify_label("Pycnonotus_goiavier"), "Pycnonotus goiavier");
+    }
+
+    #[test]
+    fn center_crop_preprocessing_keeps_aspect_ratio() {
+        let cfg = SpeciesPreprocess {
+            size: 224,
+            mean: [0.5, 0.5, 0.5],
+            std: [0.5, 0.5, 0.5],
+            kind: Some("clip".into()),
+            text_file: None,
+            text_meta: None,
+            scale: None,
+            resize: Some("center".into()),
+            filter: Some("bicubic".into()),
+        };
+        // A tall crop, a wide crop and a square must all produce the same
+        // [3, s, s] buffer without panicking.
+        for (w, h) in [(80usize, 200usize), (200, 80), (120, 120), (5, 400)] {
+            let crop = Array3::<u8>::from_shape_fn((h, w, 3), |(y, x, c)| {
+                ((x * 3 + y * 7 + c * 11) % 256) as u8
+            });
+            let buf = preprocess_crop(&crop, &cfg);
+            assert_eq!(buf.len(), 3 * 224 * 224);
+            assert!(buf.iter().all(|v| v.is_finite()));
+        }
+        // Tiny crops still work (upscaled rather than producing an empty draw).
+        let tiny = solid(2, 2, 128);
+        assert_eq!(preprocess_crop(&tiny, &cfg).len(), 3 * 224 * 224);
     }
 
     #[test]

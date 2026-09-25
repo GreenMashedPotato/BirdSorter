@@ -138,6 +138,35 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into(), "planned".into()],
         },
+        ModelSpec {
+            key: "bird_species_bioclip".into(),
+            display_name: "Bird species (BioCLIP, open vocabulary)".into(),
+            description: "Open-vocabulary species ID: image embeddings are compared against \
+                          text embeddings, so the label list is whatever the bundle was built \
+                          with (e.g. a regional checklist) - no retraining. Build one with \
+                          tools/export_bioclip.py --labels <names.json>. int8 image encoder \
+                          (~86 MB) + text embeddings."
+                .into(),
+            artifact: "bird_species_bioclip.zip".into(),
+            unpack: true,
+            files: vec![
+                "bird_species.onnx".into(),
+                "bird_species.labels.json".into(),
+                "bird_species.meta.json".into(),
+                "bioclip_text.bin".into(),
+                "bioclip_text.json".into(),
+            ],
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 87_000_000,
+            tier: Tier::T2,
+            tags: vec![
+                "species".into(),
+                "birds".into(),
+                "clip".into(),
+                "open-vocabulary".into(),
+            ],
+        },
     ]
 }
 
@@ -293,7 +322,13 @@ pub fn remove(dir: &Path, spec: &ModelSpec) -> Result<usize> {
 }
 
 /// Default directory for downloaded models: `<user data>/BirdSorter/models`.
+///
+/// `BIRDSORTER_MODEL_DIR` overrides it, which is how tests (and a portable
+/// install) point at a different set of models.
 pub fn default_model_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("BIRDSORTER_MODEL_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
         .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
     Ok(dirs.data_dir().join("models"))

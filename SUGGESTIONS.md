@@ -25,6 +25,10 @@ on a 28-core Windows box.
 | ✅ **Benchmarks** — `crates/core/benches/analysis.rs` covers the hot paths | keeps the above honest |
 | ✅ **Property tests for scoring** — score always in `[0,1]`, and monotonic in subject sharpness | new tests |
 | ✅ **Model-load error hints** — opset/truncated-download hints in the ONNX load failure | clearer failures |
+| ✅ **Two-phase ("smart") detection** — full frame first; the tile grid runs **only** on frames that found nothing. Batching made tiling ~free, so this is the best of both: distant birds recovered (raptor 0.88 vs missed) at no measurable cost (8.1–8.7 s vs 8.6–8.7 s / 40 frames). | new default |
+| ✅ **Open-vocabulary species ID (BioCLIP)** — `tools/export_bioclip.py` exports a ViT-B/16 image tower (int8 86 MB) + text embeddings for *any* label list; the app loads it via `runtime::OnnxClipClassifier` when `meta.json` says `"kind":"clip"`. Measured **Snowy Egret 0.947** vs 0.373 for the fixed-head ViT. This is how you support Indonesian/regional species **without training**. | done |
+| ✅ **Species fine-tuning tool** — `tools/train_species.py` (folder-per-class or HF dataset → `bird_species.onnx` + labels + meta), with iNat-2021 Aves (~1,486 species) guidance. | done |
+| ✅ **Model-driven preprocessing** — `meta.json` can request CLIP-style shortest-side resize + centre-crop and bicubic filtering (0.011 → 0.947 on the egret when added). | done |
 | ✅ **Thumbnail cache GC** — `ThumbCache::retain(hash set)` + `cleancache` CLI + Settings ▸ Maintenance | reclaimed **45.9 MB** of 46.6 MB on a real library while keeping all 40 referenced entries |
 | ✅ **Export keepers** — copy/move labelled keepers (`--label`), or by scorer verdict (`--predicted`), never overwriting (name gets ` (1)`); CLI `export`, a toolbar button, and a Core API module | verified end-to-end on real CR3s: 15 copied, 40 originals untouched, second run created 15 `(1)` copies |
 | ✅ **Grid keyboard navigation** — arrows move a visible cursor (scrolling the virtualized grid to follow), Space toggles selection, Enter opens the review, Home/End jump to row ends | new |
@@ -102,11 +106,16 @@ on a 28-core Windows box.
 
 ## Model quality (open)
 
+26. ✅ **Larger label sets** — done: BioCLIP (open-vocabulary, any list) and
+    `tools/train_species.py` (iNat-2021 Aves, ~1,486 species). See `MODELS.md`.
 27. ⬜ **Confidence calibration** (temperature scaling) for the detector.
-28. ⬜ **Species ensemble** (ViT + a second architecture) for accuracy.
+28. ⬜ **Species ensemble** (BioCLIP + the ViT) — cheap accuracy and better
+    uncertainty: they fail differently.
 29. ⬜ **Active learning** — after a species correction, surface similar frames.
 30. ⬜ **Multi-region background sampling** — median of several background
     rectangles instead of the largest single one.
+31. ⬜ **Ship a curated regional label list** for BioCLIP (e.g. an Indonesian
+    checklist) as a ready-made bundle.
 
 ## Documentation (open)
 

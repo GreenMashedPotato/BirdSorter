@@ -30,7 +30,7 @@ pub fn default_class_name(index: usize) -> String {
 /// small/distant birds that vanish at full-frame resolution get found.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SliceConfig {
-    /// Tile grid per axis (`2` = 2x2 tiles).
+    /// Tile grid per axis (`4` = 4x4 tiles).
     pub grid: usize,
     /// Fractional overlap between neighbouring tiles.
     pub overlap: f32,
@@ -39,42 +39,77 @@ pub struct SliceConfig {
 impl Default for SliceConfig {
     fn default() -> Self {
         Self {
-            grid: 4,
+            grid: 6,
             overlap: 0.25,
         }
     }
 }
 
 /// When to use sliced inference.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SliceMode {
-    /// Tiles only when a GPU execution provider is active (CPU stays fast).
-    #[default]
-    Auto,
+    /// Full frame only.
     Off,
-    Tiles(SliceConfig),
+    /// Full frame first; if **nothing** is found, retry on the tile grid.
+    ///
+    /// This is the default: most frames have a visible subject, so the extra
+    /// tiles are only paid for on the frames that actually need them — and those
+    /// are exactly the frames where a distant bird would otherwise be missed.
+    Fallback(SliceConfig),
+    /// Always run the full frame *and* the tiles.
+    Always(SliceConfig),
+}
+
+impl Default for SliceMode {
+    fn default() -> Self {
+        SliceMode::Fallback(SliceConfig::default())
+    }
 }
 
 impl SliceMode {
-    /// Map a user-facing setting to a slice mode: `0` off, `1` auto (GPU only),
-    /// `n > 1` an `n x n` tile grid.
-    pub fn from_grid(grid: u32) -> Self {
-        match grid {
-            0 => SliceMode::Off,
-            1 => SliceMode::Auto,
-            n => SliceMode::Tiles(SliceConfig {
-                grid: n as usize,
-                overlap: 0.25,
-            }),
+    /// Build from the persisted setting: `"off"`, `"fallback"`, `"always"`.
+    ///
+    /// Legacy numeric values are still accepted (`0` = off, `1` = fallback,
+    /// `n > 1` = always `n x n`), so old settings files keep working.
+    pub fn from_setting(mode: &str, grid: u32) -> Self {
+        let grid = grid.clamp(1, 12) as usize;
+        let cfg = SliceConfig {
+            grid: grid.max(1),
+            overlap: 0.25,
+        };
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" => SliceMode::Off,
+            "always" | "tiles" => SliceMode::Always(cfg),
+            "fallback" | "smart" => SliceMode::Fallback(cfg),
+            other => match other.parse::<u32>() {
+                Ok(0) => SliceMode::Off,
+                Ok(1) => SliceMode::Fallback(SliceConfig {
+                    grid: 6,
+                    overlap: 0.25,
+                }),
+                Ok(n) => SliceMode::Always(SliceConfig {
+                    grid: n as usize,
+                    overlap: 0.25,
+                }),
+                Err(_) => SliceMode::Fallback(cfg),
+            },
         }
     }
 
-    /// The user-facing setting this mode corresponds to.
-    pub fn to_grid(self) -> u32 {
+    /// The `(mode, grid)` pair to persist.
+    pub fn to_setting(self) -> (&'static str, u32) {
         match self {
-            SliceMode::Off => 0,
-            SliceMode::Auto => 1,
-            SliceMode::Tiles(cfg) => cfg.grid as u32,
+            SliceMode::Off => ("off", 6),
+            SliceMode::Fallback(cfg) => ("fallback", cfg.grid as u32),
+            SliceMode::Always(cfg) => ("always", cfg.grid as u32),
+        }
+    }
+
+    /// The tile config to use, or `None` when slicing is off.
+    pub fn config(self) -> Option<SliceConfig> {
+        match self {
+            SliceMode::Off => None,
+            SliceMode::Fallback(cfg) | SliceMode::Always(cfg) => Some(cfg),
         }
     }
 }
@@ -137,21 +172,16 @@ impl Default for YoloConfig {
             class_filter: Some(vec![COCO_BIRD]),
             max_detections: 300,
             pad_value: 114,
-            slice: SliceMode::Auto,
+            slice: SliceMode::default(),
             region_batch: 16,
         }
     }
 }
 
 impl YoloConfig {
-    /// Resolve the slice mode for the current device.
-    pub fn resolved_slice(&self, gpu: bool) -> Option<SliceConfig> {
-        match self.slice {
-            SliceMode::Off => None,
-            SliceMode::Tiles(cfg) => Some(cfg),
-            SliceMode::Auto if gpu => Some(SliceConfig::default()),
-            SliceMode::Auto => None,
-        }
+    /// Resolve the slice mode to the tile config to use, if any.
+    pub fn resolved_slice(&self) -> Option<SliceConfig> {
+        self.slice.config()
     }
 }
 
@@ -591,15 +621,23 @@ mod tests {
     }
 
     #[test]
-    fn slice_mode_auto_resolves_by_device() {
+    fn slice_mode_resolves_from_settings() {
+        // Default is the two-phase fallback at 6x6.
         let cfg = YoloConfig::default();
-        assert!(cfg.resolved_slice(false).is_none()); // CPU stays fast
-        assert!(cfg.resolved_slice(true).is_some()); // GPU slices
+        let slice = cfg.resolved_slice().expect("default slices as a fallback");
+        assert_eq!(slice.grid, 6);
+
         let off = YoloConfig {
             slice: SliceMode::Off,
             ..YoloConfig::default()
         };
-        assert!(off.resolved_slice(true).is_none());
+        assert!(off.resolved_slice().is_none());
+
+        let always = YoloConfig {
+            slice: SliceMode::from_setting("always", 4),
+            ..YoloConfig::default()
+        };
+        assert_eq!(always.resolved_slice().unwrap().grid, 4);
     }
 
     #[test]

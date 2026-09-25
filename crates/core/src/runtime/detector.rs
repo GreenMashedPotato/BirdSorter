@@ -16,7 +16,7 @@ use ort::value::Tensor;
 use crate::analysis::detector::{
     dedupe_detections, nms, BBox, Detection, Letterbox, SubjectDetector,
 };
-use crate::analysis::yolo::{self, YoloConfig};
+use crate::analysis::yolo::{self, SliceMode, YoloConfig};
 use crate::{CoreError, Result};
 
 fn ort_err(e: impl std::fmt::Display) -> CoreError {
@@ -283,16 +283,15 @@ impl OnnxDetector {
         Ok(all)
     }
 
-    fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
+    /// Run the detector over an explicit list of regions and merge the results.
+    fn detect_regions(
+        &self,
+        rgb: &Array3<u8>,
+        regions: &[(usize, usize, usize, usize)],
+    ) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
-        let regions = match self.config.resolved_slice(self.gpu) {
-            Some(cfg) => yolo::region_rects(w, h, &cfg),
-            None => vec![(0, 0, w, h)],
-        };
-
-        // Preprocess every region once; skip degenerate ones.
         let mut inputs: Vec<RegionInput> = Vec::with_capacity(regions.len());
-        for (x0, y0, rw, rh) in regions {
+        for &(x0, y0, rw, rh) in regions {
             if rw < 8 || rh < 8 {
                 continue;
             }
@@ -342,6 +341,40 @@ impl OnnxDetector {
         // duplicates across regions.
         let merged = nms(all, self.config.iou_threshold);
         Ok(dedupe_detections(merged, 0.5, 0.7))
+    }
+
+    fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {
+        let (h, w, _) = rgb.dim();
+        let full = [(0usize, 0usize, w, h)];
+
+        match self.config.slice {
+            SliceMode::Off => self.detect_regions(rgb, &full),
+            SliceMode::Always(cfg) => {
+                let mut rects = yolo::region_rects(w, h, &cfg);
+                if rects.is_empty() {
+                    rects = full.to_vec();
+                }
+                self.detect_regions(rgb, &rects)
+            }
+            SliceMode::Fallback(cfg) => {
+                // Phase 1: the cheap full-frame pass. Most frames resolve here.
+                let dets = self.detect_regions(rgb, &full)?;
+                if !dets.is_empty() || cfg.grid <= 1 {
+                    return Ok(dets);
+                }
+                // Phase 2: nothing found, so this is exactly the frame worth
+                // paying for — retry on the tile grid (skipping the full frame,
+                // which we already know yields nothing).
+                let mut rects = yolo::region_rects(w, h, &cfg);
+                if !rects.is_empty() {
+                    rects.remove(0);
+                }
+                if rects.is_empty() {
+                    return Ok(dets);
+                }
+                self.detect_regions(rgb, &rects)
+            }
+        }
     }
 }
 

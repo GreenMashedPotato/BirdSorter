@@ -157,6 +157,24 @@ detection → sharpness verdict → species ID → grid/review UI).
   export flags) plus a survey of **larger bird datasets**: iNat-2021 Aves
   (~1,486 species), NABirds (555), CUB-200 (200), and BioCLIP 2/2.5 (450k+ taxa,
   vision-language, zero-shot).
+- **Two-phase ("smart") detection is the default**: phase 1 runs the full frame;
+  only when it finds *nothing* does phase 2 retry on the tile grid. Because tiles
+  are batched, this is free where it matters — measured 8.1-8.7 s vs 8.6-8.7 s
+  for 40 frames (off vs smart), while the distant raptor that used to be missed
+  now resolves at 0.88 -> `uncertain`. Settings ▸ Distant birds: Off / Smart /
+  Always + a 2-12 tile grid.
+- **BioCLIP (open-vocabulary species ID) works end-to-end**: `tools/export_bioclip.py`
+  exports the ViT-B/16 image tower (fp32 346 MB -> **int8 86 MB**) plus text
+  embeddings for *any* label list; the app auto-detects `"kind": "clip"` in
+  `bird_species.meta.json` and runs `runtime::OnnxClipClassifier`. Measured:
+  **Snowy Egret 0.947** vs 0.373 for the shipped ViT. This is the path to
+  Indonesian/regional species without training.
+- **Species preprocessing is now model-driven**: `meta.json` can select
+  CLIP-style shortest-side resize + centre-crop and bicubic filtering (the
+  difference between 0.011 and 0.947 on the egret).
+- **`tools/train_species.py`**: fine-tune a ViT on a folder-per-class set (or an
+  HF dataset) and export `bird_species.onnx` + labels + meta, including iNat-2021
+  Aves (~1,486 species) guidance.
 
 - **int8 quantization** of the species model: 345 MB → **85 MB**, top-1
   unchanged (Snowy Egret 0.373 vs 0.385). Quantized only MatMul weights, since
