@@ -88,6 +88,10 @@ pub struct SpeciesPreprocess {
     /// Resampling kernel: `"nearest"` (default), `"triangle"` or `"bicubic"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// For `resize: "center"`: resize the shortest side to `size / crop_pct`
+    /// before centre-cropping to `size` (the ImageNet/timm convention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop_pct: Option<f32>,
 }
 
 impl Default for SpeciesPreprocess {
@@ -104,6 +108,7 @@ impl Default for SpeciesPreprocess {
             scale: None,
             resize: None,
             filter: None,
+            crop_pct: None,
         }
     }
 }
@@ -167,7 +172,9 @@ pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
 
     let resized = if cfg.resize.as_deref() == Some("center") {
         let short = h.min(w) as f32;
-        let scale = s as f32 / short.max(1.0);
+        let crop_pct = cfg.crop_pct.unwrap_or(1.0).clamp(0.1, 1.0);
+        let target_short = (s as f32 / crop_pct).round();
+        let scale = target_short / short.max(1.0);
         let rw = ((w as f32 * scale).round() as u32).max(s as u32);
         let rh = ((h as f32 * scale).round() as u32).max(s as u32);
         let tmp = image::imageops::resize(&img, rw, rh, filter);
@@ -219,11 +226,17 @@ pub fn top_k(logits: &[f32], labels: &[String], k: usize) -> Vec<SpeciesPredicti
 }
 
 /// Display form of a label: `"ABBOTTS BABBLER"` -> `"Abbotts Babbler"`.
-/// Mixed-case labels (e.g. scientific names) are left alone.
+/// Mixed-case labels (e.g. scientific names) are left alone apart from
+/// capitalising the genus, so `"ardea alba"` -> `"Ardea alba"`.
 pub fn prettify_label(raw: &str) -> String {
     let s = raw.replace('_', " ");
     if s.chars().any(|c| c.is_lowercase()) {
-        return s;
+        // Scientific names come back all-lowercase; capitalise the genus.
+        let mut chars = s.chars();
+        return match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => s,
+        };
     }
     s.split_whitespace()
         .map(|word| {
@@ -338,7 +351,7 @@ mod tests {
         let labels: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
         let top = top_k(&logits, &labels, 2);
         assert_eq!(top.len(), 2);
-        assert_eq!(top[0].name, "b"); // argmax, mixed-case labels untouched
+        assert_eq!(top[0].name, "B"); // argmax, one-letter labels are capitalised
         assert!(top[0].confidence > top[1].confidence);
         let total: f32 = top.iter().map(|p| p.confidence).sum();
         assert!(total <= 1.0 + 1e-6);
@@ -356,6 +369,8 @@ mod tests {
     fn prettify_only_touches_all_caps() {
         assert_eq!(prettify_label("ABBOTTS BABBLER"), "Abbotts Babbler");
         assert_eq!(prettify_label("Pycnonotus_goiavier"), "Pycnonotus goiavier");
+        // iNat21 scientific names are lowercase; only the genus is capitalised.
+        assert_eq!(prettify_label("ardea alba"), "Ardea alba");
     }
 
     #[test]
@@ -370,6 +385,7 @@ mod tests {
             scale: None,
             resize: Some("center".into()),
             filter: Some("bicubic".into()),
+            crop_pct: Some(0.95),
         };
         // A tall crop, a wide crop and a square must all produce the same
         // [3, s, s] buffer without panicking.

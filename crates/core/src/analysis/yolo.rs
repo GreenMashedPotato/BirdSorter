@@ -167,6 +167,11 @@ pub struct YoloConfig {
     pub edge_proposal: bool,
     /// Tuning for the edge-proposal pass.
     pub edge: EdgeConfig,
+    /// Lower confidence threshold used for the fallback / tiled / edge-proposal
+    /// pass. Small in-flight birds score low on the full frame; when the app has
+    /// already decided to look harder it is worth accepting weaker boxes.
+    /// `None` keeps the normal threshold.
+    pub fallback_conf: Option<f32>,
 }
 
 impl Default for YoloConfig {
@@ -182,6 +187,21 @@ impl Default for YoloConfig {
             region_batch: 16,
             edge_proposal: true,
             edge: EdgeConfig::default(),
+            fallback_conf: Some(0.15),
+        }
+    }
+}
+
+impl YoloConfig {
+    /// The config to use for the expensive "look harder" pass: a lower
+    /// confidence threshold so weak small-bird detections are kept.
+    pub fn recall_pass(&self) -> YoloConfig {
+        match self.fallback_conf {
+            Some(c) => YoloConfig {
+                conf_threshold: c,
+                ..self.clone()
+            },
+            None => self.clone(),
         }
     }
 }
