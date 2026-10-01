@@ -6,8 +6,9 @@ pose-robust **heuristic** — the max variance-of-Laplacian over three fixed
 head/eye candidate crops (`analysis/sharpness.rs::eye_region_sharpness`). A
 small learned keypoint model should beat it on profile/back-turned poses.
 
-This document is the pipeline. Step 1 is implemented; steps 2–3 are the work
-that needs a dataset.
+Everything is wired: label in the app, export, train, and the runtime already
+consumes a model when one is installed. The only missing piece is the labelled
+data (200–400 files) and a real training run.
 
 ## 1. Label points (implemented)
 
@@ -44,33 +45,43 @@ One JSON object per line, one line per labelled file:
 Target: **200–400 labelled files**, spread across songbirds, raptors, waterfowl
 and flight — the poses the heuristic gets wrong.
 
-## 2. Train (`tools/train_eye.py` — to do)
+## 2. Train (`tools/train_eye.py`) — implemented
 
-Suggested shape, which keeps inference cheap:
+```bash
+python tools/train_eye.py --self-test        # verify the toolchain, needs no data
+python tools/train_eye.py --labels eye_labels.jsonl --out-dir models --pretrained
+```
 
-- **Input**: the subject crop, resized to 224×224 (reuse `crop_rgb` +
-  `SpeciesPreprocess` conventions).
-- **Output**: a small heatmap per kind (e.g. 56×56 × {eye, head, beak}) from a
-  MobileNet/ResNet-lite backbone.
-- **Loss**: MSE against Gaussians at the labelled points (ignore missing kinds).
-- **Export**: `bird_eye.onnx` (opset compatible with the bundled ORT — see the
-  opset note in `MODELS.md`) plus `bird_eye.meta.json` (input size, crop
-  convention, heatmap stride, kind order).
+- **Input**: the subject crop (detection box expanded by `--margin`), resized to
+  224×224; rows without a stored subject box are skipped.
+- **Output**: three heatmaps (eye, head, beak) at 56×56, sigmoid probabilities,
+  trained with MSE against Gaussians at the labelled points.
+- **Exports**: `bird_eye.onnx` (opset 18, dynamic batch, weights inlined into the
+  single file) + `bird_eye.meta.json` (`{size, heatmap, kinds, mean, std,
+  threshold}`).
 
-## 3. Integrate (to do)
+`torch.onnx.export` may split large weights into `bird_eye.onnx.data`; the tool
+re-inlines them so the app ships one file.
 
-- Add `runtime::OnnxEyeDetector`, loading `bird_eye.onnx` from the model dir
-  (`%APPDATA%\BirdSorter\data\models\`, `BIRDSORTER_MODEL_DIR` override), gated
-  on the file being present.
-- During `compute_features`, when the subject crop is ≥ the model's minimum,
-  run it to get the eye; sample a small window around the peak and use that for
-  `eye_sharpness_worst` instead of the heuristic. Keep the heuristic as the
-  fallback (no model, tiny subject, or inference error).
-- Re-run `Re-analyze all` and compare `miss_focus_reason == "eye_softness"`
-  against the heuristic on a labelled set.
+## 3. Integrate — implemented
+
+- `runtime::OnnxEyeDetector` loads `bird_eye.onnx` + `.meta.json` from the model
+  dir (`BIRDSORTER_MODEL_DIR` override); `runtime::load_eye_detector` wraps it.
+  It is CPU-only (the model is small and GPU round-trips are not worth it) and
+  rebuilds on CPU if a GPU provider rejects it.
+- `build_pipeline` (desktop) and `analyze` (CLI) load it when present and put it
+  on `IngestContext.eye`.
+- In `pipeline::analyze_one`, when a subject box is ≥ 64 px, the model's eye
+  window (variance-of-Laplacian around the detached point, radius scaled to the
+  subject) **replaces** `eye_sharpness_worst`; the heuristic stays the fallback
+  when there is no model, the subject is tiny, or inference fails.
+
+Verified end-to-end with a randomly-initialised exported model: the Rust session
+loads it and returns one peak per kind inside the crop (`BIRDSORTER_TEST_EYE_DIR`
+gates the test). A *trained* model still needs the 200–400 labelled files.
 
 ## Why not now
 
-Training needs the points above; the app has no labeled set yet. Step 1 is the
-unblocker and can start today. The same keypoints also help the planned
+The pipeline is ready; only the labelled data and a real training run are
+missing. Step 1 can start today. The same keypoints also help the planned
 fine-tuned **head/eye detector** (`tools/train_bird_detector.py`).

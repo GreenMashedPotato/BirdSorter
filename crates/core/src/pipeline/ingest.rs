@@ -8,6 +8,7 @@ use ndarray::Array3;
 use rusqlite::Connection;
 
 use crate::analysis::detector::{BBox, Detection};
+use crate::analysis::eye::{eye_sharpness_from_model, EyeDetector};
 use crate::analysis::scorer::{score_rules, ScoreResult};
 use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
 use crate::analysis::species::{crop_rgb, SpeciesClassifier};
@@ -22,6 +23,10 @@ use crate::{CoreError, Result};
 /// be identified reliably anyway - skipping it saves ~350 ms per image and avoids
 /// confidently wrong labels on distant specks.
 const MIN_SPECIES_CROP: i32 = 110;
+
+/// Minimum subject side for the eye model to be worth running (below this the
+/// crop carries too few eye pixels to localise reliably).
+const MIN_EYE_CROP: i32 = 64;
 
 /// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
 /// backends can implement them without depending on the pipeline.
@@ -103,6 +108,8 @@ pub struct IngestContext<'a> {
     pub decode_threads: usize,
     /// Optional species classifier; `None` disables identification.
     pub species: Option<&'a dyn SpeciesClassifier>,
+    /// Optional eye/head keypoint model; refines `eye_sharpness_worst`.
+    pub eye: Option<&'a dyn EyeDetector>,
 }
 
 impl<'a> IngestContext<'a> {
@@ -119,6 +126,7 @@ impl<'a> IngestContext<'a> {
             batch_size: 8,
             decode_threads: 1,
             species: None,
+            eye: None,
         }
     }
 
@@ -353,7 +361,14 @@ fn flush_batch(
             break;
         }
         let record = match catch_analyze(|| {
-            analyze_one(item.file_id, &item.rgb, dets, ctx.scorer, ctx.species)
+            analyze_one(
+                item.file_id,
+                &item.rgb,
+                dets,
+                ctx.scorer,
+                ctx.species,
+                ctx.eye,
+            )
         }) {
             Ok(record) => record,
             Err(e) => {
@@ -384,12 +399,13 @@ fn analyze_one(
     dets: Vec<Detection>,
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
+    eye: Option<&dyn EyeDetector>,
 ) -> Result<AnalysisRecord> {
     let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
     // A box the user drew by hand is the subject even if a detected bird is
     // sharper; otherwise the sharpest detection wins.
-    let (features, best_bbox, subject_class) = if dets.is_empty() {
+    let (mut features, best_bbox, subject_class) = if dets.is_empty() {
         (compute_features(rgb, None), None, None)
     } else if let Some(det) = dets.iter().find(|d| d.class_name == "manual") {
         let subject = Subject {
@@ -419,6 +435,19 @@ fn analyze_one(
             None => (compute_features(rgb, None), None, None),
         }
     };
+
+    // When an eye model is installed, measure the eye window it finds instead
+    // of the heuristic's fixed head/eye candidates.
+    if let (Some(detector), Some(bbox)) = (eye, best_bbox) {
+        if detector.available() && bbox.w >= MIN_EYE_CROP && bbox.h >= MIN_EYE_CROP {
+            let radius = (bbox.w.min(bbox.h) as usize / 16).clamp(4, 40);
+            if let Some(crop) = crop_rgb(rgb, bbox) {
+                if let Ok(Some((v, _))) = eye_sharpness_from_model(detector, &crop, radius) {
+                    features.eye_sharpness_worst = v;
+                }
+            }
+        }
+    }
 
     let score = scorer.score(&features)?;
 
@@ -531,6 +560,7 @@ pub fn analyze_file_with(
     detector: &dyn SubjectDetector,
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
+    eye: Option<&dyn EyeDetector>,
     manual_box: Option<BBox>,
     exclude: &[BBox],
 ) -> Result<AnalysisRecord> {
@@ -573,7 +603,7 @@ pub fn analyze_file_with(
         }
         dets
     };
-    let record = analyze_one(file.file.id, &img.rgb, dets, scorer, species)?;
+    let record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
     upsert_analysis(conn, &record)?;
     Ok(record)
 }
@@ -1049,6 +1079,7 @@ mod tests {
             &detector,
             &scorer,
             Some(&species),
+            None,
             Some(BBox::new(600, 600, 160, 160)),
             &[],
         )
@@ -1075,6 +1106,7 @@ mod tests {
             &detector,
             &scorer,
             Some(&species),
+            None,
             Some(BBox::new(48, 48, 140, 140)),
             &[],
         )

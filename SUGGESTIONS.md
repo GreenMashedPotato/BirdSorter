@@ -127,11 +127,11 @@ on a 28-core Windows box.
 28. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
     the birds, but a few may be missing; a second source (IOC/Clements) could
     fill the gaps.
-29. 🟡 **Fine-tuned detector / eye model** — blocked on data. The **eye/head
-    keypoint labelling is now built in** (review ▸ Label eye → `eye_labels` →
-    `birdsorter export-eyelabels`), so the `bird_eye` dataset can be collected
-    today; the detector set still needs `tools/train_bird_detector.py` + labels.
-    See `EYE_MODEL.md`.
+29. 🟡 **Fine-tuned detector / eye model** — the **eye pipeline is complete**
+    (label → `export-eyelabels` → `tools/train_eye.py` → `bird_eye.onnx` →
+    `runtime::OnnxEyeDetector` refines `eye_sharpness_worst`), so only the
+    200–400 labelled files + a real training run remain; the detector set still
+    needs `tools/train_bird_detector.py` + labels. See `EYE_MODEL.md`.
 30. ⬜ **Multi-region background sampling** — median of several background
     rectangles instead of the largest single one.
 

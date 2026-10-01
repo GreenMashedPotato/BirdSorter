@@ -1019,12 +1019,20 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         },
         None => Box::new(RulesScorer(settings)),
     };
+    let eye = match birdsorter_core::runtime::load_eye_detector(DevicePreference::Cpu) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("warning: eye model failed to load ({e}); using the heuristic");
+            None
+        }
+    };
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4),
         species: species.as_deref(),
+        eye: eye.as_deref(),
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
