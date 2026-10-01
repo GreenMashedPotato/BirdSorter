@@ -323,6 +323,37 @@ export async function undoLabels(files: number[]): Promise<number> {
   return invoke("undo_labels", { files });
 }
 
+export interface EyePoint {
+  x: number;
+  y: number;
+  kind: string;
+}
+
+/** Hand-labelled eye/head keypoints for one file (analysis-image pixels). */
+export async function getEyePoints(file: number): Promise<EyePoint[]> {
+  return invoke("eye_points", { file });
+}
+
+/** Append one eye/head keypoint. Returns the file's total point count. */
+export async function addEyePoint(
+  file: number,
+  x: number,
+  y: number,
+  kind: string,
+): Promise<number> {
+  return invoke("add_eye_point", { file, x, y, kind });
+}
+
+/** Remove every keypoint from a file. Returns how many were deleted. */
+export async function clearEyePoints(file: number): Promise<number> {
+  return invoke("clear_eye_points", { file });
+}
+
+/** How many files have eye labels (progress toward the training set). */
+export async function eyeLabelStats(): Promise<number> {
+  return invoke("eye_label_stats");
+}
+
 export function onProgress(
   cb: (p: Progress) => void,
 ): Promise<UnlistenFn> {
@@ -495,9 +526,16 @@ export interface Burst {
   frames: number[];
   best: number;
   size: number;
+  /** True when `best` is a manual choice, not the highest score. */
+  winnerOverride: boolean;
 }
 
 /** Burst groups for a folder (by EXIF capture time). */
 export async function bursts(folder: number): Promise<Burst[]> {
   return invoke("bursts", { folder });
+}
+
+/** Choose (or clear) a burst winner by hand; returns the folder's bursts. */
+export async function setBurstWinner(file: number, winner: boolean): Promise<Burst[]> {
+  return invoke("set_burst_winner", { file, winner });
 }

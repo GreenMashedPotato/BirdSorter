@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -34,6 +34,7 @@ const DDL: &[&str] = &[
         trashed_at          TEXT,
         captured_at         TEXT,
         rating              INTEGER NOT NULL DEFAULT 0,
+        burst_winner        INTEGER NOT NULL DEFAULT 0,
         UNIQUE(folder_id, relative_path)
     )",
     "CREATE INDEX IF NOT EXISTS idx_files_hash    ON files(content_hash)",
@@ -70,6 +71,15 @@ const DDL: &[&str] = &[
         created_at  TEXT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_labels_file ON labels(file_id)",
+    "CREATE TABLE IF NOT EXISTS eye_labels (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        x           INTEGER NOT NULL,
+        y           INTEGER NOT NULL,
+        kind        TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_eye_labels_file ON eye_labels(file_id)",
     "CREATE TABLE IF NOT EXISTS models (
         version       TEXT PRIMARY KEY,
         trained_at    TEXT NOT NULL,
@@ -198,6 +208,13 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
     if from < 9 {
         // v8 -> v9: 0-5 star rating, mirrored into an XMP sidecar.
         conn.execute_batch("ALTER TABLE files ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    if from < 10 {
+        // v9 -> v10: a manually chosen burst winner overrides the sharpest frame
+        // (the sharpest is not always the best pose).
+        conn.execute_batch(
+            "ALTER TABLE files ADD COLUMN burst_winner INTEGER NOT NULL DEFAULT 0;",
+        )?;
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())

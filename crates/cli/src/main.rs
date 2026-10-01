@@ -16,7 +16,7 @@ use birdsorter_core::data::library;
 use birdsorter_core::data::models;
 use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
-use birdsorter_core::data::{analysis_store, db, library::ScanReport};
+use birdsorter_core::data::{analysis_store, db, eye_labels, library::ScanReport};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
@@ -45,6 +45,7 @@ Commands:
       --label <name>            Which label to export (default: sharp)
       --move                    Move instead of copy
       --db <path>               Override the library database location
+  export-eyelabels --out <file.jsonl> [--db <path>]  Dump eye/head keypoints for training
   train [--db <path>]         Train a verdict model from your labels
   cleancache [--all] [--db <path>]  Delete orphaned thumbnails (--all: everything)
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
@@ -67,6 +68,7 @@ fn main() -> ExitCode {
         Some("list") => cmd_list(&args[1..]),
         Some("bursts") => cmd_bursts(&args[1..]),
         Some("export") => cmd_export(&args[1..]),
+        Some("export-eyelabels") => cmd_export_eyelabels(&args[1..]),
         Some("cleancache") => cmd_cleancache(&args[1..]),
         Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
@@ -558,6 +560,61 @@ fn cmd_export(args: &[String]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("export failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Write the hand-labelled eye/head keypoints as JSONL for the training tool.
+///
+/// Each line is one labelled file: its path, the analysis-image dimensions and
+/// the points in analysis pixels (see `EYE_MODEL.md`).
+fn cmd_export_eyelabels(args: &[String]) -> ExitCode {
+    let mut out: Option<String> = None;
+    let mut db_path: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => out = it.next().cloned(),
+            "--db" => db_path = it.next().cloned(),
+            other => {
+                eprintln!("export-eyelabels: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("export-eyelabels: --out <file.jsonl> is required");
+        return ExitCode::FAILURE;
+    };
+
+    let run = || -> birdsorter_core::Result<()> {
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        let rows = eye_labels::all_eye_labels(&conn)?;
+        let mut text = String::new();
+        for row in &rows {
+            let line = serde_json::to_string(row)
+                .map_err(|e| birdsorter_core::CoreError::Other(format!("serialize: {e}")))?;
+            text.push_str(&line);
+            text.push('\n');
+        }
+        std::fs::write(&out, &text)
+            .map_err(|e| birdsorter_core::CoreError::io(Path::new(&out), e))?;
+        let points: usize = rows.iter().map(|r| r.points.len()).sum();
+        println!(
+            "wrote {} labelled file(s), {points} point(s) to {out}",
+            rows.len()
+        );
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("export-eyelabels failed: {e}");
             ExitCode::FAILURE
         }
     }

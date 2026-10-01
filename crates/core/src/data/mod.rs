@@ -2,6 +2,7 @@
 
 pub mod analysis_store;
 pub mod db;
+pub mod eye_labels;
 pub mod labels;
 pub mod library;
 pub mod models;

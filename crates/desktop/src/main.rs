@@ -23,7 +23,7 @@ use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
-use birdsorter_core::data::{analysis_store, db, labels, library};
+use birdsorter_core::data::{analysis_store, db, eye_labels, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
@@ -537,6 +537,7 @@ struct BurstDto {
     frames: Vec<i64>,
     best: i64,
     size: usize,
+    winner_override: bool,
 }
 
 /// Burst groups for a folder (by EXIF capture time).
@@ -557,6 +558,33 @@ async fn bursts(state: State<'_, AppState>, folder: i64) -> Result<Vec<BurstDto>
                 frames: b.frames,
                 best: b.best,
                 size: b.size,
+                winner_override: b.winner_override,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Pick (or clear) the winner of a file's burst by hand — the sharpest frame is
+/// not always the best pose. Returns the folder's refreshed bursts.
+#[tauri::command]
+async fn set_burst_winner(
+    state: State<'_, AppState>,
+    file: i64,
+    winner: bool,
+) -> Result<Vec<BurstDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let bursts =
+            birdsorter_core::analysis::burst::set_burst_winner(&conn, file, winner).map_err(err)?;
+        Ok(bursts
+            .into_iter()
+            .map(|b| BurstDto {
+                frames: b.frames,
+                best: b.best,
+                size: b.size,
+                winner_override: b.winner_override,
             })
             .collect())
     })
@@ -593,6 +621,58 @@ fn label_files(state: State<AppState>, files: Vec<i64>, label: String) -> Result
 fn undo_labels(state: State<AppState>, files: Vec<i64>) -> Result<usize, String> {
     let conn = open(&state.db_path)?;
     labels::remove_latest_labels_bulk(&conn, &files).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EyePointDto {
+    x: i32,
+    y: i32,
+    kind: String,
+}
+
+/// Keypoints stored for a file (eye/head/beak), for the review overlay.
+#[tauri::command]
+fn eye_points(state: State<AppState>, file: i64) -> Result<Vec<EyePointDto>, String> {
+    let conn = open(&state.db_path)?;
+    let points = eye_labels::eye_points(&conn, file).map_err(err)?;
+    Ok(points
+        .into_iter()
+        .map(|p| EyePointDto {
+            x: p.x,
+            y: p.y,
+            kind: p.kind.as_str().to_string(),
+        })
+        .collect())
+}
+
+/// Append one hand-labelled keypoint (analysis-image pixels).
+#[tauri::command]
+fn add_eye_point(
+    state: State<AppState>,
+    file: i64,
+    x: i32,
+    y: i32,
+    kind: String,
+) -> Result<usize, String> {
+    let kind: eye_labels::EyePointKind = kind.parse().map_err(err)?;
+    let conn = open(&state.db_path)?;
+    eye_labels::add_eye_point(&conn, file, x, y, kind).map_err(err)?;
+    Ok(eye_labels::eye_points(&conn, file).map_err(err)?.len())
+}
+
+/// Remove every keypoint from a file.
+#[tauri::command]
+fn clear_eye_points(state: State<AppState>, file: i64) -> Result<usize, String> {
+    let conn = open(&state.db_path)?;
+    eye_labels::clear_eye_points(&conn, file).map_err(err)
+}
+
+/// How many files have eye labels — progress toward the training set.
+#[tauri::command]
+fn eye_label_stats(state: State<AppState>) -> Result<usize, String> {
+    let conn = open(&state.db_path)?;
+    eye_labels::labelled_file_count(&conn).map_err(err)
 }
 
 #[derive(Serialize)]
@@ -1416,9 +1496,14 @@ fn main() {
             analysis_detail,
             score_breakdown,
             bursts,
+            set_burst_winner,
             set_species,
             label_files,
             undo_labels,
+            eye_points,
+            add_eye_point,
+            clear_eye_points,
+            eye_label_stats,
             trash_files,
             analyze_folder,
             cancel_analysis,
