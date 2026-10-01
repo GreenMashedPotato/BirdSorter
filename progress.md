@@ -302,12 +302,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   console, so panics were invisible. A panic hook appends to
   `%APPDATA%\BirdSorter\crash.log` and the analysis error now carries the panic
   message instead of a generic string.
-- **EfficientNet ONNX collapses in `ort`**: the bundled ONNX Runtime returns
-  constant logits for the EfficientNet bird classifier, while the same file is
-  correct under `onnxruntime` 1.23.2 and PyTorch. **Workaround: use the ViT
-  classifier** (works). Revisit if `ort` ships a newer ONNX Runtime.
-- Species model is **330 MB fp32** — quantization is the next step for the
-  "lightweight on non-NVIDIA machines" goal.
+- **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
+  `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
+  binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for
+  Intel macOS. rc.11's `commit_from_file` takes `self`, so the builders are not
+  `mut`. Do not widen the pin without a Mac to test on.
+- **Species model is 818 MB fp32** (iNat21 ConvNeXt-Large, ~350 ms/crop on CPU)
+  — int8 quantization is blocked by an ORT shape-inference bug on the ConvNeXt
+  head, so the size/speed goal is still open.
+- Species model preprocessing (from `meta.json`): 384 px, CLIP mean/std, bicubic,
+  0.95 centre crop.
 - Debug builds are ~10× slower for RAW decode; **always run the app with
   `--release`**.
 - Analysis resolution is fixed at long-side 2400; the grid thumbnails are 512.
