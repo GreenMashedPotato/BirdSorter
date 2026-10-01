@@ -339,6 +339,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   console, so panics were invisible. A panic hook appends to
   `%APPDATA%\BirdSorter\crash.log` and the analysis error now carries the panic
   message instead of a generic string.
+- **Production hardening pass**: analysis rows now carry the analyzed content
+  hash, so replacing a file and rescanning marks it pending instead of showing
+  stale results. User species overrides are stored separately and survive
+  re-analysis/"Re-analyze all". Manual-box provenance is retained even without
+  the species model. GPU detector runtime failures rebuild on CPU instead of
+  silently turning the image into `no_subject`; detector batches still degrade
+  only after the CPU retry fails. Model ZIP imports enforce expected filenames,
+  duplicate/entry/expanded-size limits, and stage files before committing;
+  ordinary image decoding has a 512 MiB safety limit; thumbnail/XMP temp files
+  are unique per writer. Schema is now **v13**.
 - **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
   `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
   binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for

@@ -6,6 +6,7 @@
 //! model is only needed to validate end-to-end.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use ndarray::Array3;
@@ -141,10 +142,11 @@ pub(crate) fn build_session(
 /// the detector `Sync` and lets the pipeline share one instance across threads.
 pub struct OnnxDetector {
     session: Mutex<Session>,
+    model: std::path::PathBuf,
     config: YoloConfig,
     input_name: String,
     /// True when a GPU execution provider is active (enables sliced inference).
-    gpu: bool,
+    gpu: AtomicBool,
 }
 
 impl OnnxDetector {
@@ -159,15 +161,30 @@ impl OnnxDetector {
 
         Ok(Self {
             session: Mutex::new(session),
+            model: model.to_path_buf(),
             config,
             input_name,
-            gpu: ep.is_some(),
+            gpu: AtomicBool::new(ep.is_some()),
         })
     }
 
     /// The active execution provider name, when a GPU EP is in use.
     pub fn is_gpu(&self) -> bool {
-        self.gpu
+        self.gpu.load(Ordering::Relaxed)
+    }
+
+    fn retry_on_cpu(&self) -> Result<bool> {
+        if !self.gpu.swap(false, Ordering::Relaxed) {
+            return Ok(false);
+        }
+        eprintln!("detector GPU inference failed; rebuilding the session on CPU");
+        let (cpu, _) = build_session(&self.model, DevicePreference::Cpu)?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
+        *session = cpu;
+        Ok(true)
     }
 
     pub fn config(&self) -> &YoloConfig {
@@ -198,6 +215,22 @@ impl OnnxDetector {
         rh: usize,
         cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
+        match self.run_region_once(rgb, x0, y0, rw, rh, cfg) {
+            Ok(dets) => Ok(dets),
+            Err(_e) if self.retry_on_cpu()? => self.run_region_once(rgb, x0, y0, rw, rh, cfg),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run_region_once(
+        &self,
+        rgb: &Array3<u8>,
+        x0: usize,
+        y0: usize,
+        rw: usize,
+        rh: usize,
+        cfg: &YoloConfig,
+    ) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
         let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
         let (buf, letterbox) = yolo::preprocess(&crop, cfg);
@@ -208,9 +241,10 @@ impl OnnxDetector {
             .session
             .lock()
             .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = session
-            .run(ort::inputs![self.input_name.clone() => &tensor])
-            .map_err(ort_err)?;
+        let outputs = match session.run(ort::inputs![self.input_name.clone() => &tensor]) {
+            Ok(outputs) => outputs,
+            Err(e) => return Err(ort_err(e)),
+        };
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
 
@@ -252,6 +286,22 @@ impl OnnxDetector {
         img_h: usize,
         cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
+        match self.run_region_batch_once(regions, img_w, img_h, cfg) {
+            Ok(dets) => Ok(dets),
+            Err(_e) if self.retry_on_cpu()? => {
+                self.run_region_batch_once(regions, img_w, img_h, cfg)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run_region_batch_once(
+        &self,
+        regions: &[RegionInput],
+        img_w: usize,
+        img_h: usize,
+        cfg: &YoloConfig,
+    ) -> Result<Vec<Detection>> {
         let n = regions.len();
         let ts = cfg.input_size as i64;
         let stride = 3 * cfg.input_size as usize * cfg.input_size as usize;
@@ -265,9 +315,10 @@ impl OnnxDetector {
             .session
             .lock()
             .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = session
-            .run(ort::inputs![self.input_name.clone() => &tensor])
-            .map_err(ort_err)?;
+        let outputs = match session.run(ort::inputs![self.input_name.clone() => &tensor]) {
+            Ok(outputs) => outputs,
+            Err(e) => return Err(ort_err(e)),
+        };
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
         if dims.first().copied().unwrap_or(0) != n {

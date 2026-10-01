@@ -6,8 +6,11 @@
 //! dependencies and trivially testable.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{CoreError, Result};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Default cache directory: `<user data>/BirdSorter/thumbs`.
 pub fn default_cache_dir() -> Result<PathBuf> {
@@ -51,7 +54,9 @@ impl ThumbCache {
     pub fn put(&self, hash: &str, bytes: &[u8]) -> Result<()> {
         std::fs::create_dir_all(&self.root).map_err(|e| CoreError::io(&self.root, e))?;
         let final_path = self.path_for(hash);
-        let tmp = final_path.with_extension("thumb.tmp");
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp =
+            final_path.with_extension(format!("thumb.tmp.{}.{}", std::process::id(), sequence));
         std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
         std::fs::rename(&tmp, &final_path).map_err(|e| CoreError::io(&final_path, e))
     }

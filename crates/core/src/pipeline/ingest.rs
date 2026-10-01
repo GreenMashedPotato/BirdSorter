@@ -144,6 +144,7 @@ impl<'a> IngestContext<'a> {
 struct PendingItem {
     file_id: i64,
     name: String,
+    content_hash: String,
     rgb: Array3<u8>,
 }
 
@@ -200,6 +201,7 @@ fn run_sequential(
                 batch.push(PendingItem {
                     file_id: lf.file.id,
                     name: lf.file.filename.clone(),
+                    content_hash: lf.file.content_hash.clone(),
                     rgb: img.rgb,
                 });
             }
@@ -286,6 +288,7 @@ fn run_parallel(
                     batch.push(PendingItem {
                         file_id: lf.file.id,
                         name: lf.file.filename.clone(),
+                        content_hash: lf.file.content_hash.clone(),
                         rgb: img.rgb,
                     });
                 }
@@ -361,14 +364,16 @@ fn flush_batch(
             break;
         }
         let record = match catch_analyze(|| {
-            analyze_one(
+            let mut record = analyze_one(
                 item.file_id,
                 &item.rgb,
                 dets,
                 ctx.scorer,
                 ctx.species,
                 ctx.eye,
-            )
+            )?;
+            record.analyzed_content_hash = Some(item.content_hash.clone());
+            Ok(record)
         }) {
             Ok(record) => record,
             Err(e) => {
@@ -454,10 +459,22 @@ fn analyze_one(
     let (img_h, img_w, _) = rgb.dim();
 
     // Species identification for each detected bird subject.
-    let mut subject_species: Vec<SubjectSpecies> = Vec::new();
     let mut species_name: Option<String> = None;
     let mut species_confidence: Option<f32> = None;
     let mut species_top5: Vec<(String, f32)> = Vec::new();
+
+    // Persist box provenance even when no species model is installed. Manual
+    // boxes must not later be reconstructed as ordinary detector boxes.
+    let mut per_box: Vec<SubjectSpecies> = dets
+        .iter()
+        .map(|d| SubjectSpecies {
+            bbox: d.bbox.to_array(),
+            species: None,
+            confidence: None,
+            top5: Vec::new(),
+            class: Some(d.class_name.clone()),
+        })
+        .collect();
 
     if let Some(classifier) = species {
         if classifier.available() && !dets.is_empty() {
@@ -472,18 +489,6 @@ fn analyze_one(
                         && d.bbox.h >= MIN_SPECIES_CROP
                 })
                 .filter_map(|(i, d)| crop_rgb(rgb, d.bbox).map(|c| (i, c)))
-                .collect();
-
-            // One entry per detected box (parallel to `all_bboxes`).
-            let mut per_box: Vec<SubjectSpecies> = dets
-                .iter()
-                .map(|d| SubjectSpecies {
-                    bbox: d.bbox.to_array(),
-                    species: None,
-                    confidence: None,
-                    top5: Vec::new(),
-                    class: Some(d.class_name.clone()),
-                })
                 .collect();
 
             if !crops.is_empty() {
@@ -511,9 +516,9 @@ fn analyze_one(
                 species_confidence = first.confidence;
                 species_top5 = first.top5.clone();
             }
-            subject_species = per_box;
         }
     }
+    let mut subject_species = per_box;
 
     // `subject_species` is parsed positionally against the stored boxes, so put
     // the chosen subject first in *both* lists (the storage layer also stores
@@ -544,6 +549,7 @@ fn analyze_one(
         subject_species,
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
+        analyzed_content_hash: None,
     })
 }
 
@@ -603,7 +609,8 @@ pub fn analyze_file_with(
         }
         dets
     };
-    let record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
+    let mut record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
+    record.analyzed_content_hash = Some(file.file.content_hash.clone());
     upsert_analysis(conn, &record)?;
     Ok(record)
 }
@@ -1132,7 +1139,8 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(row.species_name.is_none());
-        assert!(row.subject_species.is_empty());
+        assert_eq!(row.subject_species.len(), 1);
+        assert_eq!(row.subject_species[0].class.as_deref(), Some("bird"));
     }
 
     #[test]

@@ -206,6 +206,7 @@
   let previewLoading = $state(false);
   /// Preview render mode: fast (analysis res) or full (native camera preview).
   let previewMode = $state<"fast" | "full">("fast");
+  let reviewRequest = 0;
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
@@ -845,6 +846,7 @@
   );
 
   async function openReview(id: number) {
+    const request = ++reviewRequest;
     reviewFile = id;
     detail = null;
     previewUrl = "";
@@ -856,7 +858,9 @@
     ty = 0;
     void ensureSpeciesList();
     try {
-      detail = await analysisDetail(id);
+      const nextDetail = await analysisDetail(id);
+      if (request !== reviewRequest) return;
+      detail = nextDetail;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -868,21 +872,24 @@
         compareId = defaultCompareFor(id);
       }
     }
-    await renderPreview();
+    await renderPreview(request);
   }
 
   /// (Re)render the preview for the current file at the current resolution mode.
-  async function renderPreview() {
+  async function renderPreview(request = reviewRequest) {
     if (reviewFile === null) return;
     previewLoading = true;
     try {
-      previewUrl = await previewImage(reviewFile, previewMode);
+      const id = reviewFile;
+      const nextPreview = await previewImage(id, previewMode);
+      if (request !== reviewRequest || reviewFile !== id) return;
+      previewUrl = nextPreview;
     } catch (e) {
       status = `error: ${e}`;
     } finally {
       previewLoading = false;
     }
-    if (compareOn && compareId !== null) await renderCompare();
+    if (request === reviewRequest && compareOn && compareId !== null) await renderCompare();
   }
 
   function closeReview() {
@@ -1812,7 +1819,7 @@
         <select
           class="modesel"
           bind:value={previewMode}
-          onchange={renderPreview}
+          onchange={() => renderPreview()}
           title="Preview resolution"
         >
           <option value="fast">Fast</option>

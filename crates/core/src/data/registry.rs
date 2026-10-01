@@ -20,6 +20,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{CoreError, Result};
 
+const MAX_MODEL_ARCHIVE_ENTRIES: usize = 32;
+const MAX_MODEL_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Feature tier a model unlocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,20 +113,19 @@ pub fn builtin_models() -> Vec<ModelSpec> {
         },
         ModelSpec {
             key: "bird_eye".into(),
-            display_name: "Bird eye / head landmarks [not trained yet]".into(),
-            description: "Planned tiny ONNX model that locates the eye/head so focus \
-                          can be judged where it matters. Needs a labelled dataset and \
-                          a training run; the heuristic in core::analysis::sharpness is \
-                          used until then."
+            display_name: "Bird eye / head landmarks".into(),
+            description: "Optional ONNX keypoint model that locates the eye/head so focus \
+                          can be judged where it matters. Install a trained bundle; the \
+                          heuristic in core::analysis::sharpness is used until then."
                 .into(),
-            artifact: "bird_eye_v1.onnx".into(),
-            unpack: false,
-            files: vec!["bird_eye_v1.onnx".into()],
+            artifact: "bird_eye.zip".into(),
+            unpack: true,
+            files: vec!["bird_eye.onnx".into(), "bird_eye.meta.json".into()],
             url: String::new(),
             sha256: String::new(),
             size_bytes: 8_000_000,
             tier: Tier::T2,
-            tags: vec!["eye".into(), "birds".into(), "planned".into()],
+            tags: vec!["eye".into(), "birds".into()],
         },
         ModelSpec {
             key: "bird_detector_v2".into(),
@@ -235,8 +237,19 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
     std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
 
     if spec.unpack {
+        let staging = dir.join(format!(".{}.staging-{}", spec.key, std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| CoreError::io(&staging, e))?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|e| CoreError::Other(format!("bad zip for '{}': {e}", spec.key)))?;
+        if archive.len() > MAX_MODEL_ARCHIVE_ENTRIES {
+            return Err(CoreError::Other(format!(
+                "model archive '{}' has too many entries",
+                spec.key
+            )));
+        }
+        let mut total_uncompressed = 0u64;
+        let mut seen = std::collections::HashSet::new();
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
@@ -248,10 +261,42 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
             if file.is_dir() {
                 continue;
             }
-            let dest = dir.join(name);
+            let name = name.to_string_lossy().to_string();
+            if !spec.files.iter().any(|expected| expected == &name) {
+                return Err(CoreError::Other(format!(
+                    "unexpected file '{}' in model archive '{}'",
+                    name, spec.key
+                )));
+            }
+            if !seen.insert(name.clone()) {
+                return Err(CoreError::Other(format!(
+                    "duplicate file '{}' in model archive '{}'",
+                    name, spec.key
+                )));
+            }
+            total_uncompressed = total_uncompressed.saturating_add(file.size());
+            if total_uncompressed > MAX_MODEL_ARCHIVE_BYTES {
+                return Err(CoreError::Other(format!(
+                    "model archive '{}' expands beyond the size limit",
+                    spec.key
+                )));
+            }
+            let dest = staging.join(&name);
             let mut out = std::fs::File::create(&dest).map_err(|e| CoreError::io(&dest, e))?;
             std::io::copy(&mut file, &mut out).map_err(|e| CoreError::io(&dest, e))?;
         }
+        if !spec.files.iter().all(|expected| seen.contains(expected)) {
+            return Err(CoreError::Other(format!(
+                "model archive '{}' is missing required files",
+                spec.key
+            )));
+        }
+        for expected in &spec.files {
+            let src = staging.join(expected);
+            let dest = dir.join(expected);
+            std::fs::rename(&src, &dest).map_err(|e| CoreError::io(&dest, e))?;
+        }
+        let _ = std::fs::remove_dir_all(&staging);
     } else {
         let final_path = model_path(dir, spec);
         let tmp = final_path.with_extension("part");

@@ -11,8 +11,22 @@
 //! preserved verbatim. A sidecar we cannot parse safely is left alone.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{CoreError, Result};
+
+static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let seq = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("xmp.tmp.{}.{}", std::process::id(), seq));
+    std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CoreError::io(path, e));
+    }
+    Ok(())
+}
 
 /// The sidecar path a RAW's rating belongs in.
 pub fn sidecar_path(raw: &Path) -> PathBuf {
@@ -92,12 +106,12 @@ pub fn write_rating(raw: &Path, rating: u8) -> Result<()> {
         if merged == text {
             return Ok(());
         }
-        std::fs::write(&sidecar, merged).map_err(|e| CoreError::io(&sidecar, e))?;
+        atomic_write(&sidecar, merged.as_bytes())?;
     } else {
         if let Some(parent) = sidecar.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
         }
-        std::fs::write(&sidecar, fresh_document(rating)).map_err(|e| CoreError::io(&sidecar, e))?;
+        atomic_write(&sidecar, fresh_document(rating).as_bytes())?;
     }
     Ok(())
 }
