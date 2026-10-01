@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use base64::Engine as _;
 use birdsorter_core::analysis::detector::BBox;
 use birdsorter_core::analysis::detector::SubjectDetector;
+use birdsorter_core::analysis::eye::EyeDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
@@ -781,6 +782,7 @@ struct Pipeline {
     detector: Box<dyn SubjectDetector>,
     scorer: Box<dyn VerdictScorer>,
     species: Option<Box<dyn SpeciesClassifier>>,
+    eye: Option<Box<dyn EyeDetector>>,
 }
 
 /// Build the decoder/detector/scorer/species stack from the current settings.
@@ -809,11 +811,22 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
                 None
             }
         };
+    // The eye model is small and CPU-only: a GPU provider round-trip is not
+    // worth it, and DirectML already trips on other models.
+    let eye: Option<Box<dyn EyeDetector>> =
+        match birdsorter_core::runtime::load_eye_detector(DevicePreference::Cpu) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("eye model could not be loaded: {e}");
+                None
+            }
+        };
     Ok(Pipeline {
         decoder,
         detector,
         scorer,
         species,
+        eye,
     })
 }
 
@@ -836,6 +849,7 @@ fn run_analysis(
         decode_threads: threads,
         cancel: Some(cancel),
         species: pipe.species.as_deref(),
+        eye: pipe.eye.as_deref(),
         ..IngestContext::new(&pipe.decoder, pipe.detector.as_ref(), pipe.scorer.as_ref())
     };
 
@@ -876,6 +890,7 @@ fn reevaluate(
         pipe.detector.as_ref(),
         pipe.scorer.as_ref(),
         pipe.species.as_deref(),
+        pipe.eye.as_deref(),
         manual,
         exclude,
     )

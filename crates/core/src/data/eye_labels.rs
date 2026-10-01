@@ -67,6 +67,8 @@ pub struct EyeLabelRow {
     pub path: String,
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
+    /// The subject box the points were labelled inside, analysis pixels.
+    pub subject: Option<[i32; 4]>,
     pub points: Vec<EyePoint>,
 }
 
@@ -131,7 +133,7 @@ pub fn labelled_file_count(conn: &Connection) -> Result<usize> {
 pub fn all_eye_labels(conn: &Connection) -> Result<Vec<EyeLabelRow>> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.filename, fo.path AS folder_path, f.relative_path,
-                a.image_width, a.image_height
+                a.image_width, a.image_height, a.subject_bbox_json
            FROM files f
            JOIN eye_labels e ON e.file_id = f.id
            JOIN folders fo ON fo.id = f.folder_id
@@ -147,11 +149,20 @@ pub fn all_eye_labels(conn: &Connection) -> Result<Vec<EyeLabelRow>> {
             r.get::<_, String>(3)?,
             r.get::<_, Option<u32>>(4)?,
             r.get::<_, Option<u32>>(5)?,
+            r.get::<_, Option<String>>(6)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (file_id, filename, folder_path, relative_path, image_width, image_height) = row?;
+        let (
+            file_id,
+            filename,
+            folder_path,
+            relative_path,
+            image_width,
+            image_height,
+            subject_json,
+        ) = row?;
         out.push(EyeLabelRow {
             file_id,
             filename,
@@ -161,6 +172,9 @@ pub fn all_eye_labels(conn: &Connection) -> Result<Vec<EyeLabelRow>> {
                 .to_string(),
             image_width,
             image_height,
+            subject: subject_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<[i32; 4]>(s).ok()),
             points: eye_points(conn, file_id)?,
         });
     }

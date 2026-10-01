@@ -6,13 +6,24 @@
 //! and functional on every machine, which is the whole point of the project.
 
 pub mod detector;
+pub mod eye;
 pub mod species;
 
 pub use detector::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
+pub use eye::{OnnxEyeDetector, EYE_ONNX};
 pub use species::OnnxSpeciesClassifier;
 
+use crate::analysis::eye::EyeDetector;
 use crate::analysis::species::SpeciesClassifier;
 use crate::Result;
+
+/// Load the eye/head keypoint model installed in the model directory.
+///
+/// Returns `Ok(None)` when no eye model is installed — the pipeline then keeps
+/// the pose-robust eye heuristic.
+pub fn load_eye_detector(device: DevicePreference) -> Result<Option<Box<dyn EyeDetector>>> {
+    Ok(OnnxEyeDetector::load_default(device)?.map(|d| Box::new(d) as Box<dyn EyeDetector>))
+}
 
 /// Load the species model installed in the model directory.
 ///

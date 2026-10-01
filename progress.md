@@ -247,11 +247,15 @@ detection → sharpness verdict → species ID → grid/review UI).
   burst badge and the "Burst winners" filter follow it, and **Keep burst
   winners** then picks up your choice. The review bar shows **☆ Set winner** /
   **★ Winner** for the open file.
-- **Eye/head keypoint labelling (review view)**: a **Label eye** mode records
-  `eye`/`head`/`beak` points (stored in `eye_labels`, analysis-image pixels),
-  drawn as rings and removable per photo. This is the data-collection half of the
-  eye model; `birdsorter export-eyelabels --out labels.jsonl` dumps a training
-  set. See `EYE_MODEL.md` for the training/integration plan.
+- **Eye/head keypoint labelling + eye-model pipeline (review view)**: a **Label
+  eye** mode records `eye`/`head`/`beak` points (stored in `eye_labels`,
+  analysis-image pixels), drawn as rings and removable per photo.
+  `birdsorter export-eyelabels --out labels.jsonl` dumps a training set;
+  `tools/train_eye.py` trains a heatmap model and exports `bird_eye.onnx` +
+  meta; `runtime::OnnxEyeDetector` loads it and `pipeline::analyze_one` replaces
+  `eye_sharpness_worst` with the model's eye window (heuristic stays the
+  fallback). Verified end-to-end with an exported random model. See
+  `EYE_MODEL.md` — only the labelled data + real training run remain.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses
