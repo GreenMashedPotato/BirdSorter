@@ -622,6 +622,12 @@
   let peakingOn = $state(false);
   /// Edge threshold: higher shows only stronger (more in-focus) edges.
   let peakingThreshold = $state(40);
+  /// Overlay colour: green reads well on flat sky, red on foliage.
+  let peakingColor = $state<"green" | "red">(
+    typeof localStorage !== "undefined" && localStorage.getItem("bs.peakingColor") === "red"
+      ? "red"
+      : "green",
+  );
   let peakingCanvas = $state<HTMLCanvasElement | undefined>(undefined);
   /// Cached grayscale of the preview, so the threshold slider is instant.
   let peakingGray: { w: number; h: number; data: Float32Array } | null = null;
@@ -675,6 +681,7 @@
     const o = out.data;
     const t = peakingThreshold;
     const span = Math.max(1, 255 - t);
+    const [cr, cg, cb] = peakingColor === "red" ? [255, 70, 70] : [120, 255, 170];
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
@@ -688,14 +695,25 @@
         if (m > t) {
           const k = Math.min(1, (m - t) / span);
           const p = i * 4;
-          o[p] = 120;
-          o[p + 1] = 255;
-          o[p + 2] = 170;
+          o[p] = cr;
+          o[p + 1] = cg;
+          o[p + 2] = cb;
           o[p + 3] = Math.round(40 + 215 * k);
         }
       }
     }
     ctx.putImageData(out, 0, 0);
+  }
+
+  /// Flip the peaking colour between green and red and remember the choice.
+  function cyclePeakingColor() {
+    peakingColor = peakingColor === "green" ? "red" : "green";
+    try {
+      localStorage.setItem("bs.peakingColor", peakingColor);
+    } catch {
+      /* storage may be unavailable; the colour still applies this session */
+    }
+    renderPeaking();
   }
 
   const picks = $derived(activeTop5.slice(0, 4));
@@ -1270,6 +1288,11 @@
       } else if (e.key === "0") {
         e.preventDefault();
         resetZoom();
+      } else if (e.key === "p" || e.key === "P") {
+        e.preventDefault();
+        void togglePeaking();
+      } else if ((e.key === "c" || e.key === "C") && peakingOn) {
+        cyclePeakingColor();
       }
     });
 
@@ -1608,6 +1631,14 @@
             onchange={renderPeaking}
             title="Higher shows only the strongest edges"
           />
+          <button
+            class="peakcolor"
+            onclick={cyclePeakingColor}
+            title="Toggle peaking colour — green on sky, red on foliage (C)"
+          >
+            <span class="dot {peakingColor}"></span>
+            {peakingColor === "red" ? "Red" : "Green"}
+          </button>
         {/if}
         <select
           class="modesel"
