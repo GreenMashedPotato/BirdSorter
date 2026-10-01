@@ -616,6 +616,88 @@
   const compareBoxW = $derived(compareDetail?.imageWidth ?? boxW);
   const compareBoxH = $derived(compareDetail?.imageHeight ?? boxH);
 
+  // --- focus peaking -------------------------------------------------------
+  // A Sobel edge map of the previewed photo, drawn over it so the sharpest
+  // regions glow. Computed client-side from the already-loaded preview bitmap.
+  let peakingOn = $state(false);
+  /// Edge threshold: higher shows only stronger (more in-focus) edges.
+  let peakingThreshold = $state(40);
+  let peakingCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+  /// Cached grayscale of the preview, so the threshold slider is instant.
+  let peakingGray: { w: number; h: number; data: Float32Array } | null = null;
+  /// Reduce the compute cost; matches the fast preview's analysis resolution.
+  const PEAK_MAX = 2400;
+
+  async function togglePeaking() {
+    peakingOn = !peakingOn;
+    if (peakingOn) {
+      await tick();
+      buildPeakingGray();
+      status = "focus peaking: bright edges are in focus";
+    }
+  }
+
+  /// Sample the current preview into a grayscale buffer, then draw the overlay.
+  function buildPeakingGray() {
+    const img = previewEl;
+    if (!img || !img.complete || img.naturalWidth === 0) return;
+    const srcW = img.naturalWidth;
+    const srcH = img.naturalHeight;
+    const scale = Math.min(1, PEAK_MAX / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+    const scratch = document.createElement("canvas");
+    scratch.width = w;
+    scratch.height = h;
+    const ctx = scratch.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const gray = new Float32Array(w * h);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    peakingGray = { w, h, data: gray };
+    renderPeaking();
+  }
+
+  /// Draw the edge overlay from the cached grayscale at the current threshold.
+  function renderPeaking() {
+    const canvas = peakingCanvas;
+    const g = peakingGray;
+    if (!canvas || !g) return;
+    const { w, h, data: gray } = g;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const out = ctx.createImageData(w, h);
+    const o = out.data;
+    const t = peakingThreshold;
+    const span = Math.max(1, 255 - t);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const gx =
+          -gray[i - w - 1] - 2 * gray[i - 1] - gray[i + w - 1] +
+          gray[i - w + 1] + 2 * gray[i + 1] + gray[i + w + 1];
+        const gy =
+          -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] +
+          gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+        const m = Math.sqrt(gx * gx + gy * gy) * 0.25;
+        if (m > t) {
+          const k = Math.min(1, (m - t) / span);
+          const p = i * 4;
+          o[p] = 120;
+          o[p + 1] = 255;
+          o[p + 2] = 170;
+          o[p + 3] = Math.round(40 + 215 * k);
+        }
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+  }
+
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
 
@@ -1508,6 +1590,25 @@
         <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
         <button onclick={zoomToActual} title="Zoom to 1:1 pixels">1:1</button>
         <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
+        <button
+          class:active={peakingOn}
+          onclick={togglePeaking}
+          title="Glow the parts of the photo that are in focus"
+        >
+          Focus peaking
+        </button>
+        {#if peakingOn}
+          <input
+            class="peakrange"
+            type="range"
+            min="10"
+            max="120"
+            step="5"
+            bind:value={peakingThreshold}
+            onchange={renderPeaking}
+            title="Higher shows only the strongest edges"
+          />
+        {/if}
         <select
           class="modesel"
           bind:value={previewMode}
@@ -1590,8 +1691,12 @@
                         h: previewEl.naturalHeight || 1,
                       };
                     computeFit(true);
+                    if (peakingOn) buildPeakingGray();
                   }}
                 />
+                {#if peakingOn}
+                  <canvas class="peaking" bind:this={peakingCanvas}></canvas>
+                {/if}
                 {#each detail?.boxes ?? [] as b, i (i)}
                   <div
                     class="box"

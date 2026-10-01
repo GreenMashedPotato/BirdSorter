@@ -229,6 +229,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   uses `labels::remove_latest_labels_bulk`, which removes the newest label row
   per file so a file reverts to its earlier label or to unlabelled; trash is an
   OS-recycle-bin move and is not undoable in-app.
+- **Focus peaking (review view)**: a **Focus peaking** toggle overlays a Sobel
+  edge map on the preview (computed client-side from the loaded bitmap, capped at
+  2400 px long side), so the in-focus regions glow — the quickest way to pick the
+  sharpest frame in a burst. A threshold slider tunes how strong an edge must be;
+  the overlay lives inside the image wrapper and therefore shares the zoom/pan
+  transform and stays aligned at any zoom.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses
