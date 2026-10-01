@@ -568,6 +568,23 @@ input {
 .peakrange {
   width: 90px;
 }
+.peakcolor {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.peakcolor .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.peakcolor .dot.green {
+  background: #78ffaa;
+}
+.peakcolor .dot.red {
+  background: #ff4646;
+}
 .box {
   position: absolute;
   border: 2px solid rgba(76, 141, 255, 0.85);

@@ -90,7 +90,8 @@ on a 28-core Windows box.
     frame's boxes/verdict/species, and prev/next through the burst.
 13. ✅ **Star ratings** in addition to the four labels (0–5, grid + review, XMP).
 14. ✅ **Focus peaking** — a Sobel edge overlay on the review preview with a
-    threshold slider, computed client-side and aligned with the zoomed image.
+    threshold slider and a **green/red colour toggle** (`C`), computed
+    client-side and aligned with the zoomed image.
 15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
 16. ✅ **Export from the review view** — "Export…" copies the open photo to a
     folder you pick (`export_file`).
