@@ -658,6 +658,16 @@ fn add_eye_point(
 ) -> Result<usize, String> {
     let kind: eye_labels::EyePointKind = kind.parse().map_err(err)?;
     let conn = open(&state.db_path)?;
+    let dims = analysis_store::get_analysis(&conn, file)
+        .map_err(err)?
+        .and_then(|a| a.image_width.zip(a.image_height));
+    if let Some((width, height)) = dims {
+        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+            return Err(format!(
+                "point ({x},{y}) is outside the {width}x{height} analysis image"
+            ));
+        }
+    }
     eye_labels::add_eye_point(&conn, file, x, y, kind).map_err(err)?;
     Ok(eye_labels::eye_points(&conn, file).map_err(err)?.len())
 }

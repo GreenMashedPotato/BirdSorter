@@ -14,6 +14,10 @@ use ndarray::Array3;
 
 use crate::{CoreError, Result};
 
+/// Guard ordinary image decoding against decompression-bomb inputs. RAW files
+/// use the dedicated rawler backend and are not subject to this byte limit.
+const MAX_IMAGE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// A decoded RGB image (8-bit, row-major, `H x W x 3`).
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -49,6 +53,18 @@ impl ImageCrateDecoder {
 
 impl ImageDecoder for ImageCrateDecoder {
     fn decode(&self, path: &Path) -> Result<DecodedImage> {
+        let bytes = std::fs::metadata(path)
+            .map_err(|e| CoreError::io(path, e))?
+            .len();
+        if bytes > MAX_IMAGE_FILE_BYTES {
+            return Err(CoreError::raw_decode(
+                path,
+                format!(
+                    "image file exceeds the {} MiB safety limit",
+                    MAX_IMAGE_FILE_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
         let img = image::open(path)
             .map_err(|e| CoreError::raw_decode(path, format!("image decode: {e}")))?;
         Ok(DecodedImage {

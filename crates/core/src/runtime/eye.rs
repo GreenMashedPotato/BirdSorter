@@ -38,6 +38,9 @@ fn default_std() -> Vec<f32> {
 fn default_threshold() -> f32 {
     0.3
 }
+fn default_kinds() -> Vec<String> {
+    vec!["eye".into(), "head".into(), "beak".into()]
+}
 
 /// Preprocessing + output layout for the eye model.
 #[derive(Debug, Clone, Deserialize)]
@@ -47,7 +50,7 @@ pub struct EyeMeta {
     #[serde(default = "default_heatmap")]
     pub heatmap: usize,
     /// Channel order, e.g. `["eye","head","beak"]`.
-    #[serde(default)]
+    #[serde(default = "default_kinds")]
     pub kinds: Vec<String>,
     #[serde(default = "default_mean")]
     pub mean: Vec<f32>,

@@ -128,8 +128,6 @@ def build_dataset(labels_path: Path, args):
         img = img.crop((x0, y0, x1, y1)).resize((args.size, args.size))
         arr = np.asarray(img, dtype=np.float32) / 255.0
         arr = (arr - np.array(MEAN)) / np.array(STD)
-        images.append(torch.from_numpy(arr).permute(2, 0, 1))
-
         heat = np.zeros((len(KINDS), args.heatmap, args.heatmap), dtype=np.float32)
         used = False
         for pt in row.get("points", []):
@@ -145,9 +143,12 @@ def build_dataset(labels_path: Path, args):
         if not used:
             skipped += 1
             continue
+        images.append(torch.from_numpy(arr).permute(2, 0, 1))
         targets.append(torch.from_numpy(heat))
 
     print(f"dataset: {len(images)} crops ({skipped} skipped)")
+    if len(images) != len(targets):
+        raise RuntimeError("dataset image/target cardinality mismatch")
     return images, targets
 
 

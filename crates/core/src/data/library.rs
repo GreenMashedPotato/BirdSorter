@@ -500,7 +500,10 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
     files_query(
         conn,
         folder_id,
-        "AND f.trashed_at IS NULL AND a.file_id IS NULL",
+        "AND f.trashed_at IS NULL
+         AND (a.file_id IS NULL
+              OR a.analyzed_content_hash IS NOT NULL
+                 AND a.analyzed_content_hash <> f.content_hash)",
         "f.filename ASC",
     )
 }

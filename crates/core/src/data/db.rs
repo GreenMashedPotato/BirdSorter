@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 13;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -52,6 +52,8 @@ const DDL: &[&str] = &[
         model_version       TEXT NOT NULL,
         species_name        TEXT,
         species_confidence  REAL,
+        species_override_name TEXT,
+        species_override_confidence REAL,
         species_top5_json   TEXT,
         edge_sharpness_grid TEXT,
         eye_sharpness_worst REAL,
@@ -59,7 +61,8 @@ const DDL: &[&str] = &[
         miss_focus_reason   TEXT,
         subject_species_json TEXT,
         image_width         INTEGER,
-        image_height        INTEGER
+        image_height        INTEGER,
+        analyzed_content_hash TEXT
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -71,6 +74,12 @@ const DDL: &[&str] = &[
         created_at  TEXT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_labels_file ON labels(file_id)",
+    "CREATE TABLE IF NOT EXISTS species_overrides (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        species_name TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS eye_labels (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -216,6 +225,39 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
             "ALTER TABLE files ADD COLUMN burst_winner INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
+    if from < 11 {
+        // v10 -> v11: tie an analysis result to the exact file content.
+        conn.execute_batch(
+            "ALTER TABLE analysis ADD COLUMN analyzed_content_hash TEXT;
+             UPDATE analysis
+                SET analyzed_content_hash = (
+                    SELECT content_hash FROM files WHERE files.id = analysis.file_id
+                );",
+        )?;
+    }
+    if from < 12 {
+        // v11 -> v12: preserve user species corrections separately from model output.
+        conn.execute_batch(
+            "ALTER TABLE analysis ADD COLUMN species_override_name TEXT;
+             ALTER TABLE analysis ADD COLUMN species_override_confidence REAL;",
+        )?;
+    }
+    if from < 13 {
+        // v12 -> v13: make user species overrides survive analysis-row deletion.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS species_overrides (
+                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                 species_name TEXT NOT NULL,
+                 confidence REAL NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT OR IGNORE INTO species_overrides(file_id, species_name, confidence, updated_at)
+                 SELECT file_id, species_override_name,
+                        COALESCE(species_override_confidence, 1.0), analyzed_at
+                   FROM analysis
+                  WHERE species_override_name IS NOT NULL;",
+        )?;
+    }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())
 }
@@ -271,6 +313,8 @@ mod tests {
             "labels",
             "models",
             "schema_version",
+            "eye_labels",
+            "species_overrides",
         ] {
             assert!(tables.contains(&expected.to_string()), "missing {expected}");
         }
