@@ -222,6 +222,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   existing bird), and an explicit subject box is re-ordered first. Also fixed a
   latent alignment bug where `subject_species` was stored in detection order
   while boxes were stored best-first, so species could be shown on the wrong box.
+- **Review workflow**: **burst compare** (side-by-side panes with synced
+  zoom/pan, the other frame's boxes/verdict/species, prev/next through the
+  burst), **export this one** (`export_file`, copies the open photo to a picked
+  folder), and **undo** for the last label action (20-deep stack, Ctrl+Z). Undo
+  uses `labels::remove_latest_labels_bulk`, which removes the newest label row
+  per file so a file reverts to its earlier label or to unlabelled; trash is an
+  OS-recycle-bin move and is not undoable in-app.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses

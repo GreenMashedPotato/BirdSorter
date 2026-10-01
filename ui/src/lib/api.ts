@@ -318,6 +318,11 @@ export async function labelFiles(
   return invoke("label_files", { files, label });
 }
 
+/** Undo the most recent label on each file. Returns rows removed. */
+export async function undoLabels(files: number[]): Promise<number> {
+  return invoke("undo_labels", { files });
+}
+
 export function onProgress(
   cb: (p: Progress) => void,
 ): Promise<UnlistenFn> {
@@ -475,6 +480,15 @@ export async function exportKeepers(
     mode: opts.mode ?? "copy",
     predicted: opts.predicted ?? null,
   });
+}
+
+/** Copy (or move) one file into `dest` (the review view's Export button). */
+export async function exportFile(
+  file: number,
+  dest: string,
+  mode: "copy" | "move" = "copy",
+): Promise<ExportResult> {
+  return invoke("export_file", { file, dest, mode });
 }
 
 export interface Burst {

@@ -103,6 +103,27 @@ pub fn add_labels_bulk(conn: &Connection, file_ids: &[i64], label: UserLabel) ->
     })
 }
 
+/// Remove the most recent label from each file (used by the review view's undo).
+///
+/// A file with earlier labels falls back to its previous one; a file that had
+/// no label before the undone action ends up unlabelled. Returns the number of
+/// label rows removed.
+pub fn remove_latest_labels_bulk(conn: &Connection, file_ids: &[i64]) -> Result<usize> {
+    with_tx(conn, || {
+        let mut stmt = conn.prepare(
+            "DELETE FROM labels WHERE id = (
+                 SELECT id FROM labels WHERE file_id = ?1
+                 ORDER BY created_at DESC, id DESC LIMIT 1
+             )",
+        )?;
+        let mut removed = 0usize;
+        for fid in file_ids {
+            removed += stmt.execute(rusqlite::params![fid])?;
+        }
+        Ok(removed)
+    })
+}
+
 /// The most recent label for a file, if any.
 pub fn latest_label(conn: &Connection, file_id: i64) -> Result<Option<UserLabel>> {
     let raw: Option<String> = conn
@@ -224,6 +245,28 @@ mod tests {
             .collect::<std::result::Result<_, _>>()
             .unwrap();
         assert_eq!(sources, vec!["bulk", "bulk"]);
+    }
+
+    #[test]
+    fn remove_latest_label_reverts_to_previous_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let a = analyzed_file(&conn, dir.path(), "a.cr3");
+        let b = analyzed_file(&conn, dir.path(), "b.cr3");
+
+        add_label(&conn, a, UserLabel::Blurry, LabelSource::Manual).unwrap();
+        add_label(&conn, a, UserLabel::Sharp, LabelSource::Manual).unwrap(); // supersedes
+        add_label(&conn, b, UserLabel::Reject, LabelSource::Manual).unwrap();
+
+        // Undo the last action on both: `a` reverts to Blurry, `b` to unlabelled.
+        let n = remove_latest_labels_bulk(&conn, &[a, b]).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(latest_label(&conn, a).unwrap(), Some(UserLabel::Blurry));
+        assert_eq!(latest_label(&conn, b).unwrap(), None);
+
+        // Nothing left to remove for `b`.
+        assert_eq!(remove_latest_labels_bulk(&conn, &[b]).unwrap(), 0);
     }
 
     #[test]

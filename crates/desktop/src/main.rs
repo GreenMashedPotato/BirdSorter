@@ -588,6 +588,13 @@ fn label_files(state: State<AppState>, files: Vec<i64>, label: String) -> Result
     labels::add_labels_bulk(&conn, &files, label).map_err(err)
 }
 
+/// Undo the most recent label on each file (the review view's Undo).
+#[tauri::command]
+fn undo_labels(state: State<AppState>, files: Vec<i64>) -> Result<usize, String> {
+    let conn = open(&state.db_path)?;
+    labels::remove_latest_labels_bulk(&conn, &files).map_err(err)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TrashResultDto {
@@ -1177,6 +1184,36 @@ struct ExportResultDto {
     destination: String,
 }
 
+/// Copy or move a single file into `dest` (the review view's Export button).
+#[tauri::command]
+async fn export_file(
+    state: State<'_, AppState>,
+    file: i64,
+    dest: String,
+    mode: Option<String>,
+) -> Result<ExportResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let mode = ExportMode::parse(mode.as_deref().unwrap_or("copy"))
+            .ok_or_else(|| "mode must be 'copy' or 'move'".to_string())?;
+        let lf = library::get_file(&conn, file)
+            .map_err(err)?
+            .ok_or_else(|| "file not found".to_string())?;
+        let report = export_files(&[lf.absolute_path], Path::new(&dest), mode).map_err(err)?;
+        Ok(ExportResultDto {
+            exported: report.exported,
+            failed: report
+                .failed
+                .iter()
+                .map(|(p, e)| format!("{}: {e}", p.display()))
+                .collect(),
+            destination: report.destination.to_string_lossy().to_string(),
+        })
+    })
+    .await
+}
+
 /// Copy or move the keepers in `folder` into `dest`.
 ///
 /// With `predicted` set, selection is by the scorer's verdict (so it works
@@ -1381,6 +1418,7 @@ fn main() {
             bursts,
             set_species,
             label_files,
+            undo_labels,
             trash_files,
             analyze_folder,
             cancel_analysis,
@@ -1399,6 +1437,7 @@ fn main() {
             clean_cache,
             rescore,
             export_keepers,
+            export_file,
             train,
             models_status,
             download_model,

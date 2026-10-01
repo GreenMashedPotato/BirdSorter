@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     inTauri,
     listFolders,
@@ -21,6 +21,7 @@
     setSpecies,
     speciesLabels,
     labelFiles,
+    undoLabels,
     rateFiles,
     autoRate,
     resetRatings,
@@ -32,6 +33,7 @@
     type DetectionSettings,
     rescoreFolder,
     exportKeepers,
+    exportFile,
     train,
     scoreBreakdown,
     bursts,
@@ -153,10 +155,13 @@
 
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
+  /// The full burst groups (frame ids + winner), for the review compare view.
+  let burstGroups = $state<{ frames: number[]; best: number; size: number }[]>([]);
 
   async function refreshBursts() {
     if (!inTauri || activeFolder === null) {
       burstInfo = {};
+      burstGroups = [];
       return;
     }
     try {
@@ -166,6 +171,7 @@
         for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
       }
       burstInfo = map;
+      burstGroups = groups;
     } catch {
       burstInfo = {};
     }
@@ -317,20 +323,22 @@
   }
 
   function onWheel(e: WheelEvent) {
-    if (!stageEl) return;
+    const el = (e.currentTarget as HTMLElement | null) ?? stageEl;
+    if (!el) return;
     e.preventDefault(); // never scroll the page behind the overlay
-    const rect = stageEl.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015));
   }
 
   function onPanStart(e: PointerEvent) {
-    if (!stageEl) return;
+    const el = (e.currentTarget as HTMLElement | null) ?? stageEl;
+    if (!el) return;
     // Panning must not steal the pointer from a subject box, otherwise its
     // click never fires and you cannot switch boxes.
     if ((e.target as HTMLElement | null)?.closest?.(".box")) return;
     panning = true;
     panStart = { x: e.clientX, y: e.clientY, tx, ty };
-    stageEl.setPointerCapture(e.pointerId);
+    el.setPointerCapture(e.pointerId);
   }
 
   // --- box editing (draw / remove / identify) ------------------------------
@@ -444,6 +452,135 @@
     }
   }
 
+  // --- burst compare -------------------------------------------------------
+  let compareOn = $state(false);
+  let compareId = $state<number | null>(null);
+  let compareUrl = $state("");
+  let compareDetail = $state<AnalysisDetail | null>(null);
+
+  const burstFrames = $derived.by(() => {
+    if (reviewFile === null) return [] as number[];
+    const g = burstGroups.find((b) => b.frames.includes(reviewFile as number));
+    return g ? g.frames : [];
+  });
+  const compareCandidates = $derived(burstFrames.filter((id) => id !== reviewFile));
+
+  /// The frame to compare a file against: the burst winner, else the next one.
+  function defaultCompareFor(id: number): number | null {
+    const g = burstGroups.find((b) => b.frames.includes(id));
+    if (!g) return null;
+    const cands = g.frames.filter((f) => f !== id);
+    if (cands.length === 0) return null;
+    return g.best !== id && cands.includes(g.best) ? g.best : cands[0];
+  }
+
+  async function renderCompare() {
+    if (compareId === null) {
+      compareUrl = "";
+      compareDetail = null;
+      return;
+    }
+    try {
+      compareDetail = await analysisDetail(compareId);
+      compareUrl = await previewImage(compareId, previewMode);
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  async function toggleCompare() {
+    compareOn = !compareOn;
+    if (compareOn) {
+      drawing = false;
+      if (reviewFile === null || defaultCompareFor(reviewFile) === null) {
+        status = "this photo is not part of a burst — nothing to compare";
+        compareOn = false;
+        return;
+      }
+      if (compareId === null || !compareCandidates.includes(compareId)) {
+        compareId = defaultCompareFor(reviewFile);
+      }
+      await tick();
+      computeFit(true);
+      await renderCompare();
+      status = "comparing burst frames — zoom and pan are synced";
+    } else {
+      compareId = null;
+      compareUrl = "";
+      compareDetail = null;
+      await tick();
+      computeFit(true);
+    }
+  }
+
+  async function setCompare(id: number | null) {
+    compareId = id;
+    await renderCompare();
+  }
+
+  async function compareStep(delta: number) {
+    if (compareCandidates.length === 0) return;
+    const i = compareId === null ? -1 : compareCandidates.indexOf(compareId);
+    const next = compareCandidates[(i + delta + compareCandidates.length) % compareCandidates.length];
+    await setCompare(next);
+  }
+
+  /// Export just the file open in the review view.
+  async function exportCurrent() {
+    if (reviewFile === null || !inTauri) return;
+    try {
+      const dest = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Export this photo to…",
+      });
+      if (typeof dest !== "string") return;
+      status = "exporting…";
+      const r = await exportFile(reviewFile, dest, "copy");
+      status = r.exported
+        ? `exported to ${r.destination}${r.failed.length ? ` · ${r.failed.length} failed` : ""}`
+        : `nothing exported${r.failed.length ? ` · ${r.failed[0]}` : ""}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  // --- undo ----------------------------------------------------------------
+  /// One reversible label action: the ids touched and the label each had before.
+  type UndoEntry = { ids: number[]; prev: (UserLabel | null)[] };
+  let undoStack = $state<UndoEntry[]>([]);
+  const canUndo = $derived(undoStack.length > 0);
+
+  function pushUndo(ids: number[]) {
+    const prev = ids.map(
+      (id) => (files.find((f) => f.id === id)?.label ?? null) as UserLabel | null,
+    );
+    undoStack = [...undoStack.slice(-19), { ids, prev }];
+  }
+
+  /// Revert the last label action: restore the previous label, or drop the row
+  /// for files that had none before.
+  async function undoLast() {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry) return;
+    undoStack = undoStack.slice(0, -1);
+    try {
+      const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
+      const byLabel = new Map<UserLabel, number[]>();
+      entry.ids.forEach((id, i) => {
+        const p = entry.prev[i];
+        if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
+      });
+      if (toClear.length > 0) await undoLabels(toClear);
+      for (const [label, ids] of byLabel) await labelFiles(ids, label);
+      await refreshDetail();
+      await refreshFiles();
+      status = `undid a label change on ${entry.ids.length} file(s)`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   function onPanMove(e: PointerEvent) {
     if (!panning) return;
     tx = panStart.tx + (e.clientX - panStart.x);
@@ -453,8 +590,9 @@
   function onPanEnd(e: PointerEvent) {
     if (!panning) return;
     panning = false;
-    if (stageEl?.hasPointerCapture(e.pointerId)) {
-      stageEl.releasePointerCapture(e.pointerId);
+    const el = (e.currentTarget as HTMLElement | null) ?? stageEl;
+    if (el?.hasPointerCapture(e.pointerId)) {
+      el.releasePointerCapture(e.pointerId);
     }
   }
 
@@ -474,6 +612,9 @@
   });
   const boxW = $derived(detail?.imageWidth ?? assumedAnalysis.w);
   const boxH = $derived(detail?.imageHeight ?? assumedAnalysis.h);
+  // The compare pane may be a different file; box coordinates are per-image.
+  const compareBoxW = $derived(compareDetail?.imageWidth ?? boxW);
+  const compareBoxH = $derived(compareDetail?.imageHeight ?? boxH);
 
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
@@ -499,6 +640,13 @@
     } catch (e) {
       status = `error: ${e}`;
     }
+    // Keep the compare frame within the new file's burst.
+    if (compareOn) {
+      const g = burstGroups.find((b) => b.frames.includes(id));
+      if (!g || compareId === null || !g.frames.includes(compareId)) {
+        compareId = defaultCompareFor(id);
+      }
+    }
     await renderPreview();
   }
 
@@ -513,6 +661,7 @@
     } finally {
       previewLoading = false;
     }
+    if (compareOn && compareId !== null) await renderCompare();
   }
 
   function closeReview() {
@@ -623,6 +772,7 @@
   async function applyLabelToReview(label: UserLabel) {
     if (reviewFile === null) return;
     try {
+      pushUndo([reviewFile]);
       await labelFiles([reviewFile], label);
       await refreshDetail();
       await refreshFiles();
@@ -955,6 +1105,7 @@
     if (selected.size === 0) return;
     const ids = [...selected];
     try {
+      pushUndo(ids);
       await labelFiles(ids, label);
       setSelected(new Set());
       await refreshFiles();
@@ -1013,6 +1164,11 @@
       if (typing) {
         // Let the field handle everything except Escape, which just blurs it.
         if (e.key === "Escape" && target) target.blur();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (canUndo) undoLast();
         return;
       }
       if (reviewFile === null) return;
@@ -1378,12 +1534,28 @@
         <button onclick={identifyCurrent} disabled={boxBusy} title="Re-run detection and species ID">
           Identify
         </button>
+        <button
+          class:active={compareOn}
+          onclick={toggleCompare}
+          disabled={compareCandidates.length === 0}
+          title={compareCandidates.length
+            ? "Compare against another frame in this burst"
+            : "Not part of a burst"}
+        >
+          {compareOn ? "Comparing…" : "Compare"}
+        </button>
+        <button onclick={exportCurrent} title="Copy this photo to a folder you pick">
+          Export…
+        </button>
+        <button onclick={undoLast} disabled={!canUndo} title="Undo the last label change (Ctrl+Z)">
+          Undo
+        </button>
         <button onclick={closeReview}>Close (Esc)</button>
         <button onclick={trashCurrent} title="Move to the OS trash">Delete (Del)</button>
       </div>
 
       <div class="review-body">
-        <div class="preview">
+        <div class="preview" class:compare={compareOn && !!compareUrl}>
           {#if previewUrl}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
@@ -1460,6 +1632,69 @@
                 {/each}
               </div>
             </div>
+
+            {#if compareOn && compareUrl}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="stage compare"
+                onwheel={onWheel}
+                onpointerdown={onPanStart}
+                onpointermove={onPanMove}
+                onpointerup={onPanEnd}
+                onpointercancel={onPanEnd}
+              >
+                <div
+                  class="imgwrap"
+                  style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
+                >
+                  <img src={compareUrl} alt={compareDetail?.filename ?? ""} draggable="false" />
+                  {#each compareDetail?.boxes ?? [] as b, i (i)}
+                    <div
+                      class="box"
+                      class:sel={i === 0}
+                      style="left:{(b.x / compareBoxW) * 100}%; top:{(b.y / compareBoxH) * 100}%; width:{(b.w / compareBoxW) * 100}%; height:{(b.h / compareBoxH) * 100}%"
+                    >
+                      <span class="boxtag"
+                        >{b.class}{b.confidence
+                          ? ` ${(b.confidence * 100).toFixed(0)}%`
+                          : ""}</span
+                      >
+                    </div>
+                  {/each}
+                </div>
+                <div class="pane-head">
+                  <strong>{compareDetail?.filename ?? "…"}</strong>
+                  {#if compareDetail?.predicted}
+                    <span class="badge {compareDetail.predicted}"
+                      >{compareDetail.predicted.replace("_", " ")}</span
+                    >
+                    <span class="status">score {compareDetail.score?.toFixed(3)}</span>
+                  {/if}
+                  {#if compareDetail?.species}
+                    <span class="pill"
+                      >{compareDetail.species}{compareDetail.speciesConfidence
+                        ? ` · ${(compareDetail.speciesConfidence * 100).toFixed(0)}%`
+                        : ""}</span
+                    >
+                  {/if}
+                </div>
+                <div class="pane-nav">
+                  <button
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={() => compareStep(-1)}
+                    title="Previous burst frame">‹</button
+                  >
+                  <span class="status"
+                    >{compareCandidates.indexOf(compareId ?? -1) + 1} / {compareCandidates.length}</span
+                  >
+                  <button
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={() => compareStep(1)}
+                    title="Next burst frame">›</button
+                  >
+                </div>
+              </div>
+            {/if}
           {/if}
 
           {#if previewLoading}
