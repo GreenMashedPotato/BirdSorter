@@ -88,12 +88,14 @@ on a 28-core Windows box.
     and is not undoable in-app.
 12. ✅ **Burst compare** — side-by-side panes with **synced zoom/pan**, the other
     frame's boxes/verdict/species, and prev/next through the burst.
-13. ⬜ **Star ratings** in addition to the four labels.
-14. ⬜ **Histogram overlay** on the review preview.
+13. ✅ **Star ratings** in addition to the four labels (0–5, grid + review, XMP).
+14. ✅ **Focus peaking** — a Sobel edge overlay on the review preview with a
+    threshold slider, computed client-side and aligned with the zoomed image.
 15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
 16. ✅ **Export from the review view** — "Export…" copies the open photo to a
     folder you pick (`export_file`).
 17. ⬜ **Configurable export layout** — subfolders by date/species, rename patterns.
+18. ⬜ **Histogram overlay** on the review preview.
 18. ⬜ **Drag-and-drop folder import** onto the window.
 
 ## Packaging & distribution (open)
