@@ -98,7 +98,7 @@ pub(crate) fn build_session(
             ($ep:expr, $name:literal) => {{
                 if let Ok(builder) = base_builder() {
                     match builder.with_execution_providers([$ep]) {
-                        Ok(mut b) => match b.commit_from_file(model) {
+                        Ok(b) => match b.commit_from_file(model) {
                             Ok(session) => {
                                 eprintln!("compute: {} execution provider", $name);
                                 return Ok((session, Some($name.to_string())));
@@ -121,7 +121,7 @@ pub(crate) fn build_session(
         try_gpu_ep!(ort::ep::CUDA::default().build(), "CUDA");
     }
 
-    let mut builder = base_builder()?;
+    let builder = base_builder()?;
     let session = builder.commit_from_file(model).map_err(|e| {
         CoreError::Other(format!(
             "failed to load ONNX model {}: {e}\n  \
