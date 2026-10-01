@@ -97,6 +97,8 @@ on a 28-core Windows box.
     folder you pick (`export_file`).
 17. ⬜ **Configurable export layout** — subfolders by date/species, rename patterns.
 18. ⬜ **Histogram overlay** on the review preview.
+19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
+    highest-scoring frame as Sharp, skipping files you already labelled; undoable.
 18. ⬜ **Drag-and-drop folder import** onto the window.
 
 ## Packaging & distribution (open)
@@ -125,8 +127,11 @@ on a 28-core Windows box.
 28. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
     the birds, but a few may be missing; a second source (IOC/Clements) could
     fill the gaps.
-29. ⬜ **Fine-tuned detector** for in-flight/distant birds
-    (`tools/train_bird_detector.py` is ready; needs a labelled dataset).
+29. 🟡 **Fine-tuned detector / eye model** — blocked on data. The **eye/head
+    keypoint labelling is now built in** (review ▸ Label eye → `eye_labels` →
+    `birdsorter export-eyelabels`), so the `bird_eye` dataset can be collected
+    today; the detector set still needs `tools/train_bird_detector.py` + labels.
+    See `EYE_MODEL.md`.
 30. ⬜ **Multi-region background sampling** — median of several background
     rectangles instead of the largest single one.
 

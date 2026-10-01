@@ -237,6 +237,21 @@ detection → sharpness verdict → species ID → grid/review UI).
   covers both flat sky and foliage, where green edges would disappear. The overlay
   lives inside the image wrapper and therefore shares the zoom/pan transform and
   stays aligned at any zoom. `P` toggles peaking.
+- **"Keep burst winners" (toolbar)**: labels the highest-scoring frame of every
+  multi-frame burst as **Sharp** in one action, so a shoot can be triaged burst by
+  burst. It never clobbers a file you already labelled, reports how many were
+  skipped, and is reversible with **Undo** (Ctrl+Z).
+- **Manual burst winner (review view)**: the sharpest frame is not always the
+  best pose, so the winner can be **chosen by hand**. `files.burst_winner`
+  (schema **v10**) overrides the score; `best_in_burst` prefers it, the grid's
+  burst badge and the "Burst winners" filter follow it, and **Keep burst
+  winners** then picks up your choice. The review bar shows **☆ Set winner** /
+  **★ Winner** for the open file.
+- **Eye/head keypoint labelling (review view)**: a **Label eye** mode records
+  `eye`/`head`/`beak` points (stored in `eye_labels`, analysis-image pixels),
+  drawn as rings and removable per photo. This is the data-collection half of the
+  eye model; `birdsorter export-eyelabels --out labels.jsonl` dumps a training
+  set. See `EYE_MODEL.md` for the training/integration plan.
 - **Confidence threshold for the "look harder" pass**: the fallback/edge/tile
   pass now uses `fallback_conf` (default 0.15) instead of 0.25, because small
   in-flight birds score weakly on the full frame. The full-frame pass still uses
@@ -264,7 +279,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
    labelled dataset. Needed: a single-class bird detection set (COCO
    `--from-coco` gets ~2.7k bird instances for free; your own labelled frames
    are better) and ~200–400 hand-labelled eye/head keypoints for `bird_eye`.
-   Then: train → export → install via Model Manager → re-analyse and compare.
+   The **eye labelling is now built into the app** (review ▸ **Label eye**),
+   stored in `eye_labels` and exported with
+   `birdsorter export-eyelabels --out labels.jsonl` — see `EYE_MODEL.md`.
+   Then: train → export → install → re-analyse and compare.
 2. ~~**Species model re-export with a dynamic batch axis**~~ — the iNat21 export
    already has it, but batching is **slower on CPU** (289 ms/crop at batch 1 vs
    472 ms/crop at batch 4). The classifier now runs per-crop and only batches on

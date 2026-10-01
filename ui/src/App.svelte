@@ -22,6 +22,11 @@
     speciesLabels,
     labelFiles,
     undoLabels,
+    getEyePoints,
+    addEyePoint,
+    clearEyePoints,
+    eyeLabelStats,
+    type EyePoint,
     rateFiles,
     autoRate,
     resetRatings,
@@ -37,6 +42,7 @@
     train,
     scoreBreakdown,
     bursts,
+    setBurstWinner,
     onProgress,
     onDone,
     onError,
@@ -156,7 +162,7 @@
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
   /// The full burst groups (frame ids + winner), for the review compare view.
-  let burstGroups = $state<{ frames: number[]; best: number; size: number }[]>([]);
+  let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
 
   async function refreshBursts() {
     if (!inTauri || activeFolder === null) {
@@ -166,15 +172,23 @@
     }
     try {
       const groups = await bursts(activeFolder);
-      const map: Record<number, { size: number; best: boolean }> = {};
-      for (const g of groups) {
-        for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
-      }
-      burstInfo = map;
       burstGroups = groups;
+      applyBurstInfo(groups);
     } catch {
       burstInfo = {};
+      burstGroups = [];
     }
+  }
+
+  /// Rebuild the per-file burst badge map from the group list.
+  function applyBurstInfo(
+    groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+  ) {
+    const map: Record<number, { size: number; best: boolean }> = {};
+    for (const g of groups) {
+      for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
+    }
+    burstInfo = map;
   }
 
   // --- review view state ---------------------------------------------------
@@ -346,14 +360,95 @@
   let dragRect = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   let boxBusy = $state(false);
 
+  // --- eye/head keypoint labelling -----------------------------------------
+  // Hand-labelled points stored in the DB; they are the training data for the
+  // future `bird_eye` model (see EYE_MODEL.md).
+  let eyeMode = $state(false);
+  let eyeKind = $state<"eye" | "head" | "beak">("eye");
+  let eyePoints = $state<EyePoint[]>([]);
+  let eyeLabelCount = $state(0);
+
+  async function loadEyePoints() {
+    if (reviewFile === null) {
+      eyePoints = [];
+      return;
+    }
+    try {
+      eyePoints = await getEyePoints(reviewFile);
+    } catch {
+      eyePoints = [];
+    }
+  }
+
+  async function refreshEyeStats() {
+    try {
+      eyeLabelCount = await eyeLabelStats();
+    } catch {
+      /* stats are cosmetic */
+    }
+  }
+
+  async function addEyePointAt(e: PointerEvent) {
+    if (reviewFile === null) return;
+    const p = localPoint(e);
+    const scaleW = fit.w * zoom;
+    const scaleH = fit.h * zoom;
+    if (scaleW <= 0 || scaleH <= 0) return;
+    const x = Math.round(((p.x - tx) / scaleW) * boxW);
+    const y = Math.round(((p.y - ty) / scaleH) * boxH);
+    if (x < 0 || y < 0 || x > boxW || y > boxH) return;
+    try {
+      await addEyePoint(reviewFile, x, y, eyeKind);
+      eyePoints = await getEyePoints(reviewFile);
+      await refreshEyeStats();
+      status = `${eyeKind} point added (${x}, ${y})`;
+    } catch (err) {
+      status = `error: ${err}`;
+    }
+  }
+
+  async function clearEyePointsForFile() {
+    if (reviewFile === null) return;
+    try {
+      const n = await clearEyePoints(reviewFile);
+      eyePoints = [];
+      await refreshEyeStats();
+      status = `removed ${n} keypoint${n === 1 ? "" : "s"}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  function toggleEyeMode() {
+    eyeMode = !eyeMode;
+    if (eyeMode) {
+      drawing = false;
+      compareOn = false;
+      status = "click the bird's eye to label it — right-drag to pan";
+    } else {
+      status = "";
+    }
+  }
+
   function localPoint(e: PointerEvent) {
     const r = stageEl!.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
-  /// Stage pointerdown: either start drawing a box or start panning.
+  /// Stage pointerdown: label an eye point, start drawing a box, or start panning.
   function onStageDown(e: PointerEvent) {
-    if (!stageEl || e.button !== 0) return;
+    if (!stageEl) return;
+    if (eyeMode) {
+      // Left click drops a keypoint; right/middle drag pans.
+      if (e.button === 0) {
+        e.preventDefault();
+        void addEyePointAt(e);
+      } else {
+        onPanStart(e);
+      }
+      return;
+    }
+    if (e.button !== 0) return;
     if (drawing) {
       const p = localPoint(e);
       dragRect = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
@@ -464,6 +559,31 @@
     return g ? g.frames : [];
   });
   const compareCandidates = $derived(burstFrames.filter((id) => id !== reviewFile));
+
+  /// The burst the review file belongs to (if any), plus its winner state.
+  const currentBurst = $derived.by(() => {
+    const rf = reviewFile;
+    if (rf === null) return null;
+    return burstGroups.find((b) => b.frames.includes(rf)) ?? null;
+  });
+  const inBurst = $derived(!!currentBurst && currentBurst.size > 1);
+  const isWinner = $derived(!!currentBurst && currentBurst.best === reviewFile);
+  const isManualWinner = $derived(isWinner && !!currentBurst?.winnerOverride);
+
+  /// Mark the open frame as its burst's winner, or clear a manual choice.
+  async function toggleBurstWinner() {
+    if (reviewFile === null) return;
+    const clear = isManualWinner;
+    try {
+      burstGroups = await setBurstWinner(reviewFile, !clear);
+      applyBurstInfo(burstGroups);
+      status = clear
+        ? "burst winner cleared — back to the sharpest frame"
+        : "marked as the burst winner";
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
 
   /// The frame to compare a file against: the burst winner, else the next one.
   function defaultCompareFor(id: number): number | null {
@@ -740,6 +860,7 @@
     } catch (e) {
       status = `error: ${e}`;
     }
+    void loadEyePoints();
     // Keep the compare frame within the new file's burst.
     if (compareOn) {
       const g = burstGroups.find((b) => b.frames.includes(id));
@@ -1245,6 +1366,46 @@
     }
   }
 
+  /// Label the winner of every burst as Sharp, so a shoot can be triaged burst
+  /// by burst. Files you have already labelled are left untouched.
+  async function keepBurstWinners() {
+    if (activeFolder === null || !inTauri) return;
+    let groups: { frames: number[]; best: number }[] = [];
+    try {
+      groups = await bursts(activeFolder);
+    } catch (e) {
+      status = `error: ${e}`;
+      return;
+    }
+    const winners = [
+      ...new Set(groups.filter((g) => g.frames.length > 1).map((g) => g.best)),
+    ];
+    // Never clobber a decision the user already made.
+    const unlabelled = winners.filter((id) => files.find((f) => f.id === id)?.label == null);
+    if (unlabelled.length === 0) {
+      status = winners.length
+        ? `all ${winners.length} burst winners are already labelled`
+        : "no multi-frame bursts in this folder";
+      return;
+    }
+    if (
+      !confirm(
+        `Label ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} as Sharp?\n\n` +
+          "Files you have already labelled are left untouched. Undo with Ctrl+Z.",
+      )
+    ) {
+      return;
+    }
+    try {
+      pushUndo(unlabelled);
+      await labelFiles(unlabelled, "sharp");
+      await refreshFiles();
+      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   function scoreText(f: FileEntry): string {
     return f.score === null ? "" : f.score.toFixed(2);
   }
@@ -1323,6 +1484,7 @@
 
     await refreshFolders();
     await refreshFiles();
+    void refreshEyeStats();
 
     onProgress((p) => {
       progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
@@ -1437,6 +1599,13 @@
         title="Copy every file labelled Sharp into a folder"
       >
         Export keepers…
+      </button>
+      <button
+        onclick={keepBurstWinners}
+        disabled={busy || activeFolder === null}
+        title="Label the sharpest frame of each burst as Sharp (skips files you already labelled)"
+      >
+        Keep burst winners
       </button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
@@ -1667,6 +1836,28 @@
           Identify
         </button>
         <button
+          class:active={eyeMode}
+          onclick={toggleEyeMode}
+          title="Label the bird's eye/head — training data for the eye model (left-click a point, right-drag to pan)"
+        >
+          {eyeMode ? "Labelling… (click to stop)" : "Label eye"}
+        </button>
+        {#if eyeMode}
+          <select class="modesel" bind:value={eyeKind} title="What the point marks">
+            <option value="eye">Eye</option>
+            <option value="head">Head</option>
+            <option value="beak">Beak</option>
+          </select>
+          <button
+            onclick={clearEyePointsForFile}
+            disabled={eyePoints.length === 0}
+            title="Remove this photo's keypoints"
+          >
+            Clear points
+          </button>
+          <span class="status">{eyePoints.length} on this · {eyeLabelCount} file(s) labelled</span>
+        {/if}
+        <button
           class:active={compareOn}
           onclick={toggleCompare}
           disabled={compareCandidates.length === 0}
@@ -1676,6 +1867,17 @@
         >
           {compareOn ? "Comparing…" : "Compare"}
         </button>
+        {#if inBurst}
+          <button
+            class:active={isWinner}
+            onclick={toggleBurstWinner}
+            title={isManualWinner
+              ? "You chose this frame as the burst winner — click to clear"
+              : "Choose this frame as the burst winner (the sharpest is not always the best pose)"}
+          >
+            {isManualWinner ? "★ Winner" : isWinner ? "★ Sharpest" : "☆ Set winner"}
+          </button>
+        {/if}
         <button onclick={exportCurrent} title="Copy this photo to a folder you pick">
           Export…
         </button>
@@ -1766,6 +1968,13 @@
                     {/if}
                   </div>
                 {/each}
+                {#each eyePoints as pt, i (i)}
+                  <span
+                    class="eyepoint {pt.kind}"
+                    style="left:{(pt.x / boxW) * 100}%; top:{(pt.y / boxH) * 100}%"
+                    title="{pt.kind} keypoint"
+                  ></span>
+                {/each}
               </div>
             </div>
 
@@ -1800,6 +2009,9 @@
                 </div>
                 <div class="pane-head">
                   <strong>{compareDetail?.filename ?? "…"}</strong>
+                  {#if compareId !== null && burstInfo[compareId]?.best}
+                    <span class="status" title="burst winner">★</span>
+                  {/if}
                   {#if compareDetail?.predicted}
                     <span class="badge {compareDetail.predicted}"
                       >{compareDetail.predicted.replace("_", " ")}</span
