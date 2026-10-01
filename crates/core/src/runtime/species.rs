@@ -221,23 +221,24 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
     }
 
     fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {
-        match crops.len() {
-            0 => Ok(Vec::new()),
-            // A single crop has nothing to batch.
-            1 => Ok(vec![self.run_one(crops[0])?]),
-            _ => match self.identify_batched(crops) {
-                Ok(results) => Ok(results),
-                // The model may have a fixed batch dimension of 1, or the
-                // provider may reject the batch: fall back rather than fail the
-                // whole image.
+        if crops.len() <= 1 {
+            return crops.iter().map(|c| self.run_one(c)).collect();
+        }
+        // One batched call is *slower* per crop than per-crop inference on CPU
+        // for the iNat21 ConvNeXt (measured: 289 ms/crop at batch 1 vs 472
+        // ms/crop at batch 4 with 28 threads), so only batch on a GPU provider,
+        // where a bigger batch amortises the dispatch.
+        if self.gpu.load(std::sync::atomic::Ordering::Relaxed) {
+            match self.identify_batched(crops) {
+                Ok(results) => return Ok(results),
                 Err(e) => {
                     if debug_onnx() {
                         eprintln!("[onnx] batched species inference failed ({e}); per-crop");
                     }
-                    crops.iter().map(|c| self.run_one(c)).collect()
                 }
-            },
+            }
         }
+        crops.iter().map(|c| self.run_one(c)).collect()
     }
 }
 
@@ -281,9 +282,15 @@ mod tests {
             ((x * 5 + y * 11 + c * 37) % 256) as u8
         });
         let single = classifier.run_one(&crop).unwrap();
+        // The public entry point runs per-crop on CPU ...
         let batched = classifier.identify_batch(&[&crop, &crop]).unwrap();
         assert_eq!(batched.len(), 2);
         assert_eq!(single, batched[0]);
         assert_eq!(batched[0], batched[1]);
+        // ... and the raw one-call batch must still agree with it.
+        let raw = classifier.identify_batched(&[&crop, &crop]).unwrap();
+        assert_eq!(raw.len(), 2);
+        assert_eq!(single, raw[0]);
+        assert_eq!(raw[0], raw[1]);
     }
 }

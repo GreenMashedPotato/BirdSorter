@@ -250,10 +250,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
    `--from-coco` gets ~2.7k bird instances for free; your own labelled frames
    are better) and ~200–400 hand-labelled eye/head keypoints for `bird_eye`.
    Then: train → export → install via Model Manager → re-analyse and compare.
-2. **Species model re-export with a dynamic batch axis** — batched inference is
-   implemented (with a per-crop fallback and a model-gated test), but the bundled
-   ViT export is fixed at batch=1, so it stays dormant. Two-line fix in
-   `MODELS.md`.
+2. ~~**Species model re-export with a dynamic batch axis**~~ — the iNat21 export
+   already has it, but batching is **slower on CPU** (289 ms/crop at batch 1 vs
+   472 ms/crop at batch 4). The classifier now runs per-crop and only batches on
+   a GPU provider, so this item is closed.
 3. **macOS** — see `MACOS_TODO.md` (a self-contained brief for an agent on a
    Mac). CoreML validation, `.app`/`.dmg`, notarization, Intel + Apple Silicon,
    and HEIC input via ImageIO. The desktop build already enables CoreML on

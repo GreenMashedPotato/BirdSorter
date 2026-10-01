@@ -44,7 +44,7 @@ on a 28-core Windows box.
 
 | Item | Status |
 |---|---|
-| 🟡 **Batched species inference** — implemented as one `[N,3,S,S]` ONNX call with a per-crop **fallback**, and covered by a model-gated test (`BIRDSORTER_TEST_SPECIES_DIR`). **The bundled ViT export has a fixed batch dimension of 1**, so the batched path declines and falls back today. Re-export with `dynamic_axes={"pixel_values": {0: "batch"}}` and it starts paying off for flock frames (a documented [`MODELS.md`](./MODELS.md) note). | needs a model re-export |
+| 🟡 **Batched species inference** — the iNat21 export **does** have a dynamic `batch` axis, but one batched call is *slower* per crop than per-crop inference on CPU (measured 289 ms/crop at batch 1 vs 472 ms/crop at batch 4, 28 threads), so the classifier now runs crops one at a time and only batches when a GPU provider is active. The model-gated agreement test still covers the raw batched routine. | measured, resolved |
 | 🟡 **Pre-allocated convolution buffers** — `sobel_pair` halved the allocations (4 → 2 per image), but buffers are still allocated per call. A thread-local pool is the next step. | open |
 
 ---
@@ -57,7 +57,7 @@ on a 28-core Windows box.
    normalised image (18 ms at 1600×1200). A 2× pre-downscale would quarter the
    cost; needs a calibration check so the threshold semantics hold.
 3. ⬜ **Cross-image species batching** — feeds N images' crops into one call.
-   Pointless until the model has a dynamic batch dim (see above).
+   Measured to be **counterproductive on CPU** (see above), so leave off.
 4. ⬜ **Parallel species sessions** — the session sits behind a `Mutex`, so crops
    serialize. A small pool of sessions (one per worker) would parallelize, at the
    cost of one model copy per worker (~85 MB each).
