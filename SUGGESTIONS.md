@@ -82,12 +82,17 @@ on a 28-core Windows box.
 
 ## UX & features (open)
 
-11. ⬜ **Undo** for the last label/trash action.
-12. ⬜ **Side-by-side compare** — two files at once, useful for bursts.
+11. ✅ **Undo** for the last label action — `undo_labels` drops the most recent
+    label row per file (reverting to the previous label, or unlabelled), a 20-deep
+    stack, Ctrl+Z or the toolbar button. Trash still goes to the OS recycle bin
+    and is not undoable in-app.
+12. ✅ **Burst compare** — side-by-side panes with **synced zoom/pan**, the other
+    frame's boxes/verdict/species, and prev/next through the burst.
 13. ⬜ **Star ratings** in addition to the four labels.
 14. ⬜ **Histogram overlay** on the review preview.
 15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
-16. ⬜ **Export from the review view** ("export this one").
+16. ✅ **Export from the review view** — "Export…" copies the open photo to a
+    folder you pick (`export_file`).
 17. ⬜ **Configurable export layout** — subfolders by date/species, rename patterns.
 18. ⬜ **Drag-and-drop folder import** onto the window.
 

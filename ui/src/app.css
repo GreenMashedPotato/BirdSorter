@@ -515,6 +515,47 @@ input {
      scaling of a small raster is what made zoomed-in previews soft). */
   image-rendering: auto;
 }
+/* Side-by-side burst compare: two stages share one zoom/pan transform. */
+.preview.compare {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px;
+}
+.preview.compare .stage {
+  position: relative;
+  inset: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.pane-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(6, 18, 31, 0.72);
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 5;
+}
+.pane-nav {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(6, 18, 31, 0.72);
+  z-index: 5;
+}
 .box {
   position: absolute;
   border: 2px solid rgba(76, 141, 255, 0.85);
