@@ -397,6 +397,11 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 - **Refactor Phase 4 (decode limits)**: the ordinary-image byte cap is now a
   shared `decoder::ensure_file_within`, also applied to the thumbnail fallback
   decode (the RAW embedded-preview fast path is unaffected). New test.
+- **Refactor Phase 2 (boxes)**: the manual/exclude box-set editing was inline in
+  `analyze_file_with`. It is now a pure `pipeline::stages::resolve_detections`
+  (clamp the drawn box, replace any stored box it covers, drop the excluded ones,
+  else merge a fresh detection with the user's own boxes), covered by five unit
+  tests. Behavior unchanged; a drawn box outside the image still errors.
 - **Refactor Phase 3 (runtime)**: the GPU→CPU execution-provider fallback was
   copy-pasted across the detector, species and eye sessions. It is now a single
   `runtime::session::OnnxSession` wrapper: one CPU rebuild per model instance, a
