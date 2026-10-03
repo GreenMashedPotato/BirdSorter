@@ -302,8 +302,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   `Inference` — as do the platform-dir errors (`Config`) and the model registry
   (`Download` for network failures, `ModelArchive` for bad zips / wrong or
   duplicate entries / checksums / size, `Config` for spec refusals).
-  `Other(String)` stays a documented fallback for the remaining long tail.
-  Tests cover the variants and their context.
+  `Other(String)` stays a documented fallback. **Tail migration**: added
+  `InvalidInput` and `NotFound`, and moved the remaining domain errors to typed
+  variants — decoder (`RawDecode`), disk/db (`Config`), trainer/library/stages/
+  eye/xmp (`InvalidInput`), species labels (`ModelLoad`), unknown folder id
+  (`NotFound`). `Other` is now only internal (ONNX wrapper, JPEG encode, panic
+  boundaries) and test helpers — down from 47 uses to ~13. Tests cover the
+  variants and their context.
 - **Disk-space check**: new `io::disk` (`available_space`, `low_space_warning`)
   warns below 200 MB free on the data/cache drive before analysis starts, so a
   run is not launched into a full disk. It resolves a not-yet-created directory

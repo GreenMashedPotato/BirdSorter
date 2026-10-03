@@ -26,9 +26,18 @@ pub enum CoreError {
     #[error("model '{model}' failed: {message}")]
     Inference { model: String, message: String },
 
-    /// Invalid or unavailable configuration (a bad setting, no platform dirs).
+    /// Invalid or unavailable configuration (a bad setting, no platform dirs,
+    /// a database newer than this build).
     #[error("configuration error: {message}")]
     Config { message: String },
+
+    /// Invalid user input or a malformed source that cannot be acted on.
+    #[error("invalid input: {message}")]
+    InvalidInput { message: String },
+
+    /// A referenced record or file does not exist.
+    #[error("not found: {message}")]
+    NotFound { message: String },
 
     /// A model download failed (network, timeout, size limit).
     #[error("download failed for {url}: {message}")]
@@ -91,6 +100,20 @@ impl CoreError {
         }
     }
 
+    /// Build a [`CoreError::InvalidInput`].
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        CoreError::InvalidInput {
+            message: message.into(),
+        }
+    }
+
+    /// Build a [`CoreError::NotFound`].
+    pub fn not_found(message: impl Into<String>) -> Self {
+        CoreError::NotFound {
+            message: message.into(),
+        }
+    }
+
     /// Build a [`CoreError::Download`].
     pub fn download(url: impl Into<String>, message: impl Into<String>) -> Self {
         CoreError::Download {
@@ -140,5 +163,13 @@ mod tests {
         assert!(matches!(e, CoreError::ModelArchive { .. }));
         assert!(e.to_string().contains("bird_species"));
         assert!(e.to_string().contains("duplicate file"));
+
+        let e = CoreError::invalid_input("not a directory: D:/x");
+        assert!(matches!(e, CoreError::InvalidInput { .. }));
+        assert!(e.to_string().contains("not a directory"));
+
+        let e = CoreError::not_found("unknown folder_id 7");
+        assert!(matches!(e, CoreError::NotFound { .. }));
+        assert!(e.to_string().contains("folder_id 7"));
     }
 }

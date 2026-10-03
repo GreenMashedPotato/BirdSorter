@@ -134,7 +134,7 @@ fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
 pub fn add_folder(conn: &Connection, path: impl AsRef<Path>) -> Result<i64> {
     let path = path.as_ref();
     if !path.is_dir() {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::invalid_input(format!(
             "not a directory: {}",
             path.display()
         )));
@@ -295,7 +295,7 @@ pub fn scan_folder_streaming(
             r.get(0)
         })
         .optional()?
-        .ok_or_else(|| CoreError::Other(format!("unknown folder_id {folder_id}")))?;
+        .ok_or_else(|| CoreError::not_found(format!("unknown folder_id {folder_id}")))?;
     let base = PathBuf::from(base);
 
     // Files the user restored from the OS trash are back on disk: clear their
