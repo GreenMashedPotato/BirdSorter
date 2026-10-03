@@ -110,7 +110,9 @@ on a 28-core Windows box.
 ## Packaging & distribution (open)
 
 19. ⬜ **Auto-updater** — `tauri-plugin-updater`; only after signing works.
-20. ⬜ **Portable mode** — a `portable.flag` next to the executable keeps data local.
+20. ✅ **Portable mode** — a `portable.flag` next to the executable keeps the DB,
+    models, settings and cache under `<exe dir>/BirdSorterData`;
+    `BIRDSORTER_DATA_DIR` forces a portable root (tests/CI).
 21. ⬜ **File associations** for RAW extensions.
 22. ⬜ **crash reporting opt-in** (e.g. Sentry) — mention with a clear privacy note.
 

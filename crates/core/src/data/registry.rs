@@ -398,9 +398,7 @@ pub fn default_model_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("BIRDSORTER_MODEL_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-    Ok(dirs.data_dir().join("models"))
+    Ok(crate::data::paths::data_dir()?.join("models"))
 }
 
 #[cfg(test)]
