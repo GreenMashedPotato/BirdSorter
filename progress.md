@@ -349,6 +349,13 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   duplicate/entry/expanded-size limits, and stage files before committing;
   ordinary image decoding has a 512 MiB safety limit; thumbnail/XMP temp files
   are unique per writer. Schema is now **v13**.
+- **Refactor Phase 1.3**: subject boxes are now first-class rows in a
+  `subject_boxes` table (geometry, class, detector/manual source, subject flag,
+  ordinal), written in the same transaction as the analysis row. A **v14**
+  migration backfills legacy JSON box lists, and `get_analysis` reads the
+  normalized rows (falling back to JSON for un-migrated data). Manual provenance
+  no longer depends on species output, and `clear_folder`/`set_manual_bbox` keep
+  the table consistent. Schema version is **v14**.
 - **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
   `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
   binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for

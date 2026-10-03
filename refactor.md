@@ -16,6 +16,15 @@ scan RAW files → decode → detect birds → compute focus features
 
 Do not change the application version; it remains `0.1.0`.
 
+## Status
+- **Phase 1.1** analysis revisions (`analyzed_content_hash`): done
+- **Phase 1.2** separate model output from user data (`species_overrides`): done
+- **Phase 1.3** normalized `subject_boxes` table + v14 backfill: done
+- **Phase 1.4** explicit columns instead of `SELECT *`: done for `analysis`
+- **Phase 2+**: pending
+
+Keep this list current as phases land.
+
 ## Non-negotiable invariants
 
 1. Never modify, delete, move, or overwrite the user's RAW originals except for
