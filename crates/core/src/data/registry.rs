@@ -513,6 +513,81 @@ mod tests {
     }
 
     #[test]
+    fn zip_entries_cannot_escape_the_model_directory() {
+        let outer = tempfile::tempdir().unwrap();
+        let dir = outer.path().join("models");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Traversal entries are flattened to their file name and land inside.
+        let zip = zip_bundle(
+            "b",
+            &[("../../a.onnx", b"model"), ("../a.labels.json", b"[]")],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        install_bytes(&dir, &spec, &zip).unwrap();
+        assert!(dir.join("a.onnx").is_file());
+        assert!(
+            !outer.path().join("a.onnx").exists(),
+            "an entry must not escape the model directory"
+        );
+    }
+
+    #[test]
+    fn zip_with_an_unexpected_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = zip_bundle(
+            "b",
+            &[
+                ("a.onnx", b"m"),
+                ("a.labels.json", b"[]"),
+                ("evil.exe", b"x"),
+            ],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("unexpected file"), "{err}");
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn zip_entries_that_flatten_to_the_same_file_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Distinct archive names, but flattening collapses both to `a.onnx`.
+        let zip = zip_bundle(
+            "b",
+            &[
+                ("sub1/a.onnx", b"1"),
+                ("sub2/a.onnx", b"2"),
+                ("a.labels.json", b"[]"),
+            ],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("duplicate file"), "{err}");
+    }
+
+    #[test]
+    fn zip_missing_a_required_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Only one of the two expected files is present.
+        let zip = zip_bundle("b", &[("a.onnx", b"m")]);
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("missing required files"), "{err}");
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn zip_with_too_many_entries_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..40).map(|i| format!("f{i}.onnx")).collect();
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x"[..])).collect();
+        let zip = zip_bundle("b", &entries);
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("too many entries"), "{err}");
+    }
+
+    #[test]
     fn import_from_a_local_file_works_without_a_url() {
         let dir = tempfile::tempdir().unwrap();
         let src = tempfile::tempdir().unwrap();
