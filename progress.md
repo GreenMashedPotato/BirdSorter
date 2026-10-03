@@ -377,6 +377,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   (`err`, `open`, `blocking`) and the model-manager commands (`models_status`,
   `download_model`, `import_model`, `remove_model`, `ModelStatusDto`) moved to
   `models.rs`. `main.rs` registers them via `models::…`; behavior unchanged.
+- **Refactor Phase 5 (continued)**: `AppState` moved to `state.rs`, and the
+  species/label/undo/eye-point commands plus `EyePointDto` moved to
+  `annotations.rs`. `main.rs` registers them via `annotations::…`; behavior and
+  the app state shape are unchanged.
 - **Refactor Phase 1.1 regression test**: `changing_file_content_makes_it_pending_again`
   proves end-to-end that replacing a RAW's bytes and rescanning marks it pending
   again (was silently showing stale analysis before the fix).

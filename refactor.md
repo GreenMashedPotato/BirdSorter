@@ -26,8 +26,9 @@ Do not change the application version; it remains `0.1.0`.
   `classify_species`, `subject_first`): started; `analyze_one` now orchestrates
 - **Phase 4** model downloads: timeouts + response-size cap + pinned-checksum
   requirement for remote artifacts: done
-- **Phase 5** desktop split: `util.rs` (err/open/blocking) and `models.rs`
-  (model-manager commands) extracted: started
+- **Phase 5** desktop split: `util.rs` (err/open/blocking), `state.rs`
+  (`AppState`), `models.rs` (model-manager commands), and `annotations.rs`
+  (species/labels/undo/eye-points) extracted: in progress
 - **Phase 6** UI async guards (review/folder/compare/bursts) and listener
   cleanup on unmount: done
 - **Phase 2+**: pending
