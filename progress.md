@@ -356,6 +356,12 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   normalized rows (falling back to JSON for un-migrated data). Manual provenance
   no longer depends on species output, and `clear_folder`/`set_manual_bbox` keep
   the table consistent. Schema version is **v14**.
+- **Refactor Phase 2 (started)**: the analysis stages were extracted from
+  `analyze_one` into `pipeline::stages` — `select_subject` (manual box wins,
+  else sharpest, plus eye-model refinement), `classify_species` (per-box species
+  + provenance, classifier-optional), and `subject_first` (best-first ordering).
+  `analyze_one` is now orchestration over those stages, covered by four new unit
+  tests. Behavior unchanged.
 - **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
   `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
   binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for
