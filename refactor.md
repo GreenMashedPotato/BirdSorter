@@ -29,8 +29,13 @@ Do not change the application version; it remains `0.1.0`.
   single quotes and whitespace: done
 - **Phase 5** desktop split: `util.rs` (err/open/blocking), `state.rs`
   (`AppState`), `config.rs` (constants), `preview.rs` (thumbnail/preview),
-  `models.rs` (model-manager), and `annotations.rs` (species/labels/undo/eye):
-  in progress
+  `models.rs` (model-manager), `annotations.rs` (species/labels/undo/eye),
+  `library.rs` (folders/scan/query/trash/ratings), `analysis.rs` (ingest
+  pipeline, review detail, bursts, manual box editing, rescore, train), `app.rs`
+  (settings, species list, About payload, cache maintenance), `export.rs`
+  (keeper/single-file export), and `startup.rs` (model seeding, panic hook,
+  Tauri builder). `main.rs` is now only module declarations + `startup::run()`:
+  done
 - **Phase 6** UI async guards (review/folder/compare/bursts) and listener
   cleanup on unmount: done
 - **Phase 2+**: pending
