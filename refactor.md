@@ -23,7 +23,9 @@ Do not change the application version; it remains `0.1.0`.
 - **Phase 1.3** normalized `subject_boxes` table + v14 backfill: done
 - **Phase 1.4** explicit columns instead of `SELECT *`: done for `analysis`
 - **Phase 2** analysis stages extracted into `pipeline::stages` (`select_subject`,
-  `classify_species`, `subject_first`): started; `analyze_one` now orchestrates
+  `classify_species`, `subject_first`, and `resolve_detections` for the
+  manual/exclude box-set edits): started; `analyze_one` and `analyze_file_with`
+  now orchestrate pure stages instead of containing the algorithms inline
 - **Phase 3** runtime reliability: the GPU→CPU fallback is now a single
   `runtime::session::OnnxSession` wrapper shared by the detector, species and eye
   models — one rebuild per instance, one CPU retry, a typed error on CPU failure,

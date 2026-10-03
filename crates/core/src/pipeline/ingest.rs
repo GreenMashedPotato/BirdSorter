@@ -444,42 +444,19 @@ pub fn analyze_file_with(
     let img = decoder.decode(&file.absolute_path)?;
     let (h, w, _) = img.rgb.dim();
     let stored = stored_detections(conn, file.file.id)?;
-
-    let dets: Vec<Detection> = if let Some(box_) = manual_box {
-        let Some(clamped) = box_.clamp_to(w as i32, h as i32) else {
-            return Err(CoreError::Other(
-                "the drawn box is outside the image".into(),
-            ));
-        };
-        // Keep the subjects already found; only drop the ones the drawn box
-        // covers, so drawing over a bird replaces it instead of duplicating.
-        let mut dets: Vec<Detection> = stored
-            .iter()
-            .filter(|d| !exclude.contains(&d.bbox) && !boxes_overlap(&d.bbox, &clamped))
-            .cloned()
-            .collect();
-        dets.push(Detection::new(clamped, "manual", 1.0));
-        dets
-    } else if !exclude.is_empty() {
-        stored
-            .iter()
-            .filter(|d| !exclude.contains(&d.bbox))
-            .cloned()
-            .collect()
-    } else {
-        // Plain re-identify: refresh detection, but keep the user's own boxes.
-        let mut dets = detector
+    // A manual box or an exclusion edits the stored set; a fresh detection pass
+    // only runs for a plain re-identify.
+    let detected = if manual_box.is_none() && exclude.is_empty() {
+        detector
             .detect_batch(&[&img.rgb])?
             .into_iter()
             .next()
-            .unwrap_or_default();
-        for d in stored.iter().filter(|d| d.class_name == "manual") {
-            if !dets.iter().any(|e| boxes_overlap(&e.bbox, &d.bbox)) {
-                dets.push(d.clone());
-            }
-        }
-        dets
+            .unwrap_or_default()
+    } else {
+        Vec::new()
     };
+    let dets =
+        stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
     let mut record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
     record.analyzed_content_hash = Some(file.file.content_hash.clone());
     upsert_analysis(conn, &record)?;
@@ -505,27 +482,6 @@ fn stored_detections(conn: &Connection, file_id: i64) -> Result<Vec<Detection>> 
             Detection::new(*b, class, 1.0)
         })
         .collect())
-}
-
-/// True when two boxes describe the same subject: high IoU, or the second box
-/// mostly covers the first (used to avoid duplicating a subject the user
-/// redrew over).
-fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
-    let ix0 = a.x.max(b.x);
-    let iy0 = a.y.max(b.y);
-    let ix1 = a.x1().min(b.x1());
-    let iy1 = a.y1().min(b.y1());
-    if ix1 <= ix0 || iy1 <= iy0 {
-        return false;
-    }
-    let inter = i64::from(ix1 - ix0) * i64::from(iy1 - iy0);
-    let union = a.area() + b.area() - inter;
-    if union <= 0 {
-        return false;
-    }
-    let iou = inter as f64 / union as f64;
-    let covered = inter as f64 / a.area().max(1) as f64;
-    iou >= 0.3 || covered >= 0.6
 }
 
 /// Convenience helper for callers that only have settings, not a scorer object.

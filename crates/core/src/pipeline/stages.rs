@@ -11,7 +11,7 @@ use crate::analysis::eye::{eye_sharpness_from_model, EyeDetector};
 use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
 use crate::analysis::species::{crop_rgb, SpeciesClassifier};
 use crate::data::analysis_store::SubjectSpecies;
-use crate::Result;
+use crate::{CoreError, Result};
 
 /// Minimum bird-box side length worth classifying. The iNat21 model takes 384 px
 /// and is ~15x slower than the old 85 MB int8 model, so a crop this small cannot
@@ -191,6 +191,73 @@ pub(crate) fn subject_first(
     }
 }
 
+/// Resolve the subject-box set for a (re)analysis.
+///
+/// - a drawn `manual` box is clamped to the frame, replaces any stored box it
+///   covers (so drawing over a bird does not duplicate it), and is added as a
+///   `manual` detection;
+/// - `exclude` (boxes the user removed) are dropped from the stored set;
+/// - otherwise `detected` (a fresh detection pass) is used, keeping the user's
+///   own manual boxes that it did not re-find.
+pub(crate) fn resolve_detections(
+    stored: &[Detection],
+    detected: Vec<Detection>,
+    manual: Option<BBox>,
+    exclude: &[BBox],
+    img_w: i32,
+    img_h: i32,
+) -> Result<Vec<Detection>> {
+    if let Some(box_) = manual {
+        let Some(clamped) = box_.clamp_to(img_w, img_h) else {
+            return Err(CoreError::Other(
+                "the drawn box is outside the image".into(),
+            ));
+        };
+        let mut dets: Vec<Detection> = stored
+            .iter()
+            .filter(|d| !exclude.contains(&d.bbox) && !boxes_overlap(&d.bbox, &clamped))
+            .cloned()
+            .collect();
+        dets.push(Detection::new(clamped, "manual", 1.0));
+        return Ok(dets);
+    }
+    if !exclude.is_empty() {
+        return Ok(stored
+            .iter()
+            .filter(|d| !exclude.contains(&d.bbox))
+            .cloned()
+            .collect());
+    }
+    let mut dets = detected;
+    for d in stored.iter().filter(|d| d.class_name == "manual") {
+        if !dets.iter().any(|e| boxes_overlap(&e.bbox, &d.bbox)) {
+            dets.push(d.clone());
+        }
+    }
+    Ok(dets)
+}
+
+/// True when two boxes describe the same subject: high IoU, or the second box
+/// mostly covers the first (used to avoid duplicating a subject the user
+/// redrew over).
+fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
+    let ix0 = a.x.max(b.x);
+    let iy0 = a.y.max(b.y);
+    let ix1 = a.x1().min(b.x1());
+    let iy1 = a.y1().min(b.y1());
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return false;
+    }
+    let inter = i64::from(ix1 - ix0) * i64::from(iy1 - iy0);
+    let union = a.area() + b.area() - inter;
+    if union <= 0 {
+        return false;
+    }
+    let iou = inter as f64 / union as f64;
+    let covered = inter as f64 / a.area().max(1) as f64;
+    iou >= 0.3 || covered >= 0.6
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +331,78 @@ mod tests {
         assert_eq!(per[0].bbox, [3, 3, 3, 3]);
         assert_eq!(boxes.len(), 3);
         assert_eq!(per.len(), 3);
+    }
+
+    #[test]
+    fn manual_box_replaces_a_covered_detection_and_keeps_the_rest() {
+        let covered = BBox::new(10, 10, 100, 100);
+        let far = BBox::new(300, 300, 100, 100);
+        let stored = vec![
+            Detection::new(covered, "bird", 0.9),
+            Detection::new(far, "bird", 0.8),
+        ];
+        let dets = resolve_detections(
+            &stored,
+            vec![],
+            Some(BBox::new(20, 20, 90, 90)),
+            &[],
+            1000,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(dets.len(), 2);
+        assert!(dets
+            .iter()
+            .any(|d| d.class_name == "manual" && d.bbox == BBox::new(20, 20, 90, 90)));
+        assert!(dets.iter().any(|d| d.bbox == far));
+        assert!(!dets.iter().any(|d| d.bbox == covered));
+    }
+
+    #[test]
+    fn exclude_drops_only_the_named_boxes() {
+        let a = BBox::new(1, 1, 10, 10);
+        let b = BBox::new(50, 50, 10, 10);
+        let stored = vec![
+            Detection::new(a, "bird", 0.9),
+            Detection::new(b, "bird", 0.9),
+        ];
+        let dets = resolve_detections(&stored, vec![], None, &[a], 1000, 1000).unwrap();
+        assert_eq!(dets.len(), 1);
+        assert_eq!(dets[0].bbox, b);
+    }
+
+    #[test]
+    fn fresh_detection_keeps_unmatched_manual_boxes() {
+        let manual = BBox::new(400, 400, 50, 50);
+        let stored = vec![Detection::new(manual, "manual", 1.0)];
+        let detected = vec![Detection::new(BBox::new(10, 10, 80, 80), "bird", 0.9)];
+        let dets = resolve_detections(&stored, detected, None, &[], 1000, 1000).unwrap();
+        assert_eq!(dets.len(), 2);
+        assert!(dets
+            .iter()
+            .any(|d| d.class_name == "manual" && d.bbox == manual));
+    }
+
+    #[test]
+    fn fresh_detection_does_not_duplicate_a_found_manual_box() {
+        let manual = BBox::new(400, 400, 50, 50);
+        let stored = vec![Detection::new(manual, "manual", 1.0)];
+        let detected = vec![Detection::new(BBox::new(402, 402, 50, 50), "bird", 0.9)];
+        let dets = resolve_detections(&stored, detected, None, &[], 1000, 1000).unwrap();
+        assert_eq!(dets.len(), 1, "an overlapping manual box is not re-added");
+    }
+
+    #[test]
+    fn manual_box_outside_the_image_is_an_error() {
+        let err = resolve_detections(
+            &[],
+            vec![],
+            Some(BBox::new(5000, 5000, 10, 10)),
+            &[],
+            100,
+            100,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("outside the image"));
     }
 }
