@@ -407,6 +407,11 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   `runtime::session::OnnxSession` wrapper: one CPU rebuild per model instance, a
   single retry, a typed error if CPU also fails, and the provider flag exposed via
   `is_gpu()`. Five unit tests drive the transitions with a fake session (no model).
+- **Refactor Phase 7 (security tests)**: the model-registry hardening now has
+  tests for a ZIP entry that would escape the model directory (flattened, stays
+  inside), an unexpected file, two entries that flatten to the same name
+  (duplicate), a missing required file, and the entry-count cap — previously only
+  the happy-path bundle install was covered.
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.
