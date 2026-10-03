@@ -414,6 +414,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   `App` keeps all state, derived values and the grid DOM ref, so behavior is
   unchanged (`svelte-check` clean, build passes). The review view and dialogs
   remain inline.
+- **Refactor Phase 6 (review)**: the whole review view moved out of `App.svelte`
+  into `lib/Review.svelte` — detail/preview loading, zoom/pan, focus peaking,
+  box drawing/removal, eye labelling, burst compare, species autocomplete and
+  the review keyboard shortcuts. `App` now owns only the library-level state
+  (files, bursts, undo, status) and passes `fileId`/`ids`/`burstGroups`/`rating`
+  plus callbacks; a `refreshToken` keeps an open review in sync after an undo.
+  `App.svelte` went from ~2,230 to ~990 lines. Guarded by a new App-level test
+  (`App.review.test.ts`: open → navigate → label) which passes against both the
+  old and new code. Adds `vitest-setup.ts` (a real `localStorage`, since the
+  Node/JSdom one has no methods).
 - **UI test harness**: `vitest` + `@testing-library/svelte` (jsdom) with
   `ui/vitest.config.ts` and an `npm test` script — 25 tests covering the pure
   `api` helpers and the four extracted components (filter/bind, label/rate
