@@ -447,6 +447,13 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   so `RUST_LOG=info birdsorter probe …` shows the chosen provider. The CLI's
   user-facing output is unchanged (`println!`); a malformed model is now a
   leveled `warn` instead of raw stderr.
+- **`cleancache --cache <dir>`**: the thumbnail cache is one shared directory
+  keyed by content hash, not tied to a database, so `cleancache --db <other>`
+  previously pruned the *default* cache using another library's hashes. It now
+  accepts `--cache <dir>` (needed to test/CI against an isolated library) and
+  always prints the directory it is pruning. (Found because a smoke test with a
+  temp `--db` reclaimed a real 199 MB cache — thumbnails are derived and
+  regenerate, so nothing was lost beyond cached thumbnails.)
 - **Refactor Phase 7 (import cap)**: a local model import is now size-checked
   (2 GiB) from the file's metadata *before* `std::fs::read`, so an oversized
   `.onnx`/`.zip` can no longer be pulled into memory — the fetcher already capped

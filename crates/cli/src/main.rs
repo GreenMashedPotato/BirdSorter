@@ -47,7 +47,9 @@ Commands:
       --db <path>               Override the library database location
   export-eyelabels --out <file.jsonl> [--db <path>]  Dump eye/head keypoints for training
   train [--db <path>]         Train a verdict model from your labels
-  cleancache [--all] [--db <path>]  Delete orphaned thumbnails (--all: everything)
+  cleancache [--all] [--db <path>] [--cache <dir>]  Delete orphaned thumbnails
+      --all                     Clear the whole cache
+      --cache <dir>             Prune this cache dir instead of the default
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
@@ -635,13 +637,24 @@ fn cmd_cleancache(args: &[String]) -> ExitCode {
     use birdsorter_core::io::cache::ThumbCache;
 
     let clear_all = args.iter().any(|a| a == "--all");
-    let db_path: Option<String> = args
-        .iter()
-        .position(|a| a == "--db")
-        .and_then(|i| args.get(i + 1).cloned());
+    let opt = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let db_path = opt("--db");
+    // The cache is one shared directory, keyed by content hash — it is not tied
+    // to a database. Pruning it with a different library's hashes would delete
+    // that other library's thumbnails, so allow an explicit cache dir (e.g. for
+    // a test/CI library) and always print which directory is being pruned.
+    let cache_dir = opt("--cache");
 
     let run = || -> birdsorter_core::Result<()> {
-        let cache = ThumbCache::open_default()?;
+        let cache = match &cache_dir {
+            Some(dir) => ThumbCache::new(dir),
+            None => ThumbCache::open_default()?,
+        };
+        println!("cache: {}", cache.root().display());
         let before = cache.size_bytes();
         if clear_all {
             let n = cache.clear()?;
