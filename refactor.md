@@ -56,8 +56,15 @@ Do not change the application version; it remains `0.1.0`.
   treated as installed; a successful install leaves none). XMP now has tests for
   a malformed sidecar (refused, left verbatim), rating clamping and idempotent
   rewrites that leave no temp file. A local model import is now size-capped
-  before it is read into memory: started
-- **Phase 2+**: pending
+  before it is read into memory. Database coverage now includes burst-winner
+  persistence (mark/clear survives a re-query) and the UI suite covers rapid
+  J/K navigation (a stale frame response cannot overwrite the open file).
+  Per-batch transaction is intentionally **not** done: the per-file commit is
+  already atomic and gives crash *resume*; a batch transaction would only lose
+  more work on a crash
+- **Phase 2**: the named service traits are covered by the pure
+  `pipeline::stages` seams (`select_subject`, `classify_species`,
+  `subject_first`, `resolve_detections`); no further split is planned
 
 Keep this list current as phases land.
 

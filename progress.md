@@ -268,6 +268,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   unchanged (Snowy Egret 0.373 vs 0.385). Quantized only MatMul weights, since
   ORT's CPU EP cannot run `ConvInteger` (the patch-embed Conv is left fp32).
 
+- **Refactor Phase 7 (final tests)**: burst-winner persistence now has a DB test
+  (mark writes through, survives a re-query, clearing removes it), and the UI
+  suite covers rapid J/K navigation — a held frame response released after the
+  user moved on cannot overwrite the open file. With these, every phase of
+  `refactor.md` is landed. Per-batch transactions are deliberately skipped
+  (per-file commit is atomic and gives crash resume).
+
 ## TODO / backlog (roughly ordered)
 
 See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.

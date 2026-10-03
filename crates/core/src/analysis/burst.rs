@@ -259,6 +259,52 @@ mod tests {
     }
 
     #[test]
+    fn stored_winner_persists_marks_and_clears() {
+        use crate::data::db::{connect_in_memory, init_schema};
+        use crate::data::library::{add_folder, list_files, scan_folder};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.cr3"), b"1").unwrap();
+        std::fs::write(dir.path().join("b.cr3"), b"2").unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let ids: Vec<i64> = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .map(|lf| lf.file.id)
+            .collect();
+        let a = ids[0];
+
+        // Marking writes through and is reported as an override.
+        let bursts = set_burst_winner(&conn, a, true).unwrap();
+        let g = bursts.iter().find(|b| b.frames.contains(&a)).unwrap();
+        assert_eq!(g.best, a);
+        assert!(g.winner_override);
+
+        // It survives a fresh query (persisted in `files.burst_winner`).
+        let reread = folder_bursts(&conn, fid, DEFAULT_GAP_SECONDS).unwrap();
+        assert!(
+            reread
+                .iter()
+                .find(|b| b.frames.contains(&a))
+                .unwrap()
+                .winner_override
+        );
+
+        // Clearing removes it.
+        let cleared = set_burst_winner(&conn, a, false).unwrap();
+        assert!(
+            !cleared
+                .iter()
+                .find(|b| b.frames.contains(&a))
+                .unwrap()
+                .winner_override
+        );
+    }
+
+    #[test]
     fn find_bursts_ranks_each_group() {
         let frames = vec![
             frame(1, 0, 0.2),
