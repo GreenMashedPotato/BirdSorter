@@ -97,7 +97,10 @@ on a 28-core Windows box.
 15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
 16. ✅ **Export from the review view** — "Export…" copies the open photo to a
     folder you pick (`export_file`).
-17. ⬜ **Configurable export layout** — subfolders by date/species, rename patterns.
+17. 🟡 **Configurable export layout** — `export … --by date` (or `--by flat`) now
+    writes one subfolder per capture day (`YYYY-MM-DD`; files without an EXIF
+    capture time go to `_no_date/`). Species subfolders and rename patterns are
+    still open.
 18. ⬜ **Histogram overlay** on the review preview.
 19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
     highest-scoring frame as Sharp, skipping files you already labelled; undoable.

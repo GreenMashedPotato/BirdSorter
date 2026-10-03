@@ -275,6 +275,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Export layout**: `export` now takes `--by flat|date`. `--by date` writes one
+  subfolder per capture day (`YYYY-MM-DD`, derived from EXIF `DateTimeOriginal`;
+  files without one go to `_no_date/`). Core gained `ExportLayout` +
+  `export_files_with` (the flat `export_files` is unchanged), covered by three
+  unit tests; the CLI usage text and README show the flag. Species subfolders and
+  rename patterns remain (SUGGESTIONS 17).
 - **Docs**: added `ARCHITECTURE.md` (system + pipeline diagrams, module map,
   runtime tiers, Tauri IPC, storage locations), `CONTRIBUTING.md` (dependency
   direction, the gates, recipes for adding a metric/detector/model/UI panel/command,
@@ -518,6 +524,7 @@ birdsorter probe <one.cr3> --slice 6             # tiled detection for distant b
 # culling workflow
 birdsorter export <folder> <dest> --label sharp       # your labelled keepers
 birdsorter export <folder> <dest> --predicted sharp    # the scorer's keepers
+birdsorter export <folder> <dest> --predicted sharp --by date  # one folder per capture day
 birdsorter cleancache                                  # reclaim orphaned thumbnails
 
 # performance (criterion; HTML reports under target/criterion/)
