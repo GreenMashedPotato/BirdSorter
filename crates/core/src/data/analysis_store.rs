@@ -493,6 +493,7 @@ mod tests {
     use crate::data::db::{connect_in_memory, init_schema};
     use crate::data::library::{add_folder, list_files, scan_folder};
     use crate::data::settings::ScoreSettings;
+    use proptest::prelude::*;
 
     fn file_id(conn: &Connection, dir: &std::path::Path, name: &str) -> i64 {
         std::fs::write(dir.join(name), name.as_bytes()).unwrap();
@@ -804,5 +805,41 @@ mod tests {
         // Guards against a future field addition breaking the JSON path.
         let _ = ScoreResult::default();
         let _ = SharpnessFeatures::default().to_json();
+    }
+
+    proptest! {
+        // Fuzzing: arbitrary persisted JSON must never panic — only Ok or a
+        // typed error.
+        #[test]
+        fn parse_boxes_never_panics(s in ".{0,200}") {
+            let _ = parse_boxes(Some(s));
+            let _ = parse_boxes(None);
+        }
+
+        #[test]
+        fn parse_subject_species_never_panics(s in ".{0,200}") {
+            let _ = parse_subject_species(Some(s));
+            let _ = parse_subject_species(None);
+        }
+
+        #[test]
+        fn parse_boxes_round_trips_valid_arrays(
+            boxes in proptest::collection::vec(proptest::array::uniform4(-1000i32..1000), 0..8)
+        ) {
+            let json = serde_json::to_string(&boxes).unwrap();
+            prop_assert_eq!(parse_boxes(Some(json)).unwrap().len(), boxes.len());
+        }
+    }
+
+    #[test]
+    fn parse_subject_species_round_trips() {
+        let items: Vec<SubjectSpecies> = (0..3)
+            .map(|i| SubjectSpecies {
+                bbox: [i, 0, 10, 10],
+                ..Default::default()
+            })
+            .collect();
+        let json = serde_json::to_string(&items).unwrap();
+        assert_eq!(parse_subject_species(Some(json)).unwrap(), items);
     }
 }

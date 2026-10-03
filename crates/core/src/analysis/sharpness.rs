@@ -1014,5 +1014,17 @@ mod tests {
             prop_assert!(f.subject_to_bg_ratio >= 0.0);
             prop_assert!((0.0..=1.0).contains(&f.subject_area_fraction));
         }
+
+        // Fuzzing: arbitrary stored JSON must never panic.
+        #[test]
+        fn from_json_never_panics(s in ".{0,300}") {
+            let _ = SharpnessFeatures::from_json(&s);
+        }
+    }
+
+    #[test]
+    fn to_json_round_trips() {
+        let json = SharpnessFeatures::default().to_json();
+        assert_eq!(SharpnessFeatures::from_json(&json).unwrap().to_json(), json);
     }
 }
