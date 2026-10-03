@@ -99,11 +99,12 @@ on a 28-core Windows box.
 15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
 16. ✅ **Export from the review view** — "Export…" copies the open photo to a
     folder you pick (`export_file`).
-17. ✅ **Configurable export layout** — `export … --by flat|date|species` arranges the
-    destination (one folder per capture day `YYYY-MM-DD` / `_no_date`, or per
-    species / `_no_species`), and `--rename` rebuilds names from
-    `{name}`/`{date}`/`{species}` (e.g. `--rename "{species}_{name}"`), keeping the
-    extension and sanitising path-unsafe characters.
+17. ✅ **Configurable export layout** — core + CLI + UI. The toolbar's **Export
+    keepers** opens a dialog (layout `flat`/`date`/`species` + optional rename
+    pattern); the CLI takes `--by flat|date|species` and `--rename`. Layouts write
+    one folder per capture day (`YYYY-MM-DD` / `_no_date`) or per species
+    (`_no_species`); `--rename` rebuilds names from `{name}`/`{date}`/`{species}`,
+    keeping the extension and sanitising path-unsafe characters.
 18. ✅ **Histogram overlay** on the review preview — a **Histogram** toggle draws a
     luminance histogram in the corner (pure `lumaHistogram` helper, unit-tested).
 19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's

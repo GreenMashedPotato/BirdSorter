@@ -275,6 +275,11 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Export layout in the UI**: the toolbar's **Export keepers** now opens an
+  `ExportDialog` (layout flat/date/species + optional rename pattern) before the
+  folder picker; the desktop `export_keepers`/`export_file` commands take an
+  `opts` object and supply each file's species from the library, so the app uses
+  the same core `export_items` path as the CLI. Dialog behaviour is unit-tested.
 - **Drag-and-drop folder import**: dropping a folder onto the window adds and
   scans it (the toolbar's Add path now goes through `addFolderAndScan`). A small
   `preferredDropPath` helper picks the folder out of a mixed drop (unit-tested);

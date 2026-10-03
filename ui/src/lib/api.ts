@@ -497,12 +497,21 @@ export async function cleanCache(clearAll = false): Promise<CacheReport> {
   return invoke("clean_cache", { clearAll });
 }
 
+/** Layout for an export: `flat`, one folder per capture `date`, or per `species`. */
+export type ExportLayout = "flat" | "date" | "species";
+
 /** Copy (or move) keepers into `dest`. Selection is by latest user `label`,
  *  or by the scorer's `predicted` verdict when that is set. */
 export async function exportKeepers(
   folder: number,
   dest: string,
-  opts: { label?: string; predicted?: string; mode?: "copy" | "move" } = {},
+  opts: {
+    label?: string;
+    predicted?: string;
+    mode?: "copy" | "move";
+    layout?: ExportLayout;
+    rename?: string;
+  } = {},
 ): Promise<ExportResult> {
   return invoke("export_keepers", {
     folder,
@@ -510,6 +519,7 @@ export async function exportKeepers(
     label: opts.label ?? null,
     mode: opts.mode ?? "copy",
     predicted: opts.predicted ?? null,
+    opts: { layout: opts.layout ?? null, rename: opts.rename ?? null },
   });
 }
 
@@ -518,8 +528,14 @@ export async function exportFile(
   file: number,
   dest: string,
   mode: "copy" | "move" = "copy",
+  opts: { layout?: ExportLayout; rename?: string } = {},
 ): Promise<ExportResult> {
-  return invoke("export_file", { file, dest, mode });
+  return invoke("export_file", {
+    file,
+    dest,
+    mode,
+    opts: { layout: opts.layout ?? null, rename: opts.rename ?? null },
+  });
 }
 
 export interface Burst {
