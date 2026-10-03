@@ -120,8 +120,9 @@ on a 28-core Windows box.
 
 ## Architecture (open)
 
-23. ⬜ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
-    `parse_subject_species` (proptest now covers scoring only).
+23. ✅ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
+    `parse_subject_species`: proptest properties assert arbitrary input never
+    panics, plus round-trips for valid input.
 24. ⬜ **Integration test with a real RAW file** — download a small public CR3 in a
     gated test and assert the full pipeline's output shape/ordering.
 25. 🟡 **Richer `CoreError`** — added `ModelLoad`, `Inference`, `Config`,

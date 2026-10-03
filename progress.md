@@ -275,6 +275,10 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Parser fuzzing**: proptest properties for the persisted-JSON parsers —
+  `SharpnessFeatures::from_json`, `parse_boxes` and `parse_subject_species` never
+  panic on arbitrary input (only Ok or a typed error), plus round-trips for valid
+  input. Six new tests.
 - **Richer `CoreError`**: added `ModelLoad`, `Inference`, `Config`, `Download`
   and `ModelArchive` variants (with `model_load`/`inference`/`config`/`download`/
   `model_archive` constructors). The model/runtime layer uses them —
