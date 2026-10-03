@@ -51,6 +51,8 @@
   import PhotoGrid from "./lib/PhotoGrid.svelte";
   import Review from "./lib/Review.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { preferredDropPath } from "./lib/dnd";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
@@ -491,13 +493,12 @@
     await refreshBursts();
   }
 
-  async function addAndScan() {
-    const path = newPath.trim();
-    if (!path || !inTauri) return;
+  /// Add (or re-open) a folder and start scanning it — the toolbar's Add button
+  /// and a folder dropped on the window both go through here.
+  async function addFolderAndScan(path: string) {
     busy = true;
     try {
       const id = await addFolder(path);
-      newPath = "";
       activeFolder = id;
       await refreshFolders();
       status = "scanning…";
@@ -510,6 +511,13 @@
       busy = false;
       progress = null;
     }
+  }
+
+  async function addAndScan() {
+    const path = newPath.trim();
+    if (!path || !inTauri) return;
+    newPath = "";
+    await addFolderAndScan(path);
   }
 
   async function browseForFolder() {
@@ -751,6 +759,21 @@
 
     await refreshFolders();
     await refreshFiles();
+
+    // Drag a folder onto the window to add and scan it. `getCurrentWebview`
+    // throws synchronously outside a real Tauri webview (browser preview/tests).
+    try {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const path = preferredDropPath(event.payload.paths ?? []);
+          if (path) void addFolderAndScan(path);
+        })
+        .then((off) => cleanups.push(off))
+        .catch(() => {});
+    } catch {
+      /* not running inside Tauri */
+    }
 
     const unlisteners = [
       onProgress((p) => {
