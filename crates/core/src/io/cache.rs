@@ -35,11 +35,9 @@ fn content_hash_of(name: &str) -> Option<&str> {
     }
 }
 
-/// Default cache directory: `<user data>/BirdSorter/thumbs`.
+/// Default cache directory: `<cache>/thumbs` (platform cache, or portable root).
 pub fn default_cache_dir() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-    Ok(dirs.cache_dir().join("thumbs"))
+    Ok(crate::data::paths::cache_dir()?.join("thumbs"))
 }
 
 /// A directory of `<hash>.thumb` and `<hash>@<long_side>.thumb` files.

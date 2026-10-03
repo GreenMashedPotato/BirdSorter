@@ -65,11 +65,9 @@ impl Default for ScoreSettings {
 }
 
 impl ScoreSettings {
-    /// `.../BirdSorter/score_settings.json` under the platform user-data dir.
+    /// `score_settings.json` under the config dir (platform, or portable root).
     pub fn default_path() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-            .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-        Ok(dirs.config_dir().join("score_settings.json"))
+        Ok(crate::data::paths::config_dir()?.join("score_settings.json"))
     }
 
     /// Load the persisted settings, or defaults when none are saved.
@@ -144,11 +142,9 @@ impl DetectionSettings {
         }
     }
 
-    /// `.../BirdSorter/detection_settings.json` under the platform user-data dir.
+    /// `detection_settings.json` under the config dir (platform, or portable root).
     pub fn default_path() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-            .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-        Ok(dirs.config_dir().join("detection_settings.json"))
+        Ok(crate::data::paths::config_dir()?.join("detection_settings.json"))
     }
 
     pub fn load_default() -> Self {

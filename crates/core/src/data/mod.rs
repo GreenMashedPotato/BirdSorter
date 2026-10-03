@@ -6,6 +6,7 @@ pub mod eye_labels;
 pub mod labels;
 pub mod library;
 pub mod models;
+pub mod paths;
 pub mod registry;
 pub mod settings;
 

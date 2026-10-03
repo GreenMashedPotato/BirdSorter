@@ -113,11 +113,9 @@ const DDL: &[&str] = &[
     )",
 ];
 
-/// `.../BirdSorter/library.db` under the platform user-data dir.
+/// `library.db` under the data dir (platform user-data, or the portable root).
 pub fn default_db_path() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-    Ok(dirs.data_dir().join("library.db"))
+    Ok(crate::data::paths::data_dir()?.join("library.db"))
 }
 
 fn configure(conn: &Connection) -> Result<()> {

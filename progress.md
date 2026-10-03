@@ -275,6 +275,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Portable mode**: a `portable.flag` next to the executable redirects the DB,
+  models, settings and cache to `<exe dir>/BirdSorterData/`; `BIRDSORTER_DATA_DIR`
+  forces a portable root (tests/CI). Path resolution is centralized in
+  `data::paths` (`data_dir`/`config_dir`/`cache_dir`), which `db`,
+  `settings`, `registry` and `cache` now go through; absent a flag/dir the
+  platform locations are unchanged. Verified via the CLI for both hooks.
 - **Export layout**: `export` takes `--by flat|date|species` and
   `--rename <pattern>`. The layout writes one subfolder per capture day
   (`YYYY-MM-DD`, `_no_date` fallback) or per species (`_no_species` fallback);

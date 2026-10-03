@@ -196,6 +196,11 @@ Paths come from the platform user directories (`directories` crate), under a
 The thumbnail cache is **one shared directory keyed by content hash** — it is
 not tied to a database. See `TROUBLESHOOTING.md` before pruning it.
 
+**Portable mode** (`data::paths`): a `portable.flag` file next to the executable
+redirects all of the above to `<exe dir>/BirdSorterData/` (DB at the root,
+`config/`, `cache/`, `models/`); `BIRDSORTER_DATA_DIR` forces a portable root
+without the flag. Absent either, nothing changes.
+
 ---
 
 ## 7. Where to go next
