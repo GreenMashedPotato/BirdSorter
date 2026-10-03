@@ -16,7 +16,24 @@ use crate::{CoreError, Result};
 
 /// Guard ordinary image decoding against decompression-bomb inputs. RAW files
 /// use the dedicated rawler backend and are not subject to this byte limit.
-const MAX_IMAGE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Refuse an ordinary image whose file is larger than `limit` bytes.
+pub(crate) fn ensure_file_within(path: &Path, limit: u64) -> Result<()> {
+    let bytes = std::fs::metadata(path)
+        .map_err(|e| CoreError::io(path, e))?
+        .len();
+    if bytes > limit {
+        return Err(CoreError::raw_decode(
+            path,
+            format!(
+                "image file exceeds the {} MiB safety limit",
+                limit / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(())
+}
 
 /// A decoded RGB image (8-bit, row-major, `H x W x 3`).
 #[derive(Debug, Clone)]
@@ -53,18 +70,7 @@ impl ImageCrateDecoder {
 
 impl ImageDecoder for ImageCrateDecoder {
     fn decode(&self, path: &Path) -> Result<DecodedImage> {
-        let bytes = std::fs::metadata(path)
-            .map_err(|e| CoreError::io(path, e))?
-            .len();
-        if bytes > MAX_IMAGE_FILE_BYTES {
-            return Err(CoreError::raw_decode(
-                path,
-                format!(
-                    "image file exceeds the {} MiB safety limit",
-                    MAX_IMAGE_FILE_BYTES / (1024 * 1024)
-                ),
-            ));
-        }
+        ensure_file_within(path, MAX_IMAGE_FILE_BYTES)?;
         let img = image::open(path)
             .map_err(|e| CoreError::raw_decode(path, format!("image decode: {e}")))?;
         Ok(DecodedImage {
@@ -143,6 +149,16 @@ mod tests {
             image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
         });
         DynamicImage::ImageRgb8(img)
+    }
+
+    #[test]
+    fn oversized_ordinary_image_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.jpg");
+        std::fs::write(&path, vec![0u8; 32]).unwrap();
+        let err = ensure_file_within(&path, 8).unwrap_err();
+        assert!(matches!(err, CoreError::RawDecode { .. }), "{err}");
+        assert!(ensure_file_within(&path, 64).is_ok());
     }
 
     #[test]
