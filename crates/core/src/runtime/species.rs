@@ -5,10 +5,8 @@
 //! the app's model directory.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use ndarray::Array3;
-use ort::session::Session;
 use ort::value::Tensor;
 
 use crate::analysis::species::{
@@ -16,24 +14,16 @@ use crate::analysis::species::{
     SPECIES_LABELS, SPECIES_META, SPECIES_ONNX,
 };
 use crate::data::registry::default_model_dir;
-use crate::runtime::detector::{build_session, DevicePreference};
+use crate::runtime::detector::DevicePreference;
+use crate::runtime::session::{ort_err, OnnxSession};
 use crate::{CoreError, Result};
-
-fn ort_err(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Other(format!("onnxruntime: {e}"))
-}
 
 /// A species classifier backed by an ONNX model + labels file.
 pub struct OnnxSpeciesClassifier {
-    session: Mutex<Session>,
-    input_name: String,
+    session: OnnxSession,
     labels: Vec<String>,
     preprocess: SpeciesPreprocess,
     top_k: usize,
-    /// Where the model came from, so the session can be rebuilt on CPU.
-    model: std::path::PathBuf,
-    /// True while the session uses a GPU execution provider.
-    gpu: std::sync::atomic::AtomicBool,
 }
 
 impl OnnxSpeciesClassifier {
@@ -44,12 +34,7 @@ impl OnnxSpeciesClassifier {
         preprocess: SpeciesPreprocess,
         device: DevicePreference,
     ) -> Result<Self> {
-        let (session, ep) = build_session(model, device)?;
-        let input_name = session
-            .inputs()
-            .first()
-            .map(|i| i.name().to_string())
-            .unwrap_or_else(|| "pixel_values".to_string());
+        let session = OnnxSession::load(model, device)?;
         let labels = load_labels(labels_path)?;
         if labels.is_empty() {
             return Err(CoreError::Other(format!(
@@ -58,48 +43,19 @@ impl OnnxSpeciesClassifier {
             )));
         }
         Ok(Self {
-            session: Mutex::new(session),
-            input_name,
+            session,
             labels,
             preprocess,
             top_k: 5,
-            model: model.to_path_buf(),
-            gpu: std::sync::atomic::AtomicBool::new(ep.is_some()),
         })
     }
 
-    /// Run the model, falling back to a CPU session if a GPU execution provider
-    /// cannot actually run it (some models hit provider bugs, e.g. DirectML on
-    /// the iNaturalist ConvNeXt `Reshape`). The swap is permanent for this
-    /// session, so only the first inference pays the cost.
+    /// Run the model. A GPU-provider failure is handled inside the session (one
+    /// CPU rebuild and retry — some models hit provider bugs, e.g. DirectML on
+    /// the iNaturalist ConvNeXt `Reshape`).
     fn infer(&self, tensor: &Tensor<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
-        use std::sync::atomic::Ordering;
-        let attempt = |session: &mut Session| -> Result<(Vec<usize>, Vec<f32>)> {
-            let outputs = session
-                .run(ort::inputs![self.input_name.clone() => tensor])
-                .map_err(ort_err)?;
-            let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-            Ok((
-                shape.iter().map(|&d| d.max(0) as usize).collect(),
-                data.to_vec(),
-            ))
-        };
-
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        match attempt(&mut session) {
-            Ok(out) => Ok(out),
-            Err(e) if self.gpu.load(Ordering::Relaxed) => {
-                eprintln!("species model failed on the GPU provider ({e}); retrying on CPU");
-                let (cpu, _) = build_session(&self.model, DevicePreference::Cpu)?;
-                *session = cpu;
-                self.gpu.store(false, Ordering::Relaxed);
-                attempt(&mut session)
-            }
-            Err(e) => Err(e),
-        }
+        self.session
+            .run_tensor(tensor, |shape, data| Ok((shape.to_vec(), data.to_vec())))
     }
 
     /// Load the classifier from the default model directory, if the files are
@@ -228,7 +184,7 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
         // for the iNat21 ConvNeXt (measured: 289 ms/crop at batch 1 vs 472
         // ms/crop at batch 4 with 28 threads), so only batch on a GPU provider,
         // where a bigger batch amortises the dispatch.
-        if self.gpu.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.session.is_gpu() {
             match self.identify_batched(crops) {
                 Ok(results) => return Ok(results),
                 Err(e) => {

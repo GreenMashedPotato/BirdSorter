@@ -4,18 +4,16 @@
 //! heatmap per kind (`[1, kinds, heatmap, heatmap]`, sigmoid probabilities).
 //! Peaks are mapped back into the crop's pixel space. See `EYE_MODEL.md`.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::path::Path;
 
 use ndarray::Array3;
-use ort::session::Session;
 use ort::value::Tensor;
 use serde::Deserialize;
 
 use crate::analysis::eye::{heatmap_peaks, EyeDetector, EyeKeypoint, EyeKind};
 use crate::data::registry::default_model_dir;
-use crate::runtime::detector::{build_session, DevicePreference};
+use crate::runtime::detector::DevicePreference;
+use crate::runtime::session::{ort_err, OnnxSession};
 use crate::{CoreError, Result};
 
 /// File name the model manager installs the eye model as.
@@ -74,36 +72,17 @@ impl Default for EyeMeta {
     }
 }
 
-fn ort_err(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Other(format!("onnxruntime: {e}"))
-}
-
 /// A `bird_eye` model session.
 pub struct OnnxEyeDetector {
-    session: Mutex<Session>,
-    input_name: String,
+    session: OnnxSession,
     meta: EyeMeta,
-    /// Kept so the session can be rebuilt on CPU after a GPU-provider failure.
-    model: PathBuf,
-    gpu: AtomicBool,
 }
 
 impl OnnxEyeDetector {
     /// Load a model + meta from explicit paths.
     pub fn from_files(model: &Path, meta: EyeMeta, device: DevicePreference) -> Result<Self> {
-        let (session, ep) = build_session(model, device)?;
-        let input_name = session
-            .inputs()
-            .first()
-            .map(|i| i.name().to_string())
-            .unwrap_or_else(|| "image".to_string());
-        Ok(Self {
-            session: Mutex::new(session),
-            input_name,
-            meta,
-            model: model.to_path_buf(),
-            gpu: AtomicBool::new(ep.is_some()),
-        })
+        let session = OnnxSession::load(model, device)?;
+        Ok(Self { session, meta })
     }
 
     /// Load `bird_eye.onnx` from the model directory, if installed.
@@ -155,33 +134,10 @@ impl OnnxEyeDetector {
         Tensor::from_array(([1i64, 3, s as i64, s as i64], buf)).map_err(ort_err)
     }
 
-    /// Run, rebuilding on CPU once if the GPU provider cannot execute the model.
+    /// Run the model. A GPU-provider failure is handled inside the session.
     fn run(&self, tensor: &Tensor<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
-        let attempt = |session: &mut Session| -> Result<(Vec<usize>, Vec<f32>)> {
-            let outputs = session
-                .run(ort::inputs![self.input_name.clone() => tensor])
-                .map_err(ort_err)?;
-            let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-            Ok((
-                shape.iter().map(|&d| d.max(0) as usize).collect(),
-                data.to_vec(),
-            ))
-        };
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("eye session lock poisoned".into()))?;
-        match attempt(&mut session) {
-            Ok(out) => Ok(out),
-            Err(e) if self.gpu.load(Ordering::Relaxed) => {
-                eprintln!("eye model failed on the GPU provider ({e}); retrying on CPU");
-                let (cpu, _) = build_session(&self.model, DevicePreference::Cpu)?;
-                *session = cpu;
-                self.gpu.store(false, Ordering::Relaxed);
-                attempt(&mut session)
-            }
-            Err(e) => Err(e),
-        }
+        self.session
+            .run_tensor(tensor, |shape, data| Ok((shape.to_vec(), data.to_vec())))
     }
 }
 

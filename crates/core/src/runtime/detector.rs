@@ -6,8 +6,6 @@
 //! model is only needed to validate end-to-end.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 use ndarray::Array3;
 use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
@@ -20,11 +18,8 @@ use crate::analysis::detector::{
 use crate::analysis::edges;
 use crate::analysis::silhouette;
 use crate::analysis::yolo::{self, SliceMode, YoloConfig};
+use crate::runtime::session::{ort_err, OnnxSession};
 use crate::{CoreError, Result};
-
-fn ort_err(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Other(format!("onnxruntime: {e}"))
-}
 
 /// Which execution provider to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,53 +133,24 @@ pub(crate) fn build_session(
 
 /// A YOLO model session implementing [`SubjectDetector`].
 ///
-/// `Session::run` needs `&mut`, so the session lives behind a mutex. This keeps
-/// the detector `Sync` and lets the pipeline share one instance across threads.
+/// The session (and its GPU→CPU fallback policy) lives in
+/// [`crate::runtime::session::OnnxSession`], which keeps this detector `Sync`
+/// so the pipeline can share one instance across threads.
 pub struct OnnxDetector {
-    session: Mutex<Session>,
-    model: std::path::PathBuf,
+    session: OnnxSession,
     config: YoloConfig,
-    input_name: String,
-    /// True when a GPU execution provider is active (enables sliced inference).
-    gpu: AtomicBool,
 }
 
 impl OnnxDetector {
     /// Load an ONNX model from disk.
     pub fn from_file(model: &Path, config: YoloConfig, device: DevicePreference) -> Result<Self> {
-        let (session, ep) = build_session(model, device)?;
-        let input_name = session
-            .inputs()
-            .first()
-            .map(|i| i.name().to_string())
-            .unwrap_or_else(|| "images".to_string());
-
-        Ok(Self {
-            session: Mutex::new(session),
-            model: model.to_path_buf(),
-            config,
-            input_name,
-            gpu: AtomicBool::new(ep.is_some()),
-        })
+        let session = OnnxSession::load(model, device)?;
+        Ok(Self { session, config })
     }
 
-    /// The active execution provider name, when a GPU EP is in use.
+    /// True while the session runs on a GPU execution provider.
     pub fn is_gpu(&self) -> bool {
-        self.gpu.load(Ordering::Relaxed)
-    }
-
-    fn retry_on_cpu(&self) -> Result<bool> {
-        if !self.gpu.swap(false, Ordering::Relaxed) {
-            return Ok(false);
-        }
-        eprintln!("detector GPU inference failed; rebuilding the session on CPU");
-        let (cpu, _) = build_session(&self.model, DevicePreference::Cpu)?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        *session = cpu;
-        Ok(true)
+        self.session.is_gpu()
     }
 
     pub fn config(&self) -> &YoloConfig {
@@ -205,24 +171,9 @@ impl OnnxDetector {
 
     /// Run the model on one region and map its boxes back to image coordinates.
     ///
-    /// Kept for the single-region fallback path.
+    /// Kept for the single-region fallback path. A GPU-provider failure is
+    /// handled inside [`OnnxSession::run_tensor`].
     fn run_region(
-        &self,
-        rgb: &Array3<u8>,
-        x0: usize,
-        y0: usize,
-        rw: usize,
-        rh: usize,
-        cfg: &YoloConfig,
-    ) -> Result<Vec<Detection>> {
-        match self.run_region_once(rgb, x0, y0, rw, rh, cfg) {
-            Ok(dets) => Ok(dets),
-            Err(_e) if self.retry_on_cpu()? => self.run_region_once(rgb, x0, y0, rw, rh, cfg),
-            Err(e) => Err(e),
-        }
-    }
-
-    fn run_region_once(
         &self,
         rgb: &Array3<u8>,
         x0: usize,
@@ -237,18 +188,9 @@ impl OnnxDetector {
         let ts = cfg.input_size as i64;
         let tensor = Tensor::from_array(([1i64, 3, ts, ts], buf)).map_err(ort_err)?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = match session.run(ort::inputs![self.input_name.clone() => &tensor]) {
-            Ok(outputs) => outputs,
-            Err(e) => return Err(ort_err(e)),
-        };
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
-
-        let mut dets = yolo::decode(data, &dims, &letterbox, cfg);
+        let mut dets = self.session.run_tensor(&tensor, |shape, data| {
+            Ok(yolo::decode(data, shape, &letterbox, cfg))
+        })?;
         for d in dets.iter_mut() {
             if let Some(clamped) = BBox::new(
                 d.bbox.x + x0 as i32,
@@ -286,22 +228,6 @@ impl OnnxDetector {
         img_h: usize,
         cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
-        match self.run_region_batch_once(regions, img_w, img_h, cfg) {
-            Ok(dets) => Ok(dets),
-            Err(_e) if self.retry_on_cpu()? => {
-                self.run_region_batch_once(regions, img_w, img_h, cfg)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn run_region_batch_once(
-        &self,
-        regions: &[RegionInput],
-        img_w: usize,
-        img_h: usize,
-        cfg: &YoloConfig,
-    ) -> Result<Vec<Detection>> {
         let n = regions.len();
         let ts = cfg.input_size as i64;
         let stride = 3 * cfg.input_size as usize * cfg.input_size as usize;
@@ -311,42 +237,33 @@ impl OnnxDetector {
         }
         let tensor = Tensor::from_array(([n as i64, 3, ts, ts], batch)).map_err(ort_err)?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        let outputs = match session.run(ort::inputs![self.input_name.clone() => &tensor]) {
-            Ok(outputs) => outputs,
-            Err(e) => return Err(ort_err(e)),
-        };
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
-        if dims.first().copied().unwrap_or(0) != n {
-            return Err(CoreError::Other(format!(
-                "detector returned batch {} for {} regions",
-                dims.first().copied().unwrap_or(0),
-                n
-            )));
-        }
-
-        let mut all: Vec<Detection> = Vec::new();
-        for (i, r) in regions.iter().enumerate() {
-            let mut dets = yolo::decode_batched(data, &dims, i, &r.letterbox, cfg);
-            for d in dets.iter_mut() {
-                if let Some(clamped) = BBox::new(
-                    d.bbox.x + r.x0 as i32,
-                    d.bbox.y + r.y0 as i32,
-                    d.bbox.w,
-                    d.bbox.h,
-                )
-                .clamp_to(img_w as i32, img_h as i32)
-                {
-                    d.bbox = clamped;
-                }
+        // A GPU-provider failure is handled inside `run_tensor` (one CPU rebuild).
+        self.session.run_tensor(&tensor, |shape, data| {
+            let got = shape.first().copied().unwrap_or(0);
+            if got != n {
+                return Err(CoreError::Other(format!(
+                    "detector returned batch {got} for {n} regions"
+                )));
             }
-            all.extend(dets);
-        }
-        Ok(all)
+            let mut all: Vec<Detection> = Vec::new();
+            for (i, r) in regions.iter().enumerate() {
+                let mut dets = yolo::decode_batched(data, shape, i, &r.letterbox, cfg);
+                for d in dets.iter_mut() {
+                    if let Some(clamped) = BBox::new(
+                        d.bbox.x + r.x0 as i32,
+                        d.bbox.y + r.y0 as i32,
+                        d.bbox.w,
+                        d.bbox.h,
+                    )
+                    .clamp_to(img_w as i32, img_h as i32)
+                    {
+                        d.bbox = clamped;
+                    }
+                }
+                all.extend(dets);
+            }
+            Ok(all)
+        })
     }
 
     /// Run the detector over an explicit list of regions and merge the results.

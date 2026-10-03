@@ -397,6 +397,11 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 - **Refactor Phase 4 (decode limits)**: the ordinary-image byte cap is now a
   shared `decoder::ensure_file_within`, also applied to the thumbnail fallback
   decode (the RAW embedded-preview fast path is unaffected). New test.
+- **Refactor Phase 3 (runtime)**: the GPU→CPU execution-provider fallback was
+  copy-pasted across the detector, species and eye sessions. It is now a single
+  `runtime::session::OnnxSession` wrapper: one CPU rebuild per model instance, a
+  single retry, a typed error if CPU also fails, and the provider flag exposed via
+  `is_gpu()`. Five unit tests drive the transitions with a fake session (no model).
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.

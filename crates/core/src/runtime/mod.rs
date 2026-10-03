@@ -7,6 +7,7 @@
 
 pub mod detector;
 pub mod eye;
+pub(crate) mod session;
 pub mod species;
 
 pub use detector::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
