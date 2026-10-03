@@ -77,8 +77,10 @@ on a 28-core Windows box.
    reworked to avoid nesting.
 9. ⬜ **Disk-space check before analysis** — warn when the cache drive is nearly
    full instead of failing mid-run.
-10. ⬜ **Structured logging** — replace `eprintln!` with `tracing` so GPU-EP and
-    model-loading diagnostics can be leveled and captured.
+10. ✅ **Structured logging** — the runtime desktop diagnostics (GPU/EP selection,
+    provider fallback, detector batch/region failures, model-load failures) now use
+    `tracing`; the CLI and desktop init a subscriber from `RUST_LOG` (default
+    `warn`). The CLI's own user output stays plain `println!`.
 
 ## UX & features (open)
 

@@ -30,6 +30,8 @@ sha2 = "0.10"
 ureq = "3"
 zip = "2"
 trash = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # --- dev ---
 approx = "0.5"

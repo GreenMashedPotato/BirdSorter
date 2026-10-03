@@ -25,6 +25,7 @@ sha2.workspace = true
 ureq.workspace = true
 zip.workspace = true
 trash.workspace = true
+tracing.workspace = true
 rawler = "0.6.0"
 # Pinned exactly: ort-sys 2.0.0-rc.13 stopped publishing x86_64-apple-darwin
 # ONNX Runtime binaries, which breaks Intel macOS. rc.11 targets ORT API 23,

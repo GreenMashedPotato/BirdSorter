@@ -210,7 +210,7 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
         match birdsorter_core::runtime::load_species_classifier(device) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("species model could not be loaded: {e}");
+                tracing::warn!(error = %e, "species model could not be loaded");
                 None
             }
         };
@@ -220,7 +220,7 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
         match birdsorter_core::runtime::load_eye_detector(DevicePreference::Cpu) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("eye model could not be loaded: {e}");
+                tracing::warn!(error = %e, "eye model could not be loaded");
                 None
             }
         };
@@ -426,7 +426,7 @@ pub(crate) fn analyze_folder(
             if force {
                 let conn = open(&db_path)?;
                 let cleared = analysis_store::clear_folder(&conn, folder).map_err(err)?;
-                eprintln!("re-analysing: cleared {cleared} stored result(s)");
+                tracing::info!(cleared, "re-analysing: cleared stored results");
             }
             run_analysis(&app, &db_path, folder, model.as_deref(), &cancel)
         }));

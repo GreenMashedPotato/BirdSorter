@@ -440,6 +440,13 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   a successful install leaves no `.part`). The XMP writer gained tests for a
   malformed sidecar (refused with a clear error and left byte-for-byte intact),
   rating clamping to 0–5, and an idempotent rewrite that leaves no temp file.
+- **Structured logging**: the runtime/desktop diagnostics that used `eprintln!`
+  (GPU execution-provider selection and fallback, detector batch/region failures,
+  species/eye model-load failures, re-analysis clearing) now go through `tracing`.
+  The CLI and desktop install a subscriber driven by `RUST_LOG` (default `warn`),
+  so `RUST_LOG=info birdsorter probe …` shows the chosen provider. The CLI's
+  user-facing output is unchanged (`println!`); a malformed model is now a
+  leveled `warn` instead of raw stderr.
 - **Refactor Phase 7 (import cap)**: a local model import is now size-checked
   (2 GiB) from the file's metadata *before* `std::fs::read`, so an oversized
   `.onnx`/`.zip` can no longer be pulled into memory — the fetcher already capped

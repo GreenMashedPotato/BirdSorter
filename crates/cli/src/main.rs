@@ -60,7 +60,17 @@ Commands:
 "
 }
 
+/// Route `tracing` diagnostics (GPU provider, model loading) to stderr,
+/// honouring `RUST_LOG` (default `warn`). This program's own output stays on
+/// stdout as plain `println!`.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).with_target(false).try_init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("hash") => cmd_hash(&args[1..]),

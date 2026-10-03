@@ -96,14 +96,20 @@ pub(crate) fn build_session(
                     match builder.with_execution_providers([$ep]) {
                         Ok(b) => match b.commit_from_file(model) {
                             Ok(session) => {
-                                eprintln!("compute: {} execution provider", $name);
+                                tracing::info!(provider = $name, "compute: GPU execution provider");
                                 return Ok((session, Some($name.to_string())));
                             }
                             Err(e) => {
-                                eprintln!("{} EP could not run the model ({e}); using CPU", $name)
+                                tracing::warn!(
+                                    provider = $name,
+                                    error = %e,
+                                    "EP could not run the model; using CPU"
+                                );
                             }
                         },
-                        Err(e) => eprintln!("{} EP unavailable ({e}); using CPU", $name),
+                        Err(e) => {
+                            tracing::warn!(provider = $name, error = %e, "EP unavailable; using CPU")
+                        }
                     }
                 }
             }};
@@ -303,16 +309,17 @@ impl OnnxDetector {
                 Ok(dets) => all.extend(dets),
                 Err(batch_err) => {
                     if end - i > 1 {
-                        eprintln!(
-                            "detector batch of {} failed ({batch_err}); falling back per region",
-                            end - i
+                        tracing::warn!(
+                            regions = end - i,
+                            error = %batch_err,
+                            "detector batch failed; falling back per region"
                         );
                     }
                     for r in &inputs[i..end] {
                         match self.run_region(rgb, r.x0, r.y0, region_w(r), region_h(r), cfg) {
                             Ok(dets) => all.extend(dets),
                             Err(e) => {
-                                eprintln!("detector region failed ({},{}): {e}", r.x0, r.y0)
+                                tracing::warn!(x = r.x0, y = r.y0, error = %e, "detector region failed")
                             }
                         }
                     }
