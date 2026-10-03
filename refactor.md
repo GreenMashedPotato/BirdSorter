@@ -25,7 +25,8 @@ Do not change the application version; it remains `0.1.0`.
 - **Phase 2** analysis stages extracted into `pipeline::stages` (`select_subject`,
   `classify_species`, `subject_first`): started; `analyze_one` now orchestrates
 - **Phase 4** model downloads: timeouts + response-size cap + pinned-checksum
-  requirement for remote artifacts: done
+  requirement for remote artifacts: done; XMP attribute matching now tolerates
+  single quotes and whitespace: done
 - **Phase 5** desktop split: `util.rs` (err/open/blocking), `state.rs`
   (`AppState`), `models.rs` (model-manager commands), and `annotations.rs`
   (species/labels/undo/eye-points) extracted: in progress
