@@ -250,6 +250,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cd ui
 npm run check
+npm test
 npm run build
 ```
 

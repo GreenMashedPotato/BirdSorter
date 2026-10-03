@@ -46,7 +46,9 @@ Do not change the application version; it remains `0.1.0`.
   cleanup on unmount: done. Component split started: `AppToolbar`, `FilterBar`,
   `LabelBar` and `PhotoGrid` are extracted from `App.svelte` (markup only — the
   state, derived values and the grid DOM ref stay in `App`); the review view and
-  the modals are still inline
+  the modals are still inline. The **vitest + @testing-library/svelte harness**
+  is in place (`ui/vitest.config.ts`, `npm test`) with component tests for the
+  extracted pieces, so the review extraction can be guarded by tests
 - **Phase 7** security/resource tests: the model-registry controls are now
   covered for ZIP traversal/escape, unexpected/duplicate/missing entries and the
   entry-count cap (previously only the happy path was tested): started
@@ -123,7 +125,7 @@ Before editing:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
-cd ui; npm run check; npm run build
+cd ui; npm run check; npm test; npm run build
 ```
 
 Record the baseline. Do not proceed if the baseline is not understood.
@@ -391,5 +393,5 @@ Do not package an installer unless all gates pass:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
-cd ui; npm run check; npm run build
+cd ui; npm run check; npm test; npm run build
 ```
