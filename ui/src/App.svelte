@@ -46,7 +46,6 @@
     onProgress,
     onDone,
     onError,
-    FILTERS,
     matchesFilter,
     type FolderInfo,
     type FileEntry,
@@ -61,6 +60,10 @@
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
   import About from "./lib/About.svelte";
+  import AppToolbar from "./lib/AppToolbar.svelte";
+  import FilterBar from "./lib/FilterBar.svelte";
+  import LabelBar from "./lib/LabelBar.svelte";
+  import PhotoGrid from "./lib/PhotoGrid.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
@@ -1438,10 +1441,6 @@
     }
   }
 
-  function scoreText(f: FileEntry): string {
-    return f.score === null ? "" : f.score.toFixed(2);
-  }
-
   onMount(async () => {
     // Review-view keyboard shortcuts (J/K navigate, Esc closes, +/-/0 zoom).
     // Ignore them while the user is typing in a field, otherwise Backspace in
@@ -1627,40 +1626,21 @@
   </aside>
 
   <main class="main">
-    <div class="toolbar">
-      <button onclick={rescan} disabled={busy || activeFolder === null}>Rescan</button>
-      <button class="primary" onclick={analyze} disabled={busy || activeFolder === null}>
-        Analyze
-      </button>
-      <button
-        onclick={reanalyzeAll}
-        disabled={busy || activeFolder === null}
-        title="Delete stored results and analyse every file again (after tuning detection or scoring)"
-      >
-        Re-analyze all
-      </button>
-      <button onclick={cancel} disabled={!busy}>Cancel</button>
-      <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
-      <button onclick={openSettings} title="Scoring settings">Settings</button>
-      <button onclick={() => (showModels = true)} title="Manage models">Models</button>
-      <button onclick={retrain} title="Train a model from your labels">Retrain</button>
-      <button
-        onclick={exportKeepersFlow}
-        disabled={busy || activeFolder === null}
-        title="Copy every file labelled Sharp into a folder"
-      >
-        Export keepers…
-      </button>
-      <button
-        onclick={keepBurstWinners}
-        disabled={busy || activeFolder === null}
-        title="Label the sharpest frame of each burst as Sharp (skips files you already labelled)"
-      >
-        Keep burst winners
-      </button>
-      <div class="spacer"></div>
-      <span class="status">{status}</span>
-    </div>
+    <AppToolbar
+      {busy}
+      hasFolder={activeFolder !== null}
+      {status}
+      bind:model
+      onRescan={rescan}
+      onAnalyze={analyze}
+      onReanalyzeAll={reanalyzeAll}
+      onCancel={cancel}
+      onOpenSettings={openSettings}
+      onOpenModels={() => (showModels = true)}
+      onRetrain={retrain}
+      onExportKeepers={exportKeepersFlow}
+      onKeepBurstWinners={keepBurstWinners}
+    />
 
     {#if progress}
       <div class="progress">
@@ -1682,57 +1662,23 @@
       </div>
     {/if}
 
-    <div class="chips">
-      {#each FILTERS as f (f.key)}
-        <button class="chip" class:active={filter === f.key} onclick={() => (filter = f.key)}>
-          {f.label}
-        </button>
-      {/each}
-      <div class="spacer"></div>
-      <span class="status">{visible.length} shown · {selected.size} selected</span>
-      <button
-        onclick={() => setSelected(new Set(visible.map((f) => f.id)))}
-        disabled={visible.length === 0}>Select all</button
-      >
-    </div>
+    <FilterBar
+      bind:filter
+      shown={visible.length}
+      selectedCount={selected.size}
+      onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
+    />
 
-    <div class="toolbar">
-      <span class="status">Mark selected:</span>
-      <button onclick={() => applyLabel("sharp")} disabled={selected.size === 0}>Sharp</button>
-      <button onclick={() => applyLabel("blurry")} disabled={selected.size === 0}>Blurry</button>
-      <button onclick={() => applyLabel("bokeh_ok")} disabled={selected.size === 0}>Bokeh OK</button>
-      <button onclick={() => applyLabel("reject")} disabled={selected.size === 0}>Reject</button>
-      <button onclick={trashSelected} disabled={selected.size === 0} title="Move to the OS trash">
-        Delete
-      </button>
-      <span class="stars" title="Rate the selection">
-        {#each [1, 2, 3, 4, 5] as v (v)}
-          <button
-            class="star"
-            disabled={selected.size === 0}
-            onclick={() => rateSelected(v)}
-            title="{v} star{v > 1 ? 's' : ''}"
-          >
-            ★
-          </button>
-        {/each}
-      </span>
-      <div class="spacer"></div>
-      <button
-        onclick={autoStar}
-        disabled={busy || activeFolder === null}
-        title="Rate every analysed file from its verdict (sharp 5 … no subject 0)"
-      >
-        Auto-star
-      </button>
-      <button
-        onclick={resetStars}
-        disabled={busy || activeFolder === null}
-        title="Clear every star in this folder"
-      >
-        Reset stars
-      </button>
-    </div>
+    <LabelBar
+      selectedCount={selected.size}
+      {busy}
+      hasFolder={activeFolder !== null}
+      onLabel={applyLabel}
+      onTrash={trashSelected}
+      onRate={rateSelected}
+      onAutoStar={autoStar}
+      onResetStars={resetStars}
+    />
 
     <div
       class="grid"
@@ -1741,74 +1687,23 @@
         if (gridEl) gridScrollTop = gridEl.scrollTop;
       }}
     >
-      {#if visible.length === 0}
-        <div class="empty">
-          {activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
-        </div>
-      {:else}
-        <div style="height:{topPad}px"></div>
-        <div class="grid-row" style="grid-template-columns: repeat({cols}, minmax(0, 1fr))">
-          {#each slice as f, j (f.id)}
-            {@const idx = firstRow * cols + j}
-            <div
-              class="tile"
-              class:selected={selected.has(f.id)}
-              class:focused={focusIndex === idx}
-              role="button"
-              tabindex="0"
-              data-idx={idx}
-              onclick={() => {
-                focusIndex = idx;
-                toggle(f.id);
-              }}
-              onfocus={() => (focusIndex = idx)}
-              onkeydown={(e) => onTileKey(e, idx, f.id)}
-              ondblclick={() => openReview(f.id)}
-            >
-              <div class="thumb">
-                {#if thumbs[f.id]}
-                  <img src={thumbs[f.id]} alt={f.filename} loading="lazy" />
-                {/if}
-              </div>
-              <div class="meta">
-                <span class="name" title={f.filename}>{f.filename}</span>
-                <span class="stars tile-stars" title="Click a star to rate">
-                  {#each [1, 2, 3, 4, 5] as v (v)}
-                    <button
-                      class="star"
-                      class:on={f.rating >= v}
-                      title="{v} star{v > 1 ? 's' : ''}"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        rateOne(f.id, f.rating === v ? 0 : v);
-                      }}
-                      onkeydown={(e) => e.stopPropagation()}
-                      ondblclick={(e) => e.stopPropagation()}
-                    >
-                      ★
-                    </button>
-                  {/each}
-                </span>
-                {#if burstInfo[f.id]}
-                  <span
-                    class="badge burst"
-                    class:winner={burstInfo[f.id].best}
-                    title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
-                    >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
-                  >
-                {/if}
-                {#if f.predicted}
-                  <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
-                  <span class="status">{scoreText(f)}</span>
-                {:else}
-                  <span class="badge none">—</span>
-                {/if}
-              </div>
-            </div>
-          {/each}
-        </div>
-        <div style="height:{bottomPad}px"></div>
-      {/if}
+      <PhotoGrid
+        {slice}
+        {cols}
+        {topPad}
+        {bottomPad}
+        {firstRow}
+        {thumbs}
+        {selected}
+        {focusIndex}
+        {burstInfo}
+        emptyText={activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
+        onFocus={(i) => (focusIndex = i)}
+        onToggle={toggle}
+        onOpen={openReview}
+        onRate={rateOne}
+        onKey={onTileKey}
+      />
     </div>
   </main>
 
