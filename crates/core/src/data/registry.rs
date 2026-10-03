@@ -497,6 +497,26 @@ mod tests {
     }
 
     #[test]
+    fn a_leftover_part_file_is_not_a_usable_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"weights";
+        let spec = single_file_spec("https://example/m.onnx", payload);
+        // A download interrupted between writing `.part` and renaming.
+        std::fs::write(dir.path().join("test.onnx.part"), payload).unwrap();
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn a_successful_install_leaves_no_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"weights";
+        let spec = single_file_spec("https://example/m.onnx", payload);
+        install_bytes(dir.path(), &spec, payload).unwrap();
+        assert!(dir.path().join("test.onnx").is_file());
+        assert!(!dir.path().join("test.onnx.part").exists());
+    }
+
+    #[test]
     fn zip_bundle_installs_all_files() {
         let dir = tempfile::tempdir().unwrap();
         let zip = zip_bundle(

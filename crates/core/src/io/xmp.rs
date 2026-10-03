@@ -222,4 +222,47 @@ mod tests {
         assert!(text.contains("xmp:Rating=\"2\""));
         assert!(!text.contains("xmp:Rating=\"5\""));
     }
+
+    #[test]
+    fn a_malformed_sidecar_is_refused_and_left_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        let sidecar = sidecar_path(&raw);
+        std::fs::write(&sidecar, "not really xmp").unwrap();
+
+        let err = write_rating(&raw, 3).unwrap_err();
+        assert!(err.to_string().contains("refusing to overwrite"), "{err}");
+        // The user's file must survive verbatim.
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "not really xmp");
+    }
+
+    #[test]
+    fn the_rating_is_clamped_to_five() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        write_rating(&raw, 9).unwrap();
+        let text = std::fs::read_to_string(sidecar_path(&raw)).unwrap();
+        assert!(text.contains("xmp:Rating=\"5\""), "{text}");
+    }
+
+    #[test]
+    fn rewriting_the_same_rating_is_a_no_op_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        write_rating(&raw, 4).unwrap();
+        let sidecar = sidecar_path(&raw);
+        let before = std::fs::read_to_string(&sidecar).unwrap();
+
+        write_rating(&raw, 4).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), before);
+        // Only the RAW and its sidecar remain (no `.xmp.tmp.*`).
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+    }
 }
