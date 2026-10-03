@@ -1,0 +1,105 @@
+# Troubleshooting
+
+Practical fixes for the things that go wrong. If you report a bug, include the
+exact command and its output.
+
+## First stops
+
+- **Diagnostics are leveled now** (`tracing`). Run the CLI with `RUST_LOG`:
+  ```bash
+  RUST_LOG=info  birdsorter probe shot.CR3      # chosen execution provider, etc.
+  RUST_LOG=debug birdsorter analyze <folder>    # per-region detector details
+  ```
+  Default is `warn`. The desktop build has no console in release; its panics are
+  appended to `<user data>\BirdSorter\data\crash.log` (see `ARCHITECTURE.md` §6).
+- **Always run the app in `--release`.** Debug RAW decode is ~10× slower and
+  looks like a hang: `cargo run --release -p birdsorter-desktop`.
+
+## Compute / GPU
+
+**The app is CPU-first and always falls back to CPU.** A GPU execution provider
+is used only when it initialises *and* can run the model; a runtime failure
+rebuilds the session on CPU once and retries.
+
+- To see which provider is active: `RUST_LOG=info birdsorter probe <file>`
+  prints `compute: GPU execution provider provider="DirectML"` (or nothing on
+  CPU). The Settings ▸ **Compute device** selector (`cpu` / `auto` / `gpu`)
+  controls the preference; **CPU is the default** because these models are small
+  and a GPU EP's overhead can make them *slower* (measured ~1.7× slower for the
+  detector on one machine).
+- **DirectML cannot run the iNaturalist ConvNeXt** (`Reshape` node crashes the
+  DML provider). The species classifier detects this, rebuilds on CPU, and
+  continues — so leaving the device on `auto` is safe.
+- **macOS CoreML is unverified** — see `MACOS_TODO.md`.
+
+## Models
+
+- **Detection works out of the box** — the YOLO11n detector is bundled and
+  seeded into the model directory on first run.
+- **Species ID needs a model**: Models ▸ **Install from file…** a
+  `.zip` bundle (or `.onnx` + `${BIRDSORTER}_labels.json/meta.json`). Models live
+  in `<user data>\BirdSorter\data\models\` (`BIRDSORTER_MODEL_DIR` overrides).
+- **"model failed to load"** usually means a truncated download or a newer
+  opset than the bundled ONNX Runtime supports — re-export at a lower opset
+  (see `MODELS.md`).
+- **`ort` is pinned to `=2.0.0-rc.11`** on purpose (rc.13 dropped Intel-macOS
+  binaries). Don't widen it without testing on a Mac.
+
+## Slow analysis
+
+- **No species model / small images are fast**; the two big costs are RAW decode
+  and, if installed, the species model (~350 ms per crop on CPU, fp32 818 MB).
+- **Distant birds**: Settings ▸ **Distant birds** (`off` / `smart` / `always`).
+  `smart` (default) only tiles frames where the full-frame pass found nothing.
+  `always` is thorough but slow.
+- Analysis resolution is fixed at long-side **2400**; grid thumbnails are 512.
+- The species classifier skips crops smaller than **110 px**, so distant specks
+  never reach it.
+
+## Results look stale
+
+After changing detection/scoring, **Analyze** offers to recompute; or use
+**Re-analyze all** in the toolbar. CLI: `birdsorter analyze <folder> --force`
+(keeps your labels). Replacing a RAW's bytes and rescanning marks it pending
+automatically (analysis is tied to the file's content hash).
+
+## Scan / analysis seems stuck
+
+Scanning hashes every file (e.g. ~3537 photos / 76 GB ≈ 3 min at ~410 MB/s) and
+streams a progress bar with a **Stop** button. A panic anywhere in decode/analysis
+is caught and surfaced (and logged to `crash.log`) rather than leaving
+"analysing…" forever.
+
+## Thumbnails & cache
+
+- The thumbnail/preview cache is keyed by content hash and lives in one shared
+  directory (see `ARCHITECTURE.md` §6).
+- `birdsorter cleancache` prunes entries no longer referenced by the **default**
+  library. ⚠️ The cache is **not** tied to a database: running it with a
+  different `--db` prunes the default cache using that library's hashes. To
+  target a specific directory (e.g. tests/CI), use `--cache <dir>`; the command
+  always prints the directory it is pruning.
+- Enlarging a folder? Thumbnails regenerate on demand; only browsing is slower
+  until then.
+
+## Deleting and undo
+
+- Delete moves files to the **OS recycle bin / Trash** (never unlinks).
+- **Undo (Ctrl+Z)** reverts the last *label* action. Trash is a real OS move and
+  is not undoable in-app.
+
+## Settings location gotcha
+
+Settings live under `<user data>\BirdSorter\config\`. A legacy
+`"slice_grid": 1` meant "no tiling" and silently defeated the two-phase
+detector; the current `SliceMode` treats any fallback grid below 2 as the
+default (6).
+
+## Platform-specific
+
+- **macOS** (CoreML, `.app`/`.dmg`, notarization, HEIC): `MACOS_TODO.md`.
+- **Signing / Gatekeeper / SmartScreen**: `SIGNING.md` (Windows signing is wired
+  and needs a certificate; macOS needs an Apple Developer account).
+- **CI shows "recent account payments have failed"**: that's GitHub Actions
+  billing on a private repo, not the code — raise the spending limit or make the
+  repo public (`progress.md`).
