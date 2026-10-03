@@ -156,9 +156,10 @@ impl EyeDetector for OnnxEyeDetector {
             [_, k, h, w] => (*k, *h, *w),
             [k, h, w] => (*k, *h, *w),
             _ => {
-                return Err(CoreError::Other(format!(
-                    "eye model returned an unexpected output shape {dims:?}"
-                )))
+                return Err(CoreError::inference(
+                    "eye",
+                    format!("model returned an unexpected output shape {dims:?}"),
+                ))
             }
         };
         if classes == 0 || h == 0 || w == 0 {

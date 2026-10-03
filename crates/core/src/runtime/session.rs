@@ -113,7 +113,7 @@ impl OnnxSession {
                 f(&dims, data)
             },
         )
-        .map_err(|e| CoreError::Other(format!("inference failed for {}: {e}", self.label)))
+        .map_err(|e| CoreError::inference(&self.label, e.to_string()))
     }
 }
 

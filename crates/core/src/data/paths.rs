@@ -36,7 +36,7 @@ pub fn portable_root() -> Option<PathBuf> {
 
 fn project_dirs() -> Result<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))
+        .ok_or_else(|| CoreError::config("no platform user-data directory"))
 }
 
 /// Data directory: the portable root, else the platform data dir.
