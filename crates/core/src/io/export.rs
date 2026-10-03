@@ -26,6 +26,47 @@ impl ExportMode {
     }
 }
 
+/// How exported files are arranged under the destination folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportLayout {
+    /// Everything directly in the destination (default).
+    #[default]
+    Flat,
+    /// One subfolder per capture day (`YYYY-MM-DD`); files without a usable
+    /// capture time go to `_no_date/`.
+    ByDate,
+}
+
+impl ExportLayout {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "flat" | "none" => Some(ExportLayout::Flat),
+            "date" | "by-date" | "day" => Some(ExportLayout::ByDate),
+            _ => None,
+        }
+    }
+}
+
+/// `"2026-01-02T10:00:00"` → `"2026-01-02"`; anything unusable → `"_no_date"`.
+fn capture_day(captured: Option<&str>) -> String {
+    captured
+        .and_then(|t| t.get(..10))
+        .filter(|d| d.len() == 10)
+        .unwrap_or("_no_date")
+        .to_string()
+}
+
+/// The subfolder an export lands in (`""` for the flat layout).
+fn layout_folder(layout: ExportLayout, src: &Path) -> String {
+    match layout {
+        ExportLayout::Flat => String::new(),
+        ExportLayout::ByDate => {
+            let captured = crate::io::exif::capture_time(src);
+            capture_day(captured.as_deref())
+        }
+    }
+}
+
 /// Outcome of an export run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExportReport {
@@ -61,10 +102,20 @@ fn unique_target(dir: &Path, name: &str) -> PathBuf {
     ))
 }
 
-/// Copy or move `files` into `dest`, creating it if needed.
+/// Copy or move `files` into `dest` (flat layout).
+pub fn export_files(files: &[PathBuf], dest: &Path, mode: ExportMode) -> Result<ExportReport> {
+    export_files_with(files, dest, mode, ExportLayout::Flat)
+}
+
+/// Copy or move `files` into `dest`, arranging them per `layout`.
 ///
 /// Missing sources are reported per-file rather than aborting the run.
-pub fn export_files(files: &[PathBuf], dest: &Path, mode: ExportMode) -> Result<ExportReport> {
+pub fn export_files_with(
+    files: &[PathBuf],
+    dest: &Path,
+    mode: ExportMode,
+    layout: ExportLayout,
+) -> Result<ExportReport> {
     std::fs::create_dir_all(dest).map_err(|e| CoreError::io(dest, e))?;
     let mut report = ExportReport {
         destination: dest.to_path_buf(),
@@ -84,7 +135,17 @@ pub fn export_files(files: &[PathBuf], dest: &Path, mode: ExportMode) -> Result<
                 .push((src.clone(), "no file name".to_string()));
             continue;
         };
-        let target = unique_target(dest, &name);
+        let sub = layout_folder(layout, src);
+        let dir = if sub.is_empty() {
+            dest.to_path_buf()
+        } else {
+            dest.join(sub)
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            report.failed.push((src.clone(), e.to_string()));
+            continue;
+        }
+        let target = unique_target(&dir, &name);
         let result = match mode {
             ExportMode::Copy => std::fs::copy(src, &target).map(|_| ()),
             // `rename` is atomic but fails across filesystems; fall back to
@@ -199,5 +260,37 @@ mod tests {
         }
         let t = unique_target(dir.path(), "a.cr3");
         assert_eq!(t.file_name().unwrap().to_string_lossy(), "a (5).cr3");
+    }
+
+    #[test]
+    fn capture_day_trims_and_falls_back() {
+        assert_eq!(capture_day(Some("2026-01-02T10:00:00")), "2026-01-02");
+        assert_eq!(capture_day(None), "_no_date");
+        assert_eq!(capture_day(Some("bad")), "_no_date");
+    }
+
+    #[test]
+    fn layout_parses_known_names() {
+        assert_eq!(ExportLayout::parse("date"), Some(ExportLayout::ByDate));
+        assert_eq!(ExportLayout::parse("by-date"), Some(ExportLayout::ByDate));
+        assert_eq!(ExportLayout::parse("flat"), Some(ExportLayout::Flat));
+        assert_eq!(ExportLayout::parse(""), Some(ExportLayout::Flat));
+        assert_eq!(ExportLayout::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn by_date_splits_into_day_subfolders() {
+        // Synthetic files carry no EXIF, so they land in the `_no_date` bucket.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "a.jpg", "x");
+        let b = write(src.path(), "b.jpg", "y");
+
+        let report =
+            export_files_with(&[a, b], dst.path(), ExportMode::Copy, ExportLayout::ByDate).unwrap();
+        assert_eq!(report.exported, 2);
+        assert!(report.failed.is_empty());
+        assert!(dst.path().join("_no_date").join("a.jpg").is_file());
+        assert!(dst.path().join("_no_date").join("b.jpg").is_file());
     }
 }

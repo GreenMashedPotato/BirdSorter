@@ -44,6 +44,7 @@ Commands:
   export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
       --label <name>            Which label to export (default: sharp)
       --move                    Move instead of copy
+      --by flat|date            flat (default) or one folder per capture day
       --db <path>               Override the library database location
   export-eyelabels --out <file.jsonl> [--db <path>]  Dump eye/head keypoints for training
   train [--db <path>]         Train a verdict model from your labels
@@ -483,12 +484,13 @@ fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()
 /// Export keepers to a destination folder.
 fn cmd_export(args: &[String]) -> ExitCode {
     use birdsorter_core::data::labels::UserLabel;
-    use birdsorter_core::io::export::{export_files, ExportMode};
+    use birdsorter_core::io::export::{export_files_with, ExportLayout, ExportMode};
 
     let mut positional: Vec<String> = Vec::new();
     let mut label = "sharp".to_string();
     let mut predicted: Option<String> = None;
     let mut mode = ExportMode::Copy;
+    let mut layout = ExportLayout::Flat;
     let mut db_path: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -512,6 +514,15 @@ fn cmd_export(args: &[String]) -> ExitCode {
             },
             "--move" => mode = ExportMode::Move,
             "--copy" => mode = ExportMode::Copy,
+            // Arrange the destination: flat (default) or one folder per capture day.
+            "--by" => match it.next().and_then(|v| ExportLayout::parse(v)) {
+                Some(l) => layout = l,
+                None => {
+                    eprintln!("export: --by needs flat|date");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--by-date" => layout = ExportLayout::ByDate,
             "--db" => db_path = it.next().cloned(),
             other if other.starts_with("--") => {
                 eprintln!("export: unknown option {other}");
@@ -522,7 +533,7 @@ fn cmd_export(args: &[String]) -> ExitCode {
     }
     let (Some(folder), Some(dest)) = (positional.first(), positional.get(1)) else {
         eprintln!(
-            "export: usage: export <folder> <dest> [--label sharp] [--predicted sharp] [--move] [--db <path>]"
+            "export: usage: export <folder> <dest> [--label sharp] [--predicted sharp] [--move] [--by flat|date] [--db <path>]"
         );
         return ExitCode::FAILURE;
     };
@@ -557,7 +568,7 @@ fn cmd_export(args: &[String]) -> ExitCode {
             return Ok(());
         }
         let paths: Vec<std::path::PathBuf> = files.into_iter().map(|f| f.absolute_path).collect();
-        let report = export_files(&paths, Path::new(dest), mode)?;
+        let report = export_files_with(&paths, Path::new(dest), mode, layout)?;
         println!(
             "exported {} file(s) to {}",
             report.exported,
