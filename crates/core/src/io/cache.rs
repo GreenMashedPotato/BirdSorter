@@ -12,6 +12,29 @@ use crate::{CoreError, Result};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Crashed writes are `{key}.thumb.tmp.{pid}.{seq}`, or a leftover `*.tmp`.
+fn is_stale_temp(name: &str) -> bool {
+    name.ends_with(".tmp") || name.contains(".thumb.tmp.")
+}
+
+/// Content hash encoded in a cache file name, if this looks like one.
+///
+/// `abcd.thumb` → `abcd`. `abcd@512.thumb` → `abcd`. Anything else is not a
+/// cache entry (temps and stray files are dropped by [`ThumbCache::retain`]).
+fn content_hash_of(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".thumb")?;
+    let hash = match stem.split_once('@') {
+        Some((hash, size)) if !hash.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) => hash,
+        Some(_) => return None,
+        None => stem,
+    };
+    if hash.is_empty() {
+        None
+    } else {
+        Some(hash)
+    }
+}
+
 /// Default cache directory: `<user data>/BirdSorter/thumbs`.
 pub fn default_cache_dir() -> Result<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
@@ -19,7 +42,7 @@ pub fn default_cache_dir() -> Result<PathBuf> {
     Ok(dirs.cache_dir().join("thumbs"))
 }
 
-/// A directory of `<hash>.thumb` files.
+/// A directory of `<hash>.thumb` and `<hash>@<long_side>.thumb` files.
 #[derive(Debug, Clone)]
 pub struct ThumbCache {
     root: PathBuf,
@@ -76,10 +99,11 @@ impl ThumbCache {
     }
 
     /// Remove entries whose content hash is no longer in `live`, plus any stale
-    /// `.tmp` files. Returns how many files were deleted.
+    /// temp files. Returns how many files were deleted.
     ///
-    /// This is the cache GC: thumbnails are keyed by content hash, so deleting a
-    /// file (or removing a folder) orphans its entry forever otherwise.
+    /// Cache files are `{hash}.thumb` or `{hash}@{long_side}.thumb` (thumbnails
+    /// and previews share the directory). Comparing the whole stem to `live`
+    /// would treat every sized render as an orphan and wipe the cache.
     pub fn retain(&self, live: &std::collections::HashSet<String>) -> Result<usize> {
         let mut removed = 0;
         let Ok(entries) = std::fs::read_dir(&self.root) else {
@@ -90,14 +114,11 @@ impl ThumbCache {
             if !path.is_file() {
                 continue;
             }
-            // Left-behind temp files from a crashed write are always stale.
-            let stale_tmp = path.extension().map(|e| e == "tmp").unwrap_or(false);
-            let keep = !stale_tmp
-                && path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|stem| live.contains(stem))
-                    .unwrap_or(false);
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let keep = !is_stale_temp(name)
+                && content_hash_of(name).is_some_and(|hash| live.contains(hash));
             if !keep && std::fs::remove_file(&path).is_ok() {
                 removed += 1;
             }
@@ -195,6 +216,33 @@ mod tests {
         assert!(cache.get("keep2").is_some());
         assert!(cache.get("orphan").is_none());
         assert!(!dir.path().join("half.thumb.tmp").exists());
+    }
+
+    #[test]
+    fn retain_keeps_sized_render_keys_and_drops_orphans_and_write_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path());
+        let live_hash = "0123456789abcdef";
+        let dead_hash = "fedcba9876543210";
+        cache.put(&format!("{live_hash}@512"), b"thumb").unwrap();
+        cache.put(&format!("{live_hash}@2400"), b"preview").unwrap();
+        cache.put(&format!("{dead_hash}@512"), b"orphan").unwrap();
+        // Production temp name from `put`: `{key}.thumb.tmp.{pid}.{seq}`.
+        std::fs::write(
+            dir.path().join(format!("{live_hash}@512.thumb.tmp.1.2")),
+            b"partial",
+        )
+        .unwrap();
+
+        let live = std::collections::HashSet::from([live_hash.to_string()]);
+        assert_eq!(cache.retain(&live).unwrap(), 2);
+        assert!(cache.get(&format!("{live_hash}@512")).is_some());
+        assert!(cache.get(&format!("{live_hash}@2400")).is_some());
+        assert!(cache.get(&format!("{dead_hash}@512")).is_none());
+        assert!(!dir
+            .path()
+            .join(format!("{live_hash}@512.thumb.tmp.1.2"))
+            .exists());
     }
 
     #[test]

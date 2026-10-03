@@ -19,7 +19,9 @@ pub fn thumbnail_bytes(path: &Path, max_dim: u32) -> Result<Vec<u8>> {
     if let Ok(bytes) = super::raw::encode_thumbnail(path, max_dim) {
         return Ok(bytes);
     }
-    // Fallback: decode a normal image file.
+    // Fallback: decode a normal image file. Same byte cap as the analysis
+    // decoder — `image::open` would otherwise read an unbounded JPEG/PNG.
+    super::decoder::ensure_file_within(path, super::decoder::MAX_IMAGE_FILE_BYTES)?;
     let img = image::open(path)
         .map_err(|e| CoreError::raw_decode(path, format!("thumbnail decode: {e}")))?;
     encode_jpeg(&img, max_dim)

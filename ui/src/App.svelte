@@ -80,18 +80,22 @@
   const requested = new Set<number>();
   const thumbQueue: number[] = [];
   let inflight = 0;
+  let thumbGeneration = 0;
   const MAX_INFLIGHT = 4;
 
   function pumpThumbs() {
     while (inflight < MAX_INFLIGHT && thumbQueue.length > 0) {
       const id = thumbQueue.shift()!;
+      const generation = thumbGeneration;
       inflight++;
       getThumbnail(id)
         .then((url) => {
+          // A folder switch bumps the generation; don't keep the old JPEG.
+          if (generation !== thumbGeneration) return;
           thumbs = { ...thumbs, [id]: url };
         })
         .catch(() => {
-          requested.delete(id); // allow a later retry
+          if (generation === thumbGeneration) requested.delete(id); // allow a later retry
         })
         .finally(() => {
           inflight--;
@@ -110,6 +114,7 @@
     thumbs = {};
     requested.clear();
     thumbQueue.length = 0;
+    thumbGeneration++;
   }
   let status = $state("");
   let busy = $state(false);
@@ -599,8 +604,11 @@
     return g.best !== id && cands.includes(g.best) ? g.best : cands[0];
   }
 
+  let compareRequest = 0;
+
   async function renderCompare() {
     const id = compareId;
+    const request = ++compareRequest;
     if (id === null) {
       compareUrl = "";
       compareDetail = null;
@@ -609,11 +617,13 @@
     try {
       const nextDetail = await analysisDetail(id);
       const nextUrl = await previewImage(id, previewMode);
-      // Ignore a stale response if the compared frame changed while loading.
-      if (compareId !== id) return;
+      // Ignore a stale response if the compared frame changed (including
+      // A → B → A, which an id check alone would accept).
+      if (request !== compareRequest || compareId !== id) return;
       compareDetail = nextDetail;
       compareUrl = nextUrl;
     } catch (e) {
+      if (request !== compareRequest) return;
       status = `error: ${e}`;
     }
   }
@@ -894,9 +904,11 @@
       if (request !== reviewRequest || reviewFile !== id) return;
       previewUrl = nextPreview;
     } catch (e) {
+      if (request !== reviewRequest) return;
       status = `error: ${e}`;
     } finally {
-      previewLoading = false;
+      // A newer navigation owns the spinner; don't clear it from a stale load.
+      if (request === reviewRequest) previewLoading = false;
     }
     if (request === reviewRequest && compareOn && compareId !== null) await renderCompare();
   }
