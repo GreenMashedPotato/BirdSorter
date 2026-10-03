@@ -35,6 +35,7 @@
     matchesFilter,
     type FolderInfo,
     type FileEntry,
+    type ExportLayout,
     type FilterKey,
     type UserLabel,
     type ScoreSettings,
@@ -50,6 +51,7 @@
   import LabelBar from "./lib/LabelBar.svelte";
   import PhotoGrid from "./lib/PhotoGrid.svelte";
   import Review from "./lib/Review.svelte";
+  import ExportDialog from "./lib/ExportDialog.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { preferredDropPath } from "./lib/dnd";
@@ -208,6 +210,7 @@
   let showModels = $state(false);
   let showAbout = $state(false);
   let showBreakdown = $state(false);
+  let showExport = $state(false);
   let breakdown = $state<Breakdown | null>(null);
 
   async function openBreakdown() {
@@ -639,10 +642,13 @@
     }
   }
 
-  /// Copy keepers into a folder the user picks. Prefers the user's own "Sharp"
-  /// labels; falls back to the scorer's "sharp" verdicts when none exist.
-  async function exportKeepersFlow() {
+  /// Copy keepers into a folder the user picks, arranged per the export dialog.
+  /// Prefers the user's own "Sharp" labels; falls back to the scorer's "sharp"
+  /// verdicts when none exist.
+  async function runExportKeepers(opts: { layout: ExportLayout; rename: string }) {
+    showExport = false;
     if (activeFolder === null || !inTauri) return;
+    const rename = opts.rename || undefined;
     try {
       const dest = await openDialog({
         directory: true,
@@ -651,13 +657,23 @@
       });
       if (typeof dest !== "string") return;
       status = "exporting…";
-      let r = await exportKeepers(activeFolder, dest, { label: "sharp", mode: "copy" });
+      let r = await exportKeepers(activeFolder, dest, {
+        label: "sharp",
+        mode: "copy",
+        layout: opts.layout,
+        rename,
+      });
       if (r.exported === 0) {
         const usePredicted = confirm(
           "No files are labelled Sharp.\n\nExport the files the scorer rated sharp instead?",
         );
         if (usePredicted) {
-          r = await exportKeepers(activeFolder, dest, { predicted: "sharp", mode: "copy" });
+          r = await exportKeepers(activeFolder, dest, {
+            predicted: "sharp",
+            mode: "copy",
+            layout: opts.layout,
+            rename,
+          });
         }
       }
       status = r.exported
@@ -891,7 +907,7 @@
       onOpenSettings={openSettings}
       onOpenModels={() => (showModels = true)}
       onRetrain={retrain}
-      onExportKeepers={exportKeepersFlow}
+      onExportKeepers={() => (showExport = true)}
       onKeepBurstWinners={keepBurstWinners}
     />
 
@@ -1010,5 +1026,9 @@
         await openSettings();
       }}
     />
+  {/if}
+
+  {#if showExport}
+    <ExportDialog onClose={() => (showExport = false)} onExport={runExportKeepers} />
   {/if}
 </div>

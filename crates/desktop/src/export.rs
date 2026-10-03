@@ -1,12 +1,14 @@
 //! Export commands: copy/move the keepers in a folder, or a single review file.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use birdsorter_core::data::{labels, library};
-use birdsorter_core::io::export::{export_files, ExportMode};
+use birdsorter_core::data::{analysis_store, labels, library};
+use birdsorter_core::io::export::{
+    export_items, ExportItem, ExportLayout, ExportMode, ExportOptions, ExportReport,
+};
 
 use crate::state::AppState;
 use crate::util::{blocking, err, open};
@@ -19,6 +21,53 @@ pub(crate) struct ExportResultDto {
     destination: String,
 }
 
+/// Layout + rename, as sent by the export dialog.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExportOptionsDto {
+    #[serde(default)]
+    layout: Option<String>,
+    #[serde(default)]
+    rename: Option<String>,
+}
+
+fn to_dto(report: ExportReport) -> ExportResultDto {
+    ExportResultDto {
+        exported: report.exported,
+        failed: report
+            .failed
+            .iter()
+            .map(|(p, e)| format!("{}: {e}", p.display()))
+            .collect(),
+        destination: report.destination.to_string_lossy().to_string(),
+    }
+}
+
+fn export_opts(opts: &ExportOptionsDto) -> Result<ExportOptions, String> {
+    let layout = match opts
+        .layout
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => ExportLayout::Flat,
+        Some(s) => ExportLayout::parse(s)
+            .ok_or_else(|| "layout must be 'flat', 'date' or 'species'".to_string())?,
+    };
+    Ok(ExportOptions {
+        layout,
+        rename: opts.rename.clone().filter(|s| !s.trim().is_empty()),
+    })
+}
+
+/// The species the library recorded for a file, if any (for `{species}` / the
+/// `species` layout).
+fn species_of(conn: &rusqlite::Connection, file_id: i64) -> Result<Option<String>, String> {
+    Ok(analysis_store::get_analysis(conn, file_id)
+        .map_err(err)?
+        .and_then(|a| a.species_name))
+}
+
 /// Copy or move a single file into `dest` (the review view's Export button).
 #[tauri::command]
 pub(crate) async fn export_file(
@@ -26,25 +75,23 @@ pub(crate) async fn export_file(
     file: i64,
     dest: String,
     mode: Option<String>,
+    opts: ExportOptionsDto,
 ) -> Result<ExportResultDto, String> {
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
         let mode = ExportMode::parse(mode.as_deref().unwrap_or("copy"))
             .ok_or_else(|| "mode must be 'copy' or 'move'".to_string())?;
+        let opts = export_opts(&opts)?;
         let lf = library::get_file(&conn, file)
             .map_err(err)?
             .ok_or_else(|| "file not found".to_string())?;
-        let report = export_files(&[lf.absolute_path], Path::new(&dest), mode).map_err(err)?;
-        Ok(ExportResultDto {
-            exported: report.exported,
-            failed: report
-                .failed
-                .iter()
-                .map(|(p, e)| format!("{}: {e}", p.display()))
-                .collect(),
-            destination: report.destination.to_string_lossy().to_string(),
-        })
+        let item = ExportItem {
+            src: lf.absolute_path,
+            species: species_of(&conn, file)?,
+        };
+        let report = export_items(&[item], Path::new(&dest), mode, &opts).map_err(err)?;
+        Ok(to_dto(report))
     })
     .await
 }
@@ -61,12 +108,14 @@ pub(crate) async fn export_keepers(
     label: Option<String>,
     mode: Option<String>,
     predicted: Option<String>,
+    opts: ExportOptionsDto,
 ) -> Result<ExportResultDto, String> {
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
         let mode = ExportMode::parse(mode.as_deref().unwrap_or("copy"))
             .ok_or_else(|| "mode must be 'copy' or 'move'".to_string())?;
+        let opts = export_opts(&opts)?;
         let files = match predicted
             .as_deref()
             .map(str::trim)
@@ -79,17 +128,15 @@ pub(crate) async fn export_keepers(
                 library::files_with_latest_label(&conn, folder, label).map_err(err)?
             }
         };
-        let paths: Vec<PathBuf> = files.into_iter().map(|f| f.absolute_path).collect();
-        let report = export_files(&paths, Path::new(&dest), mode).map_err(err)?;
-        Ok(ExportResultDto {
-            exported: report.exported,
-            failed: report
-                .failed
-                .iter()
-                .map(|(p, e)| format!("{}: {e}", p.display()))
-                .collect(),
-            destination: report.destination.to_string_lossy().to_string(),
-        })
+        let mut items: Vec<ExportItem> = Vec::with_capacity(files.len());
+        for f in files {
+            items.push(ExportItem {
+                src: f.absolute_path,
+                species: species_of(&conn, f.file.id)?,
+            });
+        }
+        let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
+        Ok(to_dto(report))
     })
     .await
 }
