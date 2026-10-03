@@ -24,7 +24,7 @@ use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
-use birdsorter_core::data::{analysis_store, db, eye_labels, labels, library};
+use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
@@ -42,9 +42,12 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod annotations;
 mod models;
+mod state;
 mod util;
 
+use state::AppState;
 use util::{blocking, err, open};
 
 /// Long side used for analysis decodes.
@@ -56,14 +59,6 @@ const DEVELOP_MAX_LONG_SIDE: u32 = 6000;
 /// Upper bound on parallel decode workers during analysis, so the desktop stays
 /// responsive on high-core-count machines.
 const MAX_DECODE_THREADS: usize = 8;
-
-struct AppState {
-    db_path: PathBuf,
-    cache: ThumbCache,
-    cancel: Mutex<Option<CancelToken>>,
-    /// Separate token so a long scan can be cancelled independently.
-    scan_cancel: Mutex<Option<CancelToken>>,
-}
 
 // ---------------------------------------------------------------------------
 // DTOs (camelCase to match the TypeScript frontend)
@@ -580,99 +575,7 @@ async fn set_burst_winner(
     .await
 }
 
-/// Set or clear the species override for a file.
-#[tauri::command]
-fn set_species(
-    state: State<AppState>,
-    file: i64,
-    species: Option<String>,
-    confidence: Option<f32>,
-) -> Result<(), String> {
-    let conn = open(&state.db_path)?;
-    match species.as_deref().map(str::trim) {
-        Some(s) if !s.is_empty() => {
-            analysis_store::set_species_override(&conn, file, s, confidence.unwrap_or(1.0))
-                .map_err(err)
-        }
-        _ => analysis_store::clear_species_override(&conn, file).map_err(err),
-    }
-}
-
-#[tauri::command]
-fn label_files(state: State<AppState>, files: Vec<i64>, label: String) -> Result<usize, String> {
-    let label: labels::UserLabel = label.parse().map_err(err)?;
-    let conn = open(&state.db_path)?;
-    labels::add_labels_bulk(&conn, &files, label).map_err(err)
-}
-
-/// Undo the most recent label on each file (the review view's Undo).
-#[tauri::command]
-fn undo_labels(state: State<AppState>, files: Vec<i64>) -> Result<usize, String> {
-    let conn = open(&state.db_path)?;
-    labels::remove_latest_labels_bulk(&conn, &files).map_err(err)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EyePointDto {
-    x: i32,
-    y: i32,
-    kind: String,
-}
-
-/// Keypoints stored for a file (eye/head/beak), for the review overlay.
-#[tauri::command]
-fn eye_points(state: State<AppState>, file: i64) -> Result<Vec<EyePointDto>, String> {
-    let conn = open(&state.db_path)?;
-    let points = eye_labels::eye_points(&conn, file).map_err(err)?;
-    Ok(points
-        .into_iter()
-        .map(|p| EyePointDto {
-            x: p.x,
-            y: p.y,
-            kind: p.kind.as_str().to_string(),
-        })
-        .collect())
-}
-
-/// Append one hand-labelled keypoint (analysis-image pixels).
-#[tauri::command]
-fn add_eye_point(
-    state: State<AppState>,
-    file: i64,
-    x: i32,
-    y: i32,
-    kind: String,
-) -> Result<usize, String> {
-    let kind: eye_labels::EyePointKind = kind.parse().map_err(err)?;
-    let conn = open(&state.db_path)?;
-    let dims = analysis_store::get_analysis(&conn, file)
-        .map_err(err)?
-        .and_then(|a| a.image_width.zip(a.image_height));
-    if let Some((width, height)) = dims {
-        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
-            return Err(format!(
-                "point ({x},{y}) is outside the {width}x{height} analysis image"
-            ));
-        }
-    }
-    eye_labels::add_eye_point(&conn, file, x, y, kind).map_err(err)?;
-    Ok(eye_labels::eye_points(&conn, file).map_err(err)?.len())
-}
-
-/// Remove every keypoint from a file.
-#[tauri::command]
-fn clear_eye_points(state: State<AppState>, file: i64) -> Result<usize, String> {
-    let conn = open(&state.db_path)?;
-    eye_labels::clear_eye_points(&conn, file).map_err(err)
-}
-
-/// How many files have eye labels — progress toward the training set.
-#[tauri::command]
-fn eye_label_stats(state: State<AppState>) -> Result<usize, String> {
-    let conn = open(&state.db_path)?;
-    eye_labels::labelled_file_count(&conn).map_err(err)
-}
+// Annotation and label commands live in `annotations.rs`.
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1440,13 +1343,13 @@ fn main() {
             score_breakdown,
             bursts,
             set_burst_winner,
-            set_species,
-            label_files,
-            undo_labels,
-            eye_points,
-            add_eye_point,
-            clear_eye_points,
-            eye_label_stats,
+            annotations::set_species,
+            annotations::label_files,
+            annotations::undo_labels,
+            annotations::eye_points,
+            annotations::add_eye_point,
+            annotations::clear_eye_points,
+            annotations::eye_label_stats,
             trash_files,
             analyze_folder,
             cancel_analysis,
