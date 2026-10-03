@@ -373,6 +373,9 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   ignores a stale compare frame — no more cross-folder/photo bleed. `onMount`'s
   window listeners and all six Tauri event subscriptions are now torn down via
   `onDestroy`, so hot reload and tests no longer accumulate handlers.
+- **Refactor Phase 1.1 regression test**: `changing_file_content_makes_it_pending_again`
+  proves end-to-end that replacing a RAW's bytes and rescanning marks it pending
+  again (was silently showing stale analysis before the fix).
 - **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
   `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
   binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for
