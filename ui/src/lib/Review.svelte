@@ -22,6 +22,7 @@
     type EyePoint,
     type UserLabel,
   } from "./api";
+  import { lumaHistogram } from "./histogram";
 
   // The open file plus everything the review needs from App. App owns the
   // library-level state (folders, files, bursts, undo, status); the review owns
@@ -597,6 +598,51 @@
     renderPeaking();
   }
 
+  // --- histogram overlay ---------------------------------------------------
+  /// A luminance histogram of the previewed photo, drawn over it.
+  let showHistogram = $state(false);
+  let histogramCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+
+  async function toggleHistogram() {
+    showHistogram = !showHistogram;
+    if (showHistogram) {
+      await tick();
+      buildHistogram();
+      status = "histogram: luminance distribution of the preview";
+    }
+  }
+
+  /// Sample the preview and draw the histogram bars onto the overlay canvas.
+  function buildHistogram() {
+    const img = previewEl;
+    const canvas = histogramCanvas;
+    if (!img || !canvas || !img.complete || img.naturalWidth === 0) return;
+    const srcW = img.naturalWidth;
+    const srcH = img.naturalHeight;
+    const scale = Math.min(1, 512 / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+    const scratch = document.createElement("canvas");
+    scratch.width = w;
+    scratch.height = h;
+    const ctx = scratch.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, w, h);
+    const counts = lumaHistogram(ctx.getImageData(0, 0, w, h).data, 64);
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const c = canvas.getContext("2d");
+    if (!c) return;
+    c.clearRect(0, 0, cw, ch);
+    const max = Math.max(1, ...counts);
+    const bw = cw / counts.length;
+    c.fillStyle = "rgba(200, 220, 255, 0.9)";
+    counts.forEach((n, i) => {
+      const bh = (n / max) * (ch - 2);
+      c.fillRect(i * bw, ch - bh, Math.max(1, bw - 1), bh);
+    });
+  }
+
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
 
@@ -856,6 +902,13 @@
     >
       Focus peaking
     </button>
+    <button
+      class:active={showHistogram}
+      onclick={toggleHistogram}
+      title="Show a luminance histogram of the preview"
+    >
+      Histogram
+    </button>
     {#if peakingOn}
       <input
         class="peakrange"
@@ -953,6 +1006,14 @@
 
   <div class="review-body">
     <div class="preview" class:compare={compareOn && !!compareUrl}>
+      {#if showHistogram}
+        <canvas
+          class="histogram"
+          width="180"
+          height="64"
+          bind:this={histogramCanvas}
+        ></canvas>
+      {/if}
       {#if previewUrl}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
@@ -988,6 +1049,7 @@
                   };
                 computeFit(true);
                 if (peakingOn) buildPeakingGray();
+                if (showHistogram) buildHistogram();
               }}
             />
             {#if peakingOn}

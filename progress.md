@@ -275,6 +275,11 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Histogram overlay** (review view): a **Histogram** toggle draws a luminance
+  histogram of the preview in its corner. The computation is a pure
+  `lumaHistogram(rgba, bins)` helper (unit-tested: counts, black/white edges,
+  channel weighting); the overlay is a small canvas positioned inside the
+  preview, rebuilt on toggle and on preview load.
 - **Parser fuzzing**: proptest properties for the persisted-JSON parsers —
   `SharpnessFeatures::from_json`, `parse_boxes` and `parse_subject_species` never
   panic on arbitrary input (only Ok or a typed error), plus round-trips for valid

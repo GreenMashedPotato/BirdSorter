@@ -104,7 +104,8 @@ on a 28-core Windows box.
     species / `_no_species`), and `--rename` rebuilds names from
     `{name}`/`{date}`/`{species}` (e.g. `--rename "{species}_{name}"`), keeping the
     extension and sanitising path-unsafe characters.
-18. ⬜ **Histogram overlay** on the review preview.
+18. ✅ **Histogram overlay** on the review preview — a **Histogram** toggle draws a
+    luminance histogram in the corner (pure `lumaHistogram` helper, unit-tested).
 19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
     highest-scoring frame as Sharp, skipping files you already labelled; undoable.
 18. ⬜ **Drag-and-drop folder import** onto the window.
