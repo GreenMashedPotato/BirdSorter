@@ -23,6 +23,8 @@ Do not change the application version; it remains `0.1.0`.
 - **Phase 1.4** explicit columns instead of `SELECT *`: done for `analysis`
 - **Phase 2** analysis stages extracted into `pipeline::stages` (`select_subject`,
   `classify_species`, `subject_first`): started; `analyze_one` now orchestrates
+- **Phase 4** model downloads: timeouts + response-size cap + pinned-checksum
+  requirement for remote artifacts: done
 - **Phase 2+**: pending
 
 Keep this list current as phases land.

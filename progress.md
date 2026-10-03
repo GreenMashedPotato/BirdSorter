@@ -362,6 +362,12 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   + provenance, classifier-optional), and `subject_first` (best-first ordering).
   `analyze_one` is now orchestration over those stages, covered by four new unit
   tests. Behavior unchanged.
+- **Refactor Phase 4 (model downloads)**: the HTTP fetcher now sets explicit
+  connect/response/total timeouts and a 2 GiB response-size limit via the ureq
+  config/body builders, so a stalled or hostile server cannot hang the app or
+  exhaust memory. Remote downloads now require a pinned SHA-256 and an
+  http(s) URL scheme; unpinned remote artifacts are refused. Covered by a new
+  test.
 - **`ort` is pinned to `=2.0.0-rc.11`** (was caret `rc.9` → resolved to
   `rc.13`). `ort-sys` rc.13 stopped publishing `x86_64-apple-darwin` ONNX Runtime
   binaries, which broke Intel macOS; rc.11 targets ORT API 23, still shipped for
