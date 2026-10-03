@@ -30,6 +30,15 @@ pub enum CoreError {
     #[error("configuration error: {message}")]
     Config { message: String },
 
+    /// A model download failed (network, timeout, size limit).
+    #[error("download failed for {url}: {message}")]
+    Download { url: String, message: String },
+
+    /// A model archive/bundle is malformed or violates its spec (bad zip, wrong
+    /// or duplicate entries, oversized, checksum mismatch).
+    #[error("model '{key}': {message}")]
+    ModelArchive { key: String, message: String },
+
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 
@@ -81,6 +90,22 @@ impl CoreError {
             message: message.into(),
         }
     }
+
+    /// Build a [`CoreError::Download`].
+    pub fn download(url: impl Into<String>, message: impl Into<String>) -> Self {
+        CoreError::Download {
+            url: url.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Build a [`CoreError::ModelArchive`].
+    pub fn model_archive(key: impl Into<String>, message: impl Into<String>) -> Self {
+        CoreError::ModelArchive {
+            key: key.into(),
+            message: message.into(),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
@@ -105,5 +130,15 @@ mod tests {
             CoreError::config("no platform dir"),
             CoreError::Config { .. }
         ));
+
+        let e = CoreError::download("https://example/m.onnx", "timeout");
+        assert!(matches!(e, CoreError::Download { .. }));
+        assert!(e.to_string().contains("https://example/m.onnx"));
+        assert!(e.to_string().contains("timeout"));
+
+        let e = CoreError::model_archive("bird_species", "duplicate file 'a.onnx'");
+        assert!(matches!(e, CoreError::ModelArchive { .. }));
+        assert!(e.to_string().contains("bird_species"));
+        assert!(e.to_string().contains("duplicate file"));
     }
 }
