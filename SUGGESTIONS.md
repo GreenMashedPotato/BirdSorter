@@ -129,12 +129,12 @@ on a 28-core Windows box.
     panics, plus round-trips for valid input.
 24. ⬜ **Integration test with a real RAW file** — download a small public CR3 in a
     gated test and assert the full pipeline's output shape/ordering.
-25. 🟡 **Richer `CoreError`** — added `ModelLoad`, `Inference`, `Config`,
-    `Download` and `ModelArchive` variants (with constructors) and migrated the
-    runtime/model layer (session, detector, species, eye) and the model registry
-    (downloads, archives, checksums, spec refusals). `Other(String)` stays a
-    documented fallback for the remaining long tail (decoders, xmp, trainer);
-    `#[source]` chains on the typed variants are still open.
+25. 🟡 **Richer `CoreError`** — the domain-meaningful errors are typed:
+    `ModelLoad`, `Inference`, `Config`, `InvalidInput`, `NotFound`, `Download`,
+    `ModelArchive` (all with constructors). The runtime/model layer, registry,
+    trainer, library, XMP, decoder, disk and box paths use them. `Other` now remains
+    only for internal cases (the raw ONNX wrapper, JPEG encode, panic boundaries)
+    and test helpers. `#[source]` chains on the typed variants are still open.
 26. ⬜ **Benchmarks in CI** — criterion with a tolerance gate (noisy on shared
     runners; probably a nightly job rather than per-PR).
 

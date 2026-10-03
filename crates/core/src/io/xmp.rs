@@ -120,7 +120,7 @@ pub fn write_rating(raw: &Path, rating: u8) -> Result<()> {
     if sidecar.is_file() {
         let text = std::fs::read_to_string(&sidecar).map_err(|e| CoreError::io(&sidecar, e))?;
         let Some(merged) = merge(&text, rating) else {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::invalid_input(format!(
                 "{} has an XMP sidecar without an rdf:Description, refusing to overwrite it",
                 raw.display()
             )));

@@ -22,8 +22,9 @@ fn existing_ancestor(path: &Path) -> Option<&Path> {
 
 /// Bytes available on the volume holding `path` (which need not exist yet).
 pub fn available_space(path: &Path) -> Result<u64> {
-    let target = existing_ancestor(path)
-        .ok_or_else(|| CoreError::Other(format!("no existing directory for {}", path.display())))?;
+    let target = existing_ancestor(path).ok_or_else(|| {
+        CoreError::config(format!("no existing directory for {}", path.display()))
+    })?;
     fs4::available_space(target).map_err(|e| CoreError::io(target, e))
 }
 

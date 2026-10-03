@@ -259,7 +259,7 @@ pub struct TrainResult {
 pub fn train(conn: &Connection, models_dir: &Path) -> Result<TrainResult> {
     let labeled = labels::all_labeled_features(conn)?;
     if labeled.len() < 4 {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::invalid_input(format!(
             "not enough labelled files ({}); label more first",
             labeled.len()
         )));
@@ -280,8 +280,8 @@ pub fn train(conn: &Connection, models_dir: &Path) -> Result<TrainResult> {
         .into_iter()
         .collect();
     if classes.len() < 2 {
-        return Err(CoreError::Other(
-            "need at least 2 different label classes".into(),
+        return Err(CoreError::invalid_input(
+            "need at least 2 different label classes",
         ));
     }
     let y_idx: Vec<usize> = ys

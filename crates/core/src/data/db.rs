@@ -167,7 +167,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         }
         Some(v) if v < SCHEMA_VERSION => migrate(conn, v)?,
         Some(v) if v > SCHEMA_VERSION => {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::config(format!(
                 "DB schema version {v} is newer than this build ({SCHEMA_VERSION})"
             )));
         }

@@ -247,8 +247,9 @@ pub fn load_labels(path: &Path) -> Result<Vec<String>> {
         return Ok(pairs.into_iter().map(|(_, s)| s).collect());
     }
 
-    Err(CoreError::Other(
-        "labels file: expected a JSON array or an {id2label} object".into(),
+    Err(CoreError::model_load(
+        path,
+        "labels file: expected a JSON array or an {id2label} object",
     ))
 }
 

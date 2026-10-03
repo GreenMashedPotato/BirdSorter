@@ -209,8 +209,8 @@ pub(crate) fn resolve_detections(
 ) -> Result<Vec<Detection>> {
     if let Some(box_) = manual {
         let Some(clamped) = box_.clamp_to(img_w, img_h) else {
-            return Err(CoreError::Other(
-                "the drawn box is outside the image".into(),
+            return Err(CoreError::invalid_input(
+                "the drawn box is outside the image",
             ));
         };
         let mut dets: Vec<Detection> = stored

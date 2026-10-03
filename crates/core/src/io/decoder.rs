@@ -133,9 +133,8 @@ impl ImageDecoder for CompositeDecoder {
                 Err(e) => last = Some(e),
             }
         }
-        Err(last.unwrap_or_else(|| {
-            CoreError::Other(format!("no decoder could handle {}", path.display()))
-        }))
+        Err(last
+            .unwrap_or_else(|| CoreError::raw_decode(path, "no decoder could handle this file")))
     }
 }
 
