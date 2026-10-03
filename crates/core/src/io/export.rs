@@ -4,6 +4,9 @@
 //! overwritten: a name collision gets a ` (1)`, ` (2)`, … suffix, so exporting
 //! twice (or exporting a folder that overlaps the destination) cannot destroy
 //! anything.
+//!
+//! The destination can be organised: flat (default), one subfolder per capture
+//! day, or one per species. Names can be rebuilt from a template.
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +38,8 @@ pub enum ExportLayout {
     /// One subfolder per capture day (`YYYY-MM-DD`); files without a usable
     /// capture time go to `_no_date/`.
     ByDate,
+    /// One subfolder per species; files with no species go to `_no_species/`.
+    BySpecies,
 }
 
 impl ExportLayout {
@@ -42,29 +47,28 @@ impl ExportLayout {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "flat" | "none" => Some(ExportLayout::Flat),
             "date" | "by-date" | "day" => Some(ExportLayout::ByDate),
+            "species" | "by-species" => Some(ExportLayout::BySpecies),
             _ => None,
         }
     }
 }
 
-/// `"2026-01-02T10:00:00"` → `"2026-01-02"`; anything unusable → `"_no_date"`.
-fn capture_day(captured: Option<&str>) -> String {
-    captured
-        .and_then(|t| t.get(..10))
-        .filter(|d| d.len() == 10)
-        .unwrap_or("_no_date")
-        .to_string()
+/// One file to export, plus metadata that can't be read from the file itself
+/// (the species comes from the library, not from EXIF).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExportItem {
+    pub src: PathBuf,
+    pub species: Option<String>,
 }
 
-/// The subfolder an export lands in (`""` for the flat layout).
-fn layout_folder(layout: ExportLayout, src: &Path) -> String {
-    match layout {
-        ExportLayout::Flat => String::new(),
-        ExportLayout::ByDate => {
-            let captured = crate::io::exif::capture_time(src);
-            capture_day(captured.as_deref())
-        }
-    }
+/// Layout and optional rename template.
+#[derive(Debug, Clone, Default)]
+pub struct ExportOptions {
+    pub layout: ExportLayout,
+    /// Rename template. Tokens: `{name}` (original stem, no extension),
+    /// `{date}` (`YYYY-MM-DD`, or `nodate`), `{species}` (or `unknown`). The
+    /// original extension is kept; unusual characters are replaced with `_`.
+    pub rename: Option<String>,
 }
 
 /// Outcome of an export run.
@@ -102,19 +106,123 @@ fn unique_target(dir: &Path, name: &str) -> PathBuf {
     ))
 }
 
-/// Copy or move `files` into `dest` (flat layout).
-pub fn export_files(files: &[PathBuf], dest: &Path, mode: ExportMode) -> Result<ExportReport> {
-    export_files_with(files, dest, mode, ExportLayout::Flat)
+/// `"2026-01-02T10:00:00"` → `Some("2026-01-02")`; anything unusable → `None`.
+fn day_of(captured: Option<&str>) -> Option<String> {
+    captured
+        .and_then(|t| t.get(..10))
+        .filter(|d| d.len() == 10)
+        .map(str::to_string)
 }
 
-/// Copy or move `files` into `dest`, arranging them per `layout`.
-///
-/// Missing sources are reported per-file rather than aborting the run.
+/// Capture day read from the file's EXIF, if any.
+fn capture_day(src: &Path) -> Option<String> {
+    let captured = crate::io::exif::capture_time(src);
+    day_of(captured.as_deref())
+}
+
+/// Make a value safe to use as a path component on Windows and macOS: replace
+/// control characters and reserved characters with `_`, and trim trailing dots
+/// and spaces (which Windows refuses).
+fn sanitize(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    cleaned.trim().trim_end_matches(['.', ' ']).to_string()
+}
+
+/// The subfolder an export lands in (`""` for the flat layout).
+fn folder_for(layout: ExportLayout, species: Option<&str>, src: &Path) -> String {
+    match layout {
+        ExportLayout::Flat => String::new(),
+        ExportLayout::ByDate => capture_day(src).unwrap_or_else(|| "_no_date".to_string()),
+        ExportLayout::BySpecies => species
+            .map(sanitize)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "_no_species".to_string()),
+    }
+}
+
+/// Destination file name for one item (before collision handling). `None` keeps
+/// the original name; a pattern rebuilds it from `{name}`/`{date}`/`{species}`.
+fn file_name_for(pattern: Option<&str>, src: &Path, species: Option<&str>) -> Option<String> {
+    let original = src.file_name()?.to_string_lossy().to_string();
+    let Some(pattern) = pattern else {
+        return Some(original);
+    };
+    let (stem, ext) = match original.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), Some(e.to_string())),
+        None => (original.clone(), None),
+    };
+    let unknown_species = "unknown".to_string();
+    let species_token = species
+        .map(sanitize)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| unknown_species.clone());
+    let rendered = pattern
+        .replace("{name}", &stem)
+        .replace(
+            "{date}",
+            &capture_day(src).unwrap_or_else(|| "nodate".to_string()),
+        )
+        .replace("{species}", &species_token);
+    let rendered = sanitize(rendered.trim());
+    if rendered.is_empty() {
+        return Some(original);
+    }
+    Some(match ext {
+        Some(e) => format!("{rendered}.{e}"),
+        None => rendered,
+    })
+}
+
+/// Copy or move `files` into `dest` (flat layout, original names).
+pub fn export_files(files: &[PathBuf], dest: &Path, mode: ExportMode) -> Result<ExportReport> {
+    export_items(&bare_items(files), dest, mode, &ExportOptions::default())
+}
+
+/// Copy or move `files` into `dest` with a layout but original names.
 pub fn export_files_with(
     files: &[PathBuf],
     dest: &Path,
     mode: ExportMode,
     layout: ExportLayout,
+) -> Result<ExportReport> {
+    export_items(
+        &bare_items(files),
+        dest,
+        mode,
+        &ExportOptions {
+            layout,
+            rename: None,
+        },
+    )
+}
+
+fn bare_items(files: &[PathBuf]) -> Vec<ExportItem> {
+    files
+        .iter()
+        .map(|src| ExportItem {
+            src: src.clone(),
+            species: None,
+        })
+        .collect()
+}
+
+/// Copy or move `items` into `dest`, arranging them per `opts`.
+///
+/// Missing sources are reported per-file rather than aborting the run.
+pub fn export_items(
+    items: &[ExportItem],
+    dest: &Path,
+    mode: ExportMode,
+    opts: &ExportOptions,
 ) -> Result<ExportReport> {
     std::fs::create_dir_all(dest).map_err(|e| CoreError::io(dest, e))?;
     let mut report = ExportReport {
@@ -122,20 +230,21 @@ pub fn export_files_with(
         ..Default::default()
     };
 
-    for src in files {
+    for item in items {
+        let src = &item.src;
         if !src.is_file() {
             report
                 .failed
                 .push((src.clone(), "file is missing".to_string()));
             continue;
         }
-        let Some(name) = src.file_name().map(|n| n.to_string_lossy().to_string()) else {
+        let Some(name) = file_name_for(opts.rename.as_deref(), src, item.species.as_deref()) else {
             report
                 .failed
                 .push((src.clone(), "no file name".to_string()));
             continue;
         };
-        let sub = layout_folder(layout, src);
+        let sub = folder_for(opts.layout, item.species.as_deref(), src);
         let dir = if sub.is_empty() {
             dest.to_path_buf()
         } else {
@@ -263,19 +372,41 @@ mod tests {
     }
 
     #[test]
-    fn capture_day_trims_and_falls_back() {
-        assert_eq!(capture_day(Some("2026-01-02T10:00:00")), "2026-01-02");
-        assert_eq!(capture_day(None), "_no_date");
-        assert_eq!(capture_day(Some("bad")), "_no_date");
+    fn day_of_trims_and_rejects_garbage() {
+        assert_eq!(
+            day_of(Some("2026-01-02T10:00:00")),
+            Some("2026-01-02".into())
+        );
+        assert_eq!(day_of(None), None);
+        assert_eq!(day_of(Some("bad")), None);
     }
 
     #[test]
     fn layout_parses_known_names() {
         assert_eq!(ExportLayout::parse("date"), Some(ExportLayout::ByDate));
         assert_eq!(ExportLayout::parse("by-date"), Some(ExportLayout::ByDate));
+        assert_eq!(
+            ExportLayout::parse("species"),
+            Some(ExportLayout::BySpecies)
+        );
+        assert_eq!(
+            ExportLayout::parse("by-species"),
+            Some(ExportLayout::BySpecies)
+        );
         assert_eq!(ExportLayout::parse("flat"), Some(ExportLayout::Flat));
         assert_eq!(ExportLayout::parse(""), Some(ExportLayout::Flat));
         assert_eq!(ExportLayout::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn sanitize_strips_path_separators_and_trailing_dots() {
+        assert_eq!(
+            sanitize("Ardea alba (Great Egret)"),
+            "Ardea alba (Great Egret)"
+        );
+        assert_eq!(sanitize("a/b\\c:d"), "a_b_c_d");
+        assert_eq!(sanitize("trailing. "), "trailing");
+        assert_eq!(sanitize("  spaced  "), "spaced");
     }
 
     #[test]
@@ -292,5 +423,77 @@ mod tests {
         assert!(report.failed.is_empty());
         assert!(dst.path().join("_no_date").join("a.jpg").is_file());
         assert!(dst.path().join("_no_date").join("b.jpg").is_file());
+    }
+
+    #[test]
+    fn by_species_uses_a_sanitized_folder_with_an_unknown_fallback() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let titled = write(src.path(), "a.cr3", "x");
+        let plain = write(src.path(), "b.cr3", "y");
+        let items = vec![
+            ExportItem {
+                src: titled,
+                species: Some("Ardea alba (Great Egret)".into()),
+            },
+            ExportItem {
+                src: plain,
+                species: None,
+            },
+        ];
+        let opts = ExportOptions {
+            layout: ExportLayout::BySpecies,
+            rename: None,
+        };
+        let report = export_items(&items, dst.path(), ExportMode::Copy, &opts).unwrap();
+        assert_eq!(report.exported, 2);
+        assert!(dst
+            .path()
+            .join("Ardea alba (Great Egret)")
+            .join("a.cr3")
+            .is_file());
+        assert!(dst.path().join("_no_species").join("b.cr3").is_file());
+    }
+
+    #[test]
+    fn rename_pattern_builds_the_destination_name() {
+        let src = Path::new("D:/shoot/_IMG_1234.CR3");
+        // No pattern keeps the original name.
+        assert_eq!(file_name_for(None, src, None).unwrap(), "_IMG_1234.CR3");
+        // Tokens: {name} is the stem, the extension is kept; unknown tokens fall back.
+        assert_eq!(
+            file_name_for(Some("{species}_{name}"), src, Some("Great Egret")).unwrap(),
+            "Great Egret__IMG_1234.CR3"
+        );
+        assert_eq!(
+            file_name_for(Some("{species}_{name}"), src, None).unwrap(),
+            "unknown__IMG_1234.CR3"
+        );
+        assert_eq!(
+            file_name_for(Some("{date}-{name}"), src, None).unwrap(),
+            "nodate-_IMG_1234.CR3"
+        );
+    }
+
+    #[test]
+    fn rename_and_species_layout_compose() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "shot.cr3", "x");
+        let items = vec![ExportItem {
+            src: a,
+            species: Some("Egretta garzetta".into()),
+        }];
+        let opts = ExportOptions {
+            layout: ExportLayout::BySpecies,
+            rename: Some("{species}_{name}".into()),
+        };
+        let report = export_items(&items, dst.path(), ExportMode::Copy, &opts).unwrap();
+        assert_eq!(report.exported, 1);
+        assert!(dst
+            .path()
+            .join("Egretta garzetta")
+            .join("Egretta garzetta_shot.cr3")
+            .is_file());
     }
 }
