@@ -42,6 +42,11 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod models;
+mod util;
+
+use util::{blocking, err, open};
+
 /// Long side used for analysis decodes.
 const ANALYSIS_LONG_SIDE: u32 = 2400;
 /// Long side of grid thumbnails.
@@ -58,23 +63,6 @@ struct AppState {
     cancel: Mutex<Option<CancelToken>>,
     /// Separate token so a long scan can be cancelled independently.
     scan_cancel: Mutex<Option<CancelToken>>,
-}
-
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
-
-fn open(db_path: &Path) -> Result<Connection, String> {
-    let conn = db::connect(db_path).map_err(err)?;
-    db::init_schema(&conn).map_err(err)?;
-    Ok(conn)
-}
-
-/// Run `f` on the blocking thread pool so the webview/IPC thread never stalls.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
 // ---------------------------------------------------------------------------
@@ -960,77 +948,7 @@ fn cancel_analysis(state: State<AppState>) -> Result<(), String> {
 // Model manager
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelStatusDto {
-    key: String,
-    display_name: String,
-    description: String,
-    tier: String,
-    size_bytes: u64,
-    status: String,
-    files: Vec<String>,
-    url: String,
-    /// A planned model with no artefact yet (needs a training run).
-    planned: bool,
-}
-
-#[tauri::command]
-async fn models_status() -> Result<Vec<ModelStatusDto>, String> {
-    blocking(|| {
-        let dir = registry::default_model_dir().map_err(err)?;
-        Ok(registry::builtin_models()
-            .into_iter()
-            .map(|s| {
-                let status = registry::status(&dir, &s);
-                ModelStatusDto {
-                    key: s.key.clone(),
-                    display_name: s.display_name.clone(),
-                    description: s.description.clone(),
-                    tier: format!("{:?}", s.tier).to_lowercase(),
-                    size_bytes: s.size_bytes,
-                    status: format!("{status:?}").to_lowercase(),
-                    files: s.files.clone(),
-                    url: s.url.clone(),
-                    planned: s.tags.iter().any(|t| t == "planned"),
-                }
-            })
-            .collect())
-    })
-    .await
-}
-
-#[tauri::command]
-async fn download_model(key: String) -> Result<usize, String> {
-    blocking(move || {
-        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
-        let dir = registry::default_model_dir().map_err(err)?;
-        let paths = registry::download(&dir, &spec, &registry::HttpFetcher).map_err(err)?;
-        Ok(paths.len())
-    })
-    .await
-}
-
-#[tauri::command]
-async fn import_model(key: String, path: String) -> Result<usize, String> {
-    blocking(move || {
-        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
-        let dir = registry::default_model_dir().map_err(err)?;
-        let paths = registry::import_file(&dir, &spec, std::path::Path::new(&path)).map_err(err)?;
-        Ok(paths.len())
-    })
-    .await
-}
-
-#[tauri::command]
-async fn remove_model(key: String) -> Result<usize, String> {
-    blocking(move || {
-        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
-        let dir = registry::default_model_dir().map_err(err)?;
-        registry::remove(&dir, &spec).map_err(err)
-    })
-    .await
-}
+// Model manager commands live in `models.rs`.
 
 /// Current scoring thresholds.
 #[tauri::command]
@@ -1549,10 +1467,10 @@ fn main() {
             export_keepers,
             export_file,
             train,
-            models_status,
-            download_model,
-            import_model,
-            remove_model
+            models::models_status,
+            models::download_model,
+            models::import_model,
+            models::remove_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running BirdSorter");
