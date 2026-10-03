@@ -28,8 +28,9 @@ Do not change the application version; it remains `0.1.0`.
   requirement for remote artifacts: done; XMP attribute matching now tolerates
   single quotes and whitespace: done
 - **Phase 5** desktop split: `util.rs` (err/open/blocking), `state.rs`
-  (`AppState`), `models.rs` (model-manager commands), and `annotations.rs`
-  (species/labels/undo/eye-points) extracted: in progress
+  (`AppState`), `config.rs` (constants), `preview.rs` (thumbnail/preview),
+  `models.rs` (model-manager), and `annotations.rs` (species/labels/undo/eye):
+  in progress
 - **Phase 6** UI async guards (review/folder/compare/bursts) and listener
   cleanup on unmount: done
 - **Phase 2+**: pending

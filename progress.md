@@ -381,6 +381,9 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   species/label/undo/eye-point commands plus `EyePointDto` moved to
   `annotations.rs`. `main.rs` registers them via `annotations::…`; behavior and
   the app state shape are unchanged.
+- **Refactor Phase 5 (continued)**: rendering constants moved to `config.rs`, and
+  the thumbnail/preview commands + render helpers moved to `preview.rs`. `main.rs`
+  registers them via `preview::…`; behavior unchanged (same caches, same modes).
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.

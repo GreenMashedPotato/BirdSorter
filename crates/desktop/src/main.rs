@@ -15,7 +15,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use base64::Engine as _;
 use birdsorter_core::analysis::detector::BBox;
 use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::eye::EyeDetector;
@@ -26,11 +25,9 @@ use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
-use birdsorter_core::io::develop::develop_preview;
+use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder};
 use birdsorter_core::io::export::{export_files, ExportMode};
 use birdsorter_core::io::raw::RawDecoder;
-use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
 use birdsorter_core::io::xmp;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
@@ -43,22 +40,15 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod annotations;
+mod config;
 mod models;
+mod preview;
 mod state;
 mod util;
 
+use config::{ANALYSIS_LONG_SIDE, MAX_DECODE_THREADS};
 use state::AppState;
 use util::{blocking, err, open};
-
-/// Long side used for analysis decodes.
-const ANALYSIS_LONG_SIDE: u32 = 2400;
-/// Long side of grid thumbnails.
-const THUMB_LONG_SIDE: u32 = 512;
-/// Long side of the "Developed" preview (full demosaic is 45 MP / ~60 MB JPEG).
-const DEVELOP_MAX_LONG_SIDE: u32 = 6000;
-/// Upper bound on parallel decode workers during analysis, so the desktop stays
-/// responsive on high-core-count machines.
-const MAX_DECODE_THREADS: usize = 8;
 
 // ---------------------------------------------------------------------------
 // DTOs (camelCase to match the TypeScript frontend)
@@ -195,85 +185,6 @@ fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String>
             subject_class: r.subject_class,
         })
         .collect())
-}
-
-fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
-    let conn = open(db_path)?;
-    let lf = library::get_file(&conn, file)
-        .map_err(err)?
-        .ok_or_else(|| "file not found".to_string())?;
-    let cache = ThumbCache::new(cache_root.to_path_buf());
-    let bytes = thumbnail_cached(
-        &cache,
-        &lf.absolute_path,
-        &lf.file.content_hash,
-        THUMB_LONG_SIDE,
-    )
-    .map_err(err)?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:image/jpeg;base64,{b64}"))
-}
-
-/// A deferred, cache-miss render: produces encoded JPEG bytes.
-type RenderFn = Box<dyn FnOnce() -> birdsorter_core::Result<Vec<u8>>>;
-
-/// Preview for the review view. Modes:
-/// - `"fast"` (default): analysis resolution (2400 px) — boxes align 1:1.
-/// - `"full"`: the largest embedded preview at native resolution (fast, ~1.4 s).
-/// - `"develop"`: full RAW demosaic (slow, ~2.5 s) — maximum real detail.
-///
-/// Each mode is cached separately.
-fn preview_impl(
-    cache_root: &Path,
-    db_path: &Path,
-    file: i64,
-    mode: &str,
-) -> Result<String, String> {
-    let conn = open(db_path)?;
-    let lf = library::get_file(&conn, file)
-        .map_err(err)?
-        .ok_or_else(|| "file not found".to_string())?;
-    drop(conn);
-
-    let cache = ThumbCache::new(cache_root.to_path_buf());
-    let hash = lf.file.content_hash.clone();
-    let path = lf.absolute_path.clone();
-
-    let (key, render): (String, RenderFn) = match mode {
-        "develop" => (
-            render_key(&hash, 1),
-            Box::new(move || {
-                let rgb = develop_preview(&path, DEVELOP_MAX_LONG_SIDE)?;
-                encode_rgb_jpeg(&rgb, 92)
-            }),
-        ),
-        "full" => (
-            render_key(&hash, 0),
-            Box::new(move || {
-                let decoder = CompositeDecoder::new(vec![
-                    Box::new(RawDecoder::new(None)),
-                    Box::new(ImageCrateDecoder::new(None)),
-                ]);
-                let img = decoder.decode(&path)?;
-                encode_rgb_jpeg(&img.rgb, 92)
-            }),
-        ),
-        _ => (
-            render_key(&hash, ANALYSIS_LONG_SIDE),
-            Box::new(move || {
-                let decoder = CompositeDecoder::new(vec![
-                    Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-                    Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-                ]);
-                let img = decoder.decode(&path)?;
-                encode_rgb_jpeg(&img.rgb, 85)
-            }),
-        ),
-    };
-
-    let bytes = cached(&cache, &key, render).map_err(err)?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
 fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, String> {
@@ -451,26 +362,7 @@ async fn query_files(state: State<'_, AppState>, folder: i64) -> Result<Vec<File
     blocking(move || query_files_impl(&db_path, folder)).await
 }
 
-/// Grid thumbnail as a data URL (generated on demand and cached on disk).
-#[tauri::command]
-async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, String> {
-    let db_path = state.db_path.clone();
-    let cache_root = state.cache.root().to_path_buf();
-    blocking(move || thumbnail_impl(&cache_root, &db_path, file)).await
-}
-
-/// Higher-resolution preview for the review view, as a data URL.
-#[tauri::command]
-async fn preview_image(
-    state: State<'_, AppState>,
-    file: i64,
-    mode: Option<String>,
-) -> Result<String, String> {
-    let db_path = state.db_path.clone();
-    let cache_root = state.cache.root().to_path_buf();
-    let mode = mode.unwrap_or_else(|| "fast".to_string());
-    blocking(move || preview_impl(&cache_root, &db_path, file, &mode)).await
-}
+// Thumbnail and preview commands live in `preview.rs`.
 
 /// Full analysis detail (verdict, boxes, species) for the review view.
 #[tauri::command]
@@ -1337,8 +1229,8 @@ fn main() {
             scan_folder,
             cancel_scan,
             query_files,
-            thumbnail,
-            preview_image,
+            preview::thumbnail,
+            preview::preview_image,
             analysis_detail,
             score_breakdown,
             bursts,
