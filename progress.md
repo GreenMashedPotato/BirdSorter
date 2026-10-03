@@ -414,6 +414,12 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   `App` keeps all state, derived values and the grid DOM ref, so behavior is
   unchanged (`svelte-check` clean, build passes). The review view and dialogs
   remain inline.
+- **UI test harness**: `vitest` + `@testing-library/svelte` (jsdom) with
+  `ui/vitest.config.ts` and an `npm test` script — 25 tests covering the pure
+  `api` helpers and the four extracted components (filter/bind, label/rate
+  callbacks, grid tile selection/rating, toolbar enable/disable). This is the
+  safety net for the review-view extraction; the release gate now runs
+  `npm test` alongside `npm run check` / `npm run build`.
 - **Refactor Phase 7 (security tests)**: the model-registry hardening now has
   tests for a ZIP entry that would escape the model directory (flattened, stays
   inside), an unexpected file, two entries that flatten to the same name
