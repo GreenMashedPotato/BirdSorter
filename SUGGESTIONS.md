@@ -124,11 +124,12 @@ on a 28-core Windows box.
     `parse_subject_species` (proptest now covers scoring only).
 24. ⬜ **Integration test with a real RAW file** — download a small public CR3 in a
     gated test and assert the full pipeline's output shape/ordering.
-25. 🟡 **Richer `CoreError`** — added `ModelLoad`, `Inference` and `Config` variants
-    (with constructors) and migrated the runtime/model layer (session, detector,
-    species, eye) and the platform-directory errors to them. `Other(String)` stays
-    as a documented fallback for the long tail; `#[source]` chains on the typed
-    variants are still open.
+25. 🟡 **Richer `CoreError`** — added `ModelLoad`, `Inference`, `Config`,
+    `Download` and `ModelArchive` variants (with constructors) and migrated the
+    runtime/model layer (session, detector, species, eye) and the model registry
+    (downloads, archives, checksums, spec refusals). `Other(String)` stays a
+    documented fallback for the remaining long tail (decoders, xmp, trainer);
+    `#[source]` chains on the typed variants are still open.
 26. ⬜ **Benchmarks in CI** — criterion with a tolerance gate (noisy on shared
     runners; probably a nightly job rather than per-PR).
 

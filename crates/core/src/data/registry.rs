@@ -222,13 +222,13 @@ impl Fetcher for HttpFetcher {
         let mut response = agent
             .get(url)
             .call()
-            .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))?;
+            .map_err(|e| CoreError::download(url, e.to_string()))?;
         response
             .body_mut()
             .with_config()
             .limit(MAX_DOWNLOAD_BYTES)
             .read_to_vec()
-            .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))
+            .map_err(|e| CoreError::download(url, e.to_string()))
     }
 }
 
@@ -236,10 +236,13 @@ impl Fetcher for HttpFetcher {
 /// read an unbounded file into memory (the HTTP fetcher caps downloads already).
 fn check_artifact_size(label: &str, len: u64) -> Result<()> {
     if len > MAX_DOWNLOAD_BYTES {
-        return Err(CoreError::Other(format!(
-            "model artifact '{label}' exceeds the {} MiB limit",
-            MAX_DOWNLOAD_BYTES / (1024 * 1024)
-        )));
+        return Err(CoreError::model_archive(
+            label,
+            format!(
+                "artifact exceeds the {} MiB limit",
+                MAX_DOWNLOAD_BYTES / (1024 * 1024)
+            ),
+        ));
     }
     Ok(())
 }
@@ -252,10 +255,13 @@ fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
     if actual.eq_ignore_ascii_case(&spec.sha256) {
         Ok(())
     } else {
-        Err(CoreError::Other(format!(
-            "checksum mismatch for '{}': expected {}, got {}",
-            spec.key, spec.sha256, actual
-        )))
+        Err(CoreError::model_archive(
+            &spec.key,
+            format!(
+                "checksum mismatch: expected {}, got {}",
+                spec.sha256, actual
+            ),
+        ))
     }
 }
 
@@ -270,19 +276,19 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|e| CoreError::io(&staging, e))?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-            .map_err(|e| CoreError::Other(format!("bad zip for '{}': {e}", spec.key)))?;
+            .map_err(|e| CoreError::model_archive(&spec.key, format!("bad zip: {e}")))?;
         if archive.len() > MAX_MODEL_ARCHIVE_ENTRIES {
-            return Err(CoreError::Other(format!(
-                "model archive '{}' has too many entries",
-                spec.key
-            )));
+            return Err(CoreError::model_archive(
+                &spec.key,
+                "archive has too many entries",
+            ));
         }
         let mut total_uncompressed = 0u64;
         let mut seen = std::collections::HashSet::new();
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
-                .map_err(|e| CoreError::Other(format!("bad zip entry: {e}")))?;
+                .map_err(|e| CoreError::model_archive(&spec.key, format!("bad zip entry: {e}")))?;
             // Flatten paths: only the file name is used, so a zip cannot escape.
             let Some(name) = Path::new(file.name()).file_name() else {
                 continue;
@@ -292,33 +298,33 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
             }
             let name = name.to_string_lossy().to_string();
             if !spec.files.iter().any(|expected| expected == &name) {
-                return Err(CoreError::Other(format!(
-                    "unexpected file '{}' in model archive '{}'",
-                    name, spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    format!("unexpected file '{name}' in archive"),
+                ));
             }
             if !seen.insert(name.clone()) {
-                return Err(CoreError::Other(format!(
-                    "duplicate file '{}' in model archive '{}'",
-                    name, spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    format!("duplicate file '{name}' in archive"),
+                ));
             }
             total_uncompressed = total_uncompressed.saturating_add(file.size());
             if total_uncompressed > MAX_MODEL_ARCHIVE_BYTES {
-                return Err(CoreError::Other(format!(
-                    "model archive '{}' expands beyond the size limit",
-                    spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    "archive expands beyond the size limit",
+                ));
             }
             let dest = staging.join(&name);
             let mut out = std::fs::File::create(&dest).map_err(|e| CoreError::io(&dest, e))?;
             std::io::copy(&mut file, &mut out).map_err(|e| CoreError::io(&dest, e))?;
         }
         if !spec.files.iter().all(|expected| seen.contains(expected)) {
-            return Err(CoreError::Other(format!(
-                "model archive '{}' is missing required files",
-                spec.key
-            )));
+            return Err(CoreError::model_archive(
+                &spec.key,
+                "archive is missing required files",
+            ));
         }
         for expected in &spec.files {
             let src = staging.join(expected);
@@ -338,7 +344,7 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
 /// Download and install a model from its configured URL.
 pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<Vec<PathBuf>> {
     if spec.url.is_empty() {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has no download URL yet — use \"Install from file…\" instead",
             spec.key
         )));
@@ -346,13 +352,13 @@ pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<V
     // A remote artifact must be checksum-pinned: an unpinned download is a
     // supply-chain hole (any server/CDN compromise becomes arbitrary model code).
     if spec.sha256.is_empty() {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has a download URL but no pinned SHA-256; refusing to fetch it",
             spec.key
         )));
     }
     if !(spec.url.starts_with("https://") || spec.url.starts_with("http://")) {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has an unsupported download URL scheme",
             spec.key
         )));
@@ -511,6 +517,7 @@ mod tests {
         spec.sha256 = sha256_hex(b"something else");
         let err = install_bytes(dir.path(), &spec, b"good").unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"));
+        assert!(matches!(err, CoreError::ModelArchive { .. }), "{err}");
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
     }
 
