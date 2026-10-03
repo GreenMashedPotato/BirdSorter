@@ -25,6 +25,8 @@ Do not change the application version; it remains `0.1.0`.
   `classify_species`, `subject_first`): started; `analyze_one` now orchestrates
 - **Phase 4** model downloads: timeouts + response-size cap + pinned-checksum
   requirement for remote artifacts: done
+- **Phase 6** UI async guards (review/folder/compare/bursts) and listener
+  cleanup on unmount: done
 - **Phase 2+**: pending
 
 Keep this list current as phases land.

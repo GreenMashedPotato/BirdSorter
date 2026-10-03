@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     inTauri,
     listFolders,
@@ -66,6 +66,8 @@
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
   let files = $state<FileEntry[]>([]);
+  /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
+  const cleanups: (() => void)[] = [];
   let filter = $state<FilterKey>("all");
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
@@ -165,13 +167,15 @@
   let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
 
   async function refreshBursts() {
-    if (!inTauri || activeFolder === null) {
+    const folder = activeFolder;
+    if (!inTauri || folder === null) {
       burstInfo = {};
       burstGroups = [];
       return;
     }
     try {
-      const groups = await bursts(activeFolder);
+      const groups = await bursts(folder);
+      if (activeFolder !== folder) return;
       burstGroups = groups;
       applyBurstInfo(groups);
     } catch {
@@ -596,14 +600,19 @@
   }
 
   async function renderCompare() {
-    if (compareId === null) {
+    const id = compareId;
+    if (id === null) {
       compareUrl = "";
       compareDetail = null;
       return;
     }
     try {
-      compareDetail = await analysisDetail(compareId);
-      compareUrl = await previewImage(compareId, previewMode);
+      const nextDetail = await analysisDetail(id);
+      const nextUrl = await previewImage(id, previewMode);
+      // Ignore a stale response if the compared frame changed while loading.
+      if (compareId !== id) return;
+      compareDetail = nextDetail;
+      compareUrl = nextUrl;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -1194,11 +1203,15 @@
   }
 
   async function refreshFiles() {
-    if (activeFolder === null) {
+    const folder = activeFolder;
+    if (folder === null) {
       files = [];
       return;
     }
-    files = await queryFiles(activeFolder);
+    const rows = await queryFiles(folder);
+    // Ignore a stale response if the user switched folders while it loaded.
+    if (activeFolder !== folder) return;
+    files = rows;
     await refreshBursts();
   }
 
@@ -1421,7 +1434,7 @@
     // Review-view keyboard shortcuts (J/K navigate, Esc closes, +/-/0 zoom).
     // Ignore them while the user is typing in a field, otherwise Backspace in
     // the species box would trash the photo.
-    window.addEventListener("keydown", (e) => {
+    const onKeydown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing =
         !!target &&
@@ -1462,10 +1475,15 @@
       } else if ((e.key === "c" || e.key === "C") && peakingOn) {
         cyclePeakingColor();
       }
-    });
-
-    window.addEventListener("resize", () => {
+    };
+    const onResize = () => {
       if (reviewFile !== null) computeFit(true);
+    };
+    window.addEventListener("keydown", onKeydown);
+    window.addEventListener("resize", onResize);
+    cleanups.push(() => {
+      window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("resize", onResize);
     });
 
     if (!inTauri) {
@@ -1493,42 +1511,56 @@
     await refreshFiles();
     void refreshEyeStats();
 
-    onProgress((p) => {
-      progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
-      status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
-    });
-    onDone(async () => {
-      busy = false;
-      progress = null;
-      status = "done";
-      await refreshFiles();
-    });
-    onError((message) => {
-      busy = false;
-      progress = null;
-      status = `error: ${message}`;
-    });
+    const unlisteners = [
+      onProgress((p) => {
+        progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
+        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
+      }),
+      onDone(async () => {
+        busy = false;
+        progress = null;
+        status = "done";
+        await refreshFiles();
+      }),
+      onError((message) => {
+        busy = false;
+        progress = null;
+        status = `error: ${message}`;
+      }),
+      onScanProgress((p) => {
+        progress = { label: "Scanning", done: p.done, total: p.total };
+        status = p.total
+          ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
+          : "scanning…";
+      }),
+      onScanDone(async (r) => {
+        busy = false;
+        progress = null;
+        status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
+          r.restored ? `, ${r.restored} restored` : ""
+        })`;
+        await refreshFolders();
+        await refreshFiles();
+      }),
+      onScanError((message) => {
+        busy = false;
+        progress = null;
+        status = `scan error: ${message}`;
+      }),
+    ];
+    for (const pending of unlisteners) {
+      void pending.then((off) => cleanups.push(off)).catch(() => {});
+    }
+  });
 
-    onScanProgress((p) => {
-      progress = { label: "Scanning", done: p.done, total: p.total };
-      status = p.total
-        ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
-        : "scanning…";
-    });
-    onScanDone(async (r) => {
-      busy = false;
-      progress = null;
-      status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
-        r.restored ? `, ${r.restored} restored` : ""
-      })`;
-      await refreshFolders();
-      await refreshFiles();
-    });
-    onScanError((message) => {
-      busy = false;
-      progress = null;
-      status = `scan error: ${message}`;
-    });
+  onDestroy(() => {
+    for (const off of cleanups.splice(0)) {
+      try {
+        off();
+      } catch {
+        /* a failed teardown must not break unmount */
+      }
+    }
   });
 
   // Load thumbnails for the tiles actually on screen, a few at a time.
