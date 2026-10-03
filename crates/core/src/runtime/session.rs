@@ -38,7 +38,7 @@ fn run_with_cpu_fallback<S, R>(
             if !gpu.swap(false, Ordering::Relaxed) {
                 return Err(e);
             }
-            eprintln!("{label}: provider failed ({e}); rebuilding the session on CPU");
+            tracing::warn!(model = label, error = %e, "provider failed; rebuilding the session on CPU");
             let cpu = rebuild_cpu()?;
             *session = cpu;
             attempt(session)

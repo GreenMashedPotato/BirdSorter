@@ -57,7 +57,7 @@ fn seed_bundled_models(app: &AppHandle) {
         return;
     };
     if !seed_model_file(app, &dir, DETECTOR_ONNX) {
-        eprintln!("bundled detector not found; subject detection needs a model");
+        tracing::warn!("bundled detector not found; subject detection needs a model");
     }
     // The species bundle is optional (a dev build may omit it).
     for name in [
@@ -102,8 +102,18 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
+/// Route `tracing` diagnostics to stderr, honouring `RUST_LOG` (default `warn`).
+/// The release build has no console, so this is mainly useful for dev runs; the
+/// panic hook still appends to `crash.log`.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).with_target(false).try_init();
+}
+
 /// Build and run the desktop app.
 pub(crate) fn run() {
+    init_tracing();
     install_panic_hook();
     let db_path = db::default_db_path().unwrap_or_else(|_| PathBuf::from("birdsorter.db"));
     let cache = ThumbCache::open_default()
