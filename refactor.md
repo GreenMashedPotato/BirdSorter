@@ -43,7 +43,10 @@ Do not change the application version; it remains `0.1.0`.
   Tauri builder). `main.rs` is now only module declarations + `startup::run()`:
   done
 - **Phase 6** UI async guards (review/folder/compare/bursts) and listener
-  cleanup on unmount: done
+  cleanup on unmount: done. Component split started: `AppToolbar`, `FilterBar`,
+  `LabelBar` and `PhotoGrid` are extracted from `App.svelte` (markup only — the
+  state, derived values and the grid DOM ref stay in `App`); the review view and
+  the modals are still inline
 - **Phase 7** security/resource tests: the model-registry controls are now
   covered for ZIP traversal/escape, unexpected/duplicate/missing entries and the
   entry-count cap (previously only the happy path was tested): started

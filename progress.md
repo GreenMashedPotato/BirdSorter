@@ -407,6 +407,13 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   `runtime::session::OnnxSession` wrapper: one CPU rebuild per model instance, a
   single retry, a typed error if CPU also fails, and the provider flag exposed via
   `is_gpu()`. Five unit tests drive the transitions with a fake session (no model).
+- **Refactor Phase 6 (UI split)**: the first components left `App.svelte` —
+  `AppToolbar.svelte` (scan/analyse actions + status), `FilterBar.svelte` (filter
+  chips + selection summary), `LabelBar.svelte` (bulk label/rate toolbar) and
+  `PhotoGrid.svelte` (the virtualized tile window). They are presentational:
+  `App` keeps all state, derived values and the grid DOM ref, so behavior is
+  unchanged (`svelte-check` clean, build passes). The review view and dialogs
+  remain inline.
 - **Refactor Phase 7 (security tests)**: the model-registry hardening now has
   tests for a ZIP entry that would escape the model directory (flattened, stays
   inside), an unexpected file, two entries that flatten to the same name
