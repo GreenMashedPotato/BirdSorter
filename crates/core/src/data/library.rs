@@ -977,6 +977,48 @@ mod tests {
     }
 
     #[test]
+    fn changing_file_content_makes_it_pending_again() {
+        use crate::analysis::scorer::score_rules;
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let lf = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(files_needing_analysis(&conn, fid).unwrap().len(), 1);
+
+        let features = SharpnessFeatures::default();
+        let score = score_rules(&features, &ScoreSettings::default());
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: lf.file.id,
+                features,
+                score,
+                analyzed_content_hash: Some(lf.file.content_hash.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(files_needing_analysis(&conn, fid).unwrap().is_empty());
+
+        // Replace the file's content: the stored revision no longer matches.
+        write(dir.path(), "a.cr3", b"changed content");
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.updated, 1);
+        let pending = files_needing_analysis(&conn, fid).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].file.filename, "a.cr3");
+    }
+
+    #[test]
     fn list_files_worst_first_orders_by_score() {
         use crate::analysis::scorer::{score_rules, ScoreResult};
         use crate::analysis::sharpness::SharpnessFeatures;
