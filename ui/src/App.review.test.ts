@@ -1,6 +1,26 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 
+// Gates let a test hold one file's `analysisDetail` response so a stale response
+// can be released out of order (the rapid-navigation regression).
+const gates = vi.hoisted(() => {
+  const waits = new Map<number, Promise<void>>();
+  const release = new Map<number, () => void>();
+  return {
+    hold(id: number) {
+      if (!waits.has(id)) waits.set(id, new Promise<void>((res) => release.set(id, res)));
+    },
+    wait(id: number): Promise<void> | undefined {
+      return waits.get(id);
+    },
+    release(id: number) {
+      release.get(id)?.();
+      release.delete(id);
+      waits.delete(id);
+    },
+  };
+});
+
 // jsdom has no ResizeObserver; App's grid effect needs one.
 beforeAll(() => {
   class RO {
@@ -51,7 +71,11 @@ vi.mock("./lib/api", async (importOriginal) => {
     ]),
     queryFiles: vi.fn(async () => [file(1), file(2), file(3)]),
     bursts: vi.fn(async () => []),
-    analysisDetail: vi.fn(async (id: number) => detail(id)),
+    analysisDetail: vi.fn(async (id: number) => {
+      const held = gates.wait(id);
+      if (held) await held;
+      return detail(id);
+    }),
     previewImage: vi.fn(async () => "data:image/jpeg;base64,"),
     getThumbnail: vi.fn(async () => ""),
     labelFiles: vi.fn(async () => 1),
@@ -108,5 +132,21 @@ describe("review view", () => {
     const review = container.querySelector(".review") as HTMLElement;
     await fireEvent.click(within(review).getByText("Sharp"));
     await waitFor(() => expect(labelFiles).toHaveBeenCalledWith([1], "sharp"));
+  });
+
+  it("ignores a stale frame when navigating quickly", async () => {
+    gates.hold(2); // the frame we navigate to first will not resolve yet
+    const { container, getByText } = await openFirstReview();
+
+    await fireEvent.click(getByText("J ›")); // → file 2 (held)
+    await fireEvent.click(getByText("J ›")); // → file 3 (resolves)
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img3.cr3"),
+    );
+
+    // Frame 2's response finally arrives: it must not overwrite the open file.
+    gates.release(2);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.querySelector(".review strong")?.textContent).toBe("img3.cr3");
   });
 });
