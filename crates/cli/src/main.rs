@@ -993,6 +993,21 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         println!("--force: cleared {cleared} stored result(s)");
     }
 
+    // Warn (do not fail) when the data or cache drive is nearly full, so a long
+    // run is not started into a wall.
+    let mut space_targets = vec![db_path.clone()];
+    if let Ok(cache) = birdsorter_core::io::cache::default_cache_dir() {
+        space_targets.push(cache);
+    }
+    for path in &space_targets {
+        if let Some(msg) = birdsorter_core::io::disk::low_space_warning(
+            path,
+            birdsorter_core::io::disk::MIN_FREE_BYTES,
+        ) {
+            eprintln!("warning: {msg}");
+        }
+    }
+
     // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {
         Box::new(NullDetector)

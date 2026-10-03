@@ -243,6 +243,14 @@ fn run_analysis(
     let conn = open(db_path)?;
     let pipe = build_pipeline(&conn, model)?;
 
+    // Warn (do not fail) when the data drive is nearly full.
+    if let Some(msg) = birdsorter_core::io::disk::low_space_warning(
+        db_path,
+        birdsorter_core::io::disk::MIN_FREE_BYTES,
+    ) {
+        tracing::warn!("{msg}");
+    }
+
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
