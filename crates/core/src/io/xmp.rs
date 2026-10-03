@@ -46,16 +46,38 @@ fn fresh_document(rating: u8) -> String {
     )
 }
 
-/// Replace the value of an `xmp:Rating="…"` attribute, if present.
+/// Replace the value of an `xmp:Rating=…` attribute, tolerating single quotes
+/// and whitespace around `=`.
 fn replace_attribute(text: &str, rating: u8) -> Option<String> {
-    let key = "xmp:Rating=\"";
-    let start = text.find(key)? + key.len();
-    let end = text[start..].find('"')? + start;
-    let mut out = String::with_capacity(text.len());
-    out.push_str(&text[..start]);
-    out.push_str(&rating.to_string());
-    out.push_str(&text[end..]);
-    Some(out)
+    let key = "xmp:Rating";
+    let mut search = 0;
+    while let Some(rel) = text[search..].find(key) {
+        let after = search + rel + key.len();
+        let rest = &text[after..];
+        let ws1 = rest.len() - rest.trim_start().len();
+        let eq = after + ws1;
+        if text[eq..].starts_with('=') {
+            let after_eq = eq + 1;
+            let ws2 = text[after_eq..].len() - text[after_eq..].trim_start().len();
+            let value_start = after_eq + ws2;
+            let bytes = text.as_bytes();
+            if value_start < bytes.len() {
+                let quote = bytes[value_start];
+                if quote == b'"' || quote == b'\'' {
+                    if let Some(end_rel) = text[value_start + 1..].find(quote as char) {
+                        let end = value_start + 1 + end_rel;
+                        let mut out = String::with_capacity(text.len() + 2);
+                        out.push_str(&text[..value_start + 1]);
+                        out.push_str(&rating.to_string());
+                        out.push_str(&text[end..]);
+                        return Some(out);
+                    }
+                }
+            }
+        }
+        search = after;
+    }
+    None
 }
 
 /// Replace an `<xmp:Rating>…</xmp:Rating>` element, if present.
@@ -138,6 +160,18 @@ mod tests {
  </rdf:RDF>
 </x:xmpmeta>
 "#;
+
+    #[test]
+    fn replaces_single_quoted_and_spaced_attributes() {
+        let single = r#"<rdf:Description xmp:Rating='2' tiff:Make="Canon"/>"#;
+        let merged = merge(single, 5).unwrap();
+        assert!(merged.contains("xmp:Rating='5'"), "{merged}");
+        assert!(merged.contains("tiff:Make=\"Canon\""));
+
+        let spaced = r#"<rdf:Description xmp:Rating = "1"/>"#;
+        let merged = merge(spaced, 4).unwrap();
+        assert!(merged.contains("xmp:Rating = \"4\""), "{merged}");
+    }
 
     #[test]
     fn replaces_an_existing_attribute_and_keeps_everything_else() {
