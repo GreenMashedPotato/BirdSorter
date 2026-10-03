@@ -37,10 +37,7 @@ impl OnnxSpeciesClassifier {
         let session = OnnxSession::load(model, device)?;
         let labels = load_labels(labels_path)?;
         if labels.is_empty() {
-            return Err(CoreError::Other(format!(
-                "no labels loaded from {}",
-                labels_path.display()
-            )));
+            return Err(CoreError::model_load(labels_path, "no labels were loaded"));
         }
         Ok(Self {
             session,
@@ -125,8 +122,9 @@ impl OnnxSpeciesClassifier {
         let (dims, data) = self.infer(&tensor)?;
         let num_classes = dims.get(1).copied().unwrap_or(0);
         if num_classes == 0 || data.len() < n * num_classes {
-            return Err(CoreError::Other(
-                "species model returned an unexpected output shape".into(),
+            return Err(CoreError::inference(
+                "species",
+                "model returned an unexpected output shape",
             ));
         }
         Ok((0..n)

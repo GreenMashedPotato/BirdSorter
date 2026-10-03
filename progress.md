@@ -275,6 +275,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Richer `CoreError`**: added `ModelLoad`, `Inference` and `Config` variants
+  (with `model_load`/`inference`/`config` constructors). The model/runtime layer
+  now uses them — `OnnxSession::run_tensor` wraps failures as `Inference`
+  (model name included), model loads are `ModelLoad` with the path, and output-
+  shape mismatches are `Inference` — as do the platform-dir errors (`Config`).
+  `Other(String)` remains a documented fallback for the long tail. New test
+  covers the variants and their context.
 - **Disk-space check**: new `io::disk` (`available_space`, `low_space_warning`)
   warns below 200 MB free on the data/cache drive before analysis starts, so a
   run is not launched into a full disk. It resolves a not-yet-created directory

@@ -125,14 +125,15 @@ pub(crate) fn build_session(
 
     let builder = base_builder()?;
     let session = builder.commit_from_file(model).map_err(|e| {
-        CoreError::Other(format!(
-            "failed to load ONNX model {}: {e}\n  \
-             hint: an 'unsupported operator'/'opset' error means the model was \
-             exported for a newer ONNX Runtime than the bundled one — re-export at \
-             a lower opset (see MODELS.md). A missing session usually means a \
-             truncated download; re-install the model from the Model Manager.",
-            model.display()
-        ))
+        CoreError::model_load(
+            model,
+            format!(
+                "{e}\n  hint: an 'unsupported operator'/'opset' error means the model was \
+                 exported for a newer ONNX Runtime than the bundled one — re-export at \
+                 a lower opset (see MODELS.md). A missing session usually means a \
+                 truncated download; re-install the model from the Model Manager."
+            ),
+        )
     })?;
     Ok((session, None))
 }
@@ -247,9 +248,10 @@ impl OnnxDetector {
         self.session.run_tensor(&tensor, |shape, data| {
             let got = shape.first().copied().unwrap_or(0);
             if got != n {
-                return Err(CoreError::Other(format!(
-                    "detector returned batch {got} for {n} regions"
-                )));
+                return Err(CoreError::inference(
+                    "detector",
+                    format!("returned batch {got} for {n} regions"),
+                ));
             }
             let mut all: Vec<Detection> = Vec::new();
             for (i, r) in regions.iter().enumerate() {
@@ -541,7 +543,8 @@ mod tests {
         );
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("failed to load ONNX model"));
+        assert!(err.to_string().contains("could not load model"), "{err}");
+        assert!(matches!(err, CoreError::ModelLoad { .. }), "{err}");
     }
 
     /// End-to-end inference against a real model. Skipped unless
