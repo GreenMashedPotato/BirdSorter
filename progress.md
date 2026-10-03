@@ -384,6 +384,19 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 - **Refactor Phase 5 (continued)**: rendering constants moved to `config.rs`, and
   the thumbnail/preview commands + render helpers moved to `preview.rs`. `main.rs`
   registers them via `preview::…`; behavior unchanged (same caches, same modes).
+- **Refactor Phase 5 (completed)**: the rest of `main.rs` was split out —
+  `library.rs` (folders/scan/query/trash/ratings), `analysis.rs` (ingest pipeline,
+  review detail, bursts, manual box editing, rescore, train), `app.rs` (settings,
+  species list, About payload, cache maintenance), `export.rs` (keeper/single-file
+  export), and `startup.rs` (model seeding, panic hook, Tauri builder). `main.rs`
+  is now only the module list and `startup::run()`; behavior unchanged.
+- **Refactor Phase 4 (cache GC)**: `ThumbCache::retain` now parses sized render
+  keys (`{hash}@{long_side}.thumb`), so a GC pass no longer deletes cached
+  previews as orphans; stale write temps are matched by the `.thumb.tmp.` marker
+  as well as a `.tmp` suffix. Covered by a new test.
+- **Refactor Phase 4 (decode limits)**: the ordinary-image byte cap is now a
+  shared `decoder::ensure_file_within`, also applied to the thumbnail fallback
+  decode (the RAW embedded-preview fast path is unaffected). New test.
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.
