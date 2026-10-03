@@ -8,25 +8,16 @@ use ndarray::Array3;
 use rusqlite::Connection;
 
 use crate::analysis::detector::{BBox, Detection};
-use crate::analysis::eye::{eye_sharpness_from_model, EyeDetector};
+use crate::analysis::eye::EyeDetector;
 use crate::analysis::scorer::{score_rules, ScoreResult};
-use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
-use crate::analysis::species::{crop_rgb, SpeciesClassifier};
-use crate::data::analysis_store::{upsert_analysis, AnalysisRecord, SubjectSpecies};
+use crate::analysis::sharpness::SharpnessFeatures;
+use crate::analysis::species::SpeciesClassifier;
+use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
 use crate::data::library;
 use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
+use crate::pipeline::stages;
 use crate::{CoreError, Result};
-
-/// Minimum bird-box side length worth classifying. The iNat21 model takes 384 px
-/// and is ~15x slower than the old 85 MB int8 model, so a crop this small cannot
-/// be identified reliably anyway - skipping it saves ~350 ms per image and avoids
-/// confidently wrong labels on distant specks.
-const MIN_SPECIES_CROP: i32 = 110;
-
-/// Minimum subject side for the eye model to be worth running (below this the
-/// crop carries too few eye pixels to localise reliably).
-const MIN_EYE_CROP: i32 = 64;
 
 /// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
 /// backends can implement them without depending on the pipeline.
@@ -408,145 +399,25 @@ fn analyze_one(
 ) -> Result<AnalysisRecord> {
     let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
-    // A box the user drew by hand is the subject even if a detected bird is
-    // sharper; otherwise the sharpest detection wins.
-    let (mut features, best_bbox, subject_class) = if dets.is_empty() {
-        (compute_features(rgb, None), None, None)
-    } else if let Some(det) = dets.iter().find(|d| d.class_name == "manual") {
-        let subject = Subject {
-            bbox: det.bbox,
-            area_px: det.area_px,
-        };
-        (
-            compute_features(rgb, Some(subject)),
-            Some(det.bbox),
-            Some(det.class_name.clone()),
-        )
-    } else {
-        let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
-        for det in &dets {
-            let subject = Subject {
-                bbox: det.bbox,
-                area_px: det.area_px,
-            };
-            let f = compute_features(rgb, Some(subject));
-            let sharp = f.tenengrad_subject.max(f.laplacian_subject);
-            if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
-                best = Some((f, det.bbox, det.class_name.clone(), sharp));
-            }
-        }
-        match best {
-            Some((f, bbox, class, _)) => (f, Some(bbox), Some(class)),
-            None => (compute_features(rgb, None), None, None),
-        }
-    };
-
-    // When an eye model is installed, measure the eye window it finds instead
-    // of the heuristic's fixed head/eye candidates.
-    if let (Some(detector), Some(bbox)) = (eye, best_bbox) {
-        if detector.available() && bbox.w >= MIN_EYE_CROP && bbox.h >= MIN_EYE_CROP {
-            let radius = (bbox.w.min(bbox.h) as usize / 16).clamp(4, 40);
-            if let Some(crop) = crop_rgb(rgb, bbox) {
-                if let Ok(Some((v, _))) = eye_sharpness_from_model(detector, &crop, radius) {
-                    features.eye_sharpness_worst = v;
-                }
-            }
-        }
-    }
-
-    let score = scorer.score(&features)?;
+    let pick = stages::select_subject(rgb, &dets, eye);
+    let score = scorer.score(&pick.features)?;
 
     let (img_h, img_w, _) = rgb.dim();
-
-    // Species identification for each detected bird subject.
-    let mut species_name: Option<String> = None;
-    let mut species_confidence: Option<f32> = None;
-    let mut species_top5: Vec<(String, f32)> = Vec::new();
-
-    // Persist box provenance even when no species model is installed. Manual
-    // boxes must not later be reconstructed as ordinary detector boxes.
-    let mut per_box: Vec<SubjectSpecies> = dets
-        .iter()
-        .map(|d| SubjectSpecies {
-            bbox: d.bbox.to_array(),
-            species: None,
-            confidence: None,
-            top5: Vec::new(),
-            class: Some(d.class_name.clone()),
-        })
-        .collect();
-
-    if let Some(classifier) = species {
-        if classifier.available() && !dets.is_empty() {
-            // Crops to classify: bird boxes big enough to be worth upscaling.
-            let crops: Vec<(usize, Array3<u8>)> = dets
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| {
-                    // Detected birds and boxes the user drew are both subjects.
-                    matches!(d.class_name.as_str(), "bird" | "manual")
-                        && d.bbox.w >= MIN_SPECIES_CROP
-                        && d.bbox.h >= MIN_SPECIES_CROP
-                })
-                .filter_map(|(i, d)| crop_rgb(rgb, d.bbox).map(|c| (i, c)))
-                .collect();
-
-            if !crops.is_empty() {
-                let refs: Vec<&Array3<u8>> = crops.iter().map(|(_, c)| c).collect();
-                let results = classifier.identify_batch(&refs)?;
-                for ((i, _), res) in crops.iter().zip(results) {
-                    if let Some(id) = res {
-                        if let Some(entry) = per_box.get_mut(*i) {
-                            let best = id.best();
-                            entry.species = best.map(|b| b.name.clone());
-                            entry.confidence = best.map(|b| b.confidence);
-                            entry.top5 = id
-                                .top
-                                .iter()
-                                .map(|b| (b.name.clone(), b.confidence))
-                                .collect();
-                        }
-                    }
-                }
-            }
-
-            // Top-level summary = the first identified subject.
-            if let Some(first) = per_box.iter().find(|p| p.species.is_some()) {
-                species_name = first.species.clone();
-                species_confidence = first.confidence;
-                species_top5 = first.top5.clone();
-            }
-        }
-    }
-    let mut subject_species = per_box;
-
-    // `subject_species` is parsed positionally against the stored boxes, so put
-    // the chosen subject first in *both* lists (the storage layer also stores
-    // best-first).
-    if let Some(best) = best_bbox {
-        if let Some(pos) = all_bboxes.iter().position(|b| *b == best) {
-            if pos != 0 {
-                let b = all_bboxes.remove(pos);
-                all_bboxes.insert(0, b);
-                if pos < subject_species.len() {
-                    let s = subject_species.remove(pos);
-                    subject_species.insert(0, s);
-                }
-            }
-        }
-    }
+    let outcome = stages::classify_species(rgb, &dets, species)?;
+    let mut per_box = outcome.per_box;
+    stages::subject_first(&mut all_bboxes, &mut per_box, pick.bbox);
 
     Ok(AnalysisRecord {
         file_id,
-        features,
+        features: pick.features,
         score,
-        subject_bbox: best_bbox,
-        subject_class,
+        subject_bbox: pick.bbox,
+        subject_class: pick.class,
         all_bboxes,
-        species_name,
-        species_confidence,
-        species_top5,
-        subject_species,
+        species_name: outcome.name,
+        species_confidence: outcome.confidence,
+        species_top5: outcome.top5,
+        subject_species: per_box,
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
         analyzed_content_hash: None,
