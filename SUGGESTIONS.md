@@ -75,8 +75,10 @@ on a 28-core Windows box.
    a crash mid-batch leaves a partially-analyzed batch (no corruption, just a
    resume). Wrapping the batch in one transaction needs the `with_tx` callers
    reworked to avoid nesting.
-9. ⬜ **Disk-space check before analysis** — warn when the cache drive is nearly
-   full instead of failing mid-run.
+9. ✅ **Disk-space check before analysis** — `io::disk` reads free space (works on
+   not-yet-created dirs by walking to an existing ancestor); the CLI and desktop
+   warn below `MIN_FREE_BYTES` (200 MB) on the data/cache drive before a run
+   starts, rather than failing mid-run.
 10. ✅ **Structured logging** — the runtime desktop diagnostics (GPU/EP selection,
     provider fallback, detector batch/region failures, model-load failures) now use
     `tracing`; the CLI and desktop init a subscriber from `RUST_LOG` (default

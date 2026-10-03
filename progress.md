@@ -275,6 +275,11 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Disk-space check**: new `io::disk` (`available_space`, `low_space_warning`)
+  warns below 200 MB free on the data/cache drive before analysis starts, so a
+  run is not launched into a full disk. It resolves a not-yet-created directory
+  to its existing ancestor; the CLI `analyze` and the desktop pipeline both call
+  it (advisory — never a hard gate). Two unit tests.
 - **Portable mode**: a `portable.flag` next to the executable redirects the DB,
   models, settings and cache to `<exe dir>/BirdSorterData/`; `BIRDSORTER_DATA_DIR`
   forces a portable root (tests/CI). Path resolution is centralized in

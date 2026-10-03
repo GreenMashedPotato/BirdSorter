@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod decoder;
 pub mod develop;
+pub mod disk;
 pub mod exif;
 pub mod export;
 pub mod hash;
