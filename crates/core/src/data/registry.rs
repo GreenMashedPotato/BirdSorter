@@ -22,6 +22,11 @@ use crate::{CoreError, Result};
 
 const MAX_MODEL_ARCHIVE_ENTRIES: usize = 32;
 const MAX_MODEL_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Upper bound on a downloaded model artifact (the species bundle is ~818 MB).
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DOWNLOAD_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// Feature tier a model unlocks (see `plan.md` §3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,11 +211,22 @@ pub struct HttpFetcher;
 
 impl Fetcher for HttpFetcher {
     fn fetch(&self, url: &str) -> Result<Vec<u8>> {
-        let mut response = ureq::get(url)
+        // Bounded download: explicit timeouts and a response-size limit so a
+        // stalled or hostile server cannot exhaust memory or hang the app.
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(DOWNLOAD_CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(DOWNLOAD_RESPONSE_TIMEOUT))
+            .timeout_global(Some(DOWNLOAD_TOTAL_TIMEOUT))
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let mut response = agent
+            .get(url)
             .call()
             .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))?;
         response
             .body_mut()
+            .with_config()
+            .limit(MAX_DOWNLOAD_BYTES)
             .read_to_vec()
             .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))
     }
@@ -311,6 +327,20 @@ pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<V
     if spec.url.is_empty() {
         return Err(CoreError::Other(format!(
             "model '{}' has no download URL yet — use \"Install from file…\" instead",
+            spec.key
+        )));
+    }
+    // A remote artifact must be checksum-pinned: an unpinned download is a
+    // supply-chain hole (any server/CDN compromise becomes arbitrary model code).
+    if spec.sha256.is_empty() {
+        return Err(CoreError::Other(format!(
+            "model '{}' has a download URL but no pinned SHA-256; refusing to fetch it",
+            spec.key
+        )));
+    }
+    if !(spec.url.starts_with("https://") || spec.url.starts_with("http://")) {
+        return Err(CoreError::Other(format!(
+            "model '{}' has an unsupported download URL scheme",
             spec.key
         )));
     }
@@ -442,6 +472,18 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
         assert_eq!(std::fs::read(&paths[0]).unwrap(), payload);
+    }
+
+    #[test]
+    fn unpinned_remote_download_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = single_file_spec("https://example/m.onnx", b"weights");
+        spec.sha256 = String::new();
+        let fetcher = FakeFetcher {
+            responses: HashMap::from([(spec.url.clone(), b"weights".to_vec())]),
+        };
+        let err = download(dir.path(), &spec, &fetcher).unwrap_err();
+        assert!(err.to_string().contains("no pinned SHA-256"), "{err}");
     }
 
     #[test]
