@@ -139,9 +139,12 @@ on a 28-core Windows box.
 
 ## Documentation (open)
 
-31. ⬜ **Architecture diagram** (RAW → decode → detect → features → score → store).
-32. ⬜ **Contributing guide** — adding a detector, model, metric or UI panel.
-33. ⬜ **Troubleshooting guide** — GPU EP fallback, missing species model, slow runs.
+31. ✅ **Architecture doc** — `ARCHITECTURE.md` (system + pipeline diagrams, module
+    map, runtime tiers, IPC, storage locations).
+32. ✅ **Contributing guide** — `CONTRIBUTING.md` (dependency direction, the gates,
+    recipes for a metric/detector/model/UI panel/command, invariants).
+33. ✅ **Troubleshooting guide** — `TROUBLESHOOTING.md` (GPU EP fallback, models,
+    slow runs, stale results, cache, trash/undo, `RUST_LOG`).
 
 ---
 

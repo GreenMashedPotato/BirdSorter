@@ -17,6 +17,9 @@ raw-sorter-app/
   models/            Small development/bundled detector artifacts
   dist-models/       Large distribution-only model artifacts; not committed
   plan.md            Architecture and product plan
+  ARCHITECTURE.md    System/pipeline diagrams, module map, IPC, storage
+  CONTRIBUTING.md    How to add code (deps, gates, recipes, invariants)
+  TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
   progress.md        Living implementation status
   refactor.md        Refactoring execution plan
   MODELS.md          Model contracts and licenses

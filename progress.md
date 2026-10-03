@@ -275,6 +275,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Docs**: added `ARCHITECTURE.md` (system + pipeline diagrams, module map,
+  runtime tiers, Tauri IPC, storage locations), `CONTRIBUTING.md` (dependency
+  direction, the gates, recipes for adding a metric/detector/model/UI panel/command,
+  and the invariants) and `TROUBLESHOOTING.md` (GPU EP fallback, missing models,
+  slow runs, stale results, the cache, trash/undo, `RUST_LOG`). `rule.md` lists
+  them in the project structure.
+
 ## TODO / backlog (roughly ordered)
 
 See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
