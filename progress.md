@@ -440,6 +440,11 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   a successful install leaves no `.part`). The XMP writer gained tests for a
   malformed sidecar (refused with a clear error and left byte-for-byte intact),
   rating clamping to 0–5, and an idempotent rewrite that leaves no temp file.
+- **Refactor Phase 7 (import cap)**: a local model import is now size-checked
+  (2 GiB) from the file's metadata *before* `std::fs::read`, so an oversized
+  `.onnx`/`.zip` can no longer be pulled into memory — the fetcher already capped
+  downloads, but the local-import path did not. `install_bytes` repeats the check
+  as a safety net.
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.

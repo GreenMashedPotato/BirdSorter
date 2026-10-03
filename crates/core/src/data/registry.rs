@@ -232,6 +232,18 @@ impl Fetcher for HttpFetcher {
     }
 }
 
+/// Reject an artifact larger than the install limit, so a local import cannot
+/// read an unbounded file into memory (the HTTP fetcher caps downloads already).
+fn check_artifact_size(label: &str, len: u64) -> Result<()> {
+    if len > MAX_DOWNLOAD_BYTES {
+        return Err(CoreError::Other(format!(
+            "model artifact '{label}' exceeds the {} MiB limit",
+            MAX_DOWNLOAD_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
+}
+
 fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
     if spec.sha256.is_empty() {
         return Ok(());
@@ -250,6 +262,7 @@ fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
 /// Install already-fetched artifact bytes: verify, then unzip or write.
 pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<PathBuf>> {
     verify(spec, bytes)?;
+    check_artifact_size(&spec.key, bytes.len() as u64)?;
     std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
 
     if spec.unpack {
@@ -350,6 +363,13 @@ pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<V
 
 /// Install a model from a local file (a `.zip` bundle or a single `.onnx`).
 pub fn import_file(dir: &Path, spec: &ModelSpec, source: &Path) -> Result<Vec<PathBuf>> {
+    // Stat before reading: never pull a multi-GB file into memory just to
+    // reject it (a downloaded artifact is capped by the fetcher; a local
+    // import was not).
+    let len = std::fs::metadata(source)
+        .map_err(|e| CoreError::io(source, e))?
+        .len();
+    check_artifact_size(&source.display().to_string(), len)?;
     let bytes = std::fs::read(source).map_err(|e| CoreError::io(source, e))?;
     install_bytes(dir, spec, &bytes)
 }
@@ -494,6 +514,15 @@ mod tests {
         let err = install_bytes(dir.path(), &spec, b"good").unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"));
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn an_oversized_artifact_is_rejected() {
+        // The check guards `std::fs::read`, so a file that only *claims* to be
+        // huge is enough to exercise it.
+        assert!(check_artifact_size("ok.onnx", MAX_DOWNLOAD_BYTES).is_ok());
+        let err = check_artifact_size("big.onnx", MAX_DOWNLOAD_BYTES + 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds the"), "{err}");
     }
 
     #[test]

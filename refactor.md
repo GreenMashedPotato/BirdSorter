@@ -55,7 +55,8 @@ Do not change the application version; it remains `0.1.0`.
   entry-count cap, plus interrupted single-file writes (a leftover `.part` is not
   treated as installed; a successful install leaves none). XMP now has tests for
   a malformed sidecar (refused, left verbatim), rating clamping and idempotent
-  rewrites that leave no temp file: started
+  rewrites that leave no temp file. A local model import is now size-capped
+  before it is read into memory: started
 - **Phase 2+**: pending
 
 Keep this list current as phases land.
