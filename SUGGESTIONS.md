@@ -108,7 +108,9 @@ on a 28-core Windows box.
     luminance histogram in the corner (pure `lumaHistogram` helper, unit-tested).
 19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
     highest-scoring frame as Sharp, skipping files you already labelled; undoable.
-18. ⬜ **Drag-and-drop folder import** onto the window.
+18. ✅ **Drag-and-drop folder import** onto the window — a dropped folder is added
+    and scanned via `add_folder`/`scan_folder` (a small `preferredDropPath` helper
+    picks the folder out of a mixed drop; unit-tested).
 
 ## Packaging & distribution (open)
 

@@ -275,6 +275,11 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Drag-and-drop folder import**: dropping a folder onto the window adds and
+  scans it (the toolbar's Add path now goes through `addFolderAndScan`). A small
+  `preferredDropPath` helper picks the folder out of a mixed drop (unit-tested);
+  the Tauri `onDragDropEvent` subscription is torn down on unmount and guarded so
+  it is a no-op outside a real webview.
 - **Histogram overlay** (review view): a **Histogram** toggle draws a luminance
   histogram of the preview in its corner. The computation is a pure
   `lumaHistogram(rgba, bins)` helper (unit-tested: counts, black/white edges,
