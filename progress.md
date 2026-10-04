@@ -275,6 +275,9 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Gated real-RAW integration test**: `crates/core/tests/real_raw.rs` runs the
+  decode → features → verdict path on a real file when `BIRDSORTER_TEST_RAW` is
+  set (no network, no committed fixture). Verified locally against a 26 MP CR3.
 - **Perf: pooled convolution buffers**: `convolve3x3_same` now takes its output
   buffer from a per-thread pool (and callers recycle it), so the multi-megabyte
   `Array2::zeros` is skipped — the convolution overwrites every pixel, so a
