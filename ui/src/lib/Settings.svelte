@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
     DEFAULT_DETECTION_SETTINGS,
     DEFAULT_SETTINGS,
@@ -52,9 +53,25 @@
 
   async function runDiagnostics() {
     diagBusy = true;
-    diagStatus = "writing…";
+    diagStatus = "choosing…";
     try {
-      diagStatus = `saved to ${await saveDiagnostics()}`;
+      // Let the user choose where the report goes; with no native dialog
+      // (tests, a webview-less run) fall back to the backend's timestamped file.
+      let chosen: string | null | undefined;
+      try {
+        chosen = await saveDialog({
+          title: "Save diagnostics report",
+          defaultPath: "birdsorter-diagnostics.txt",
+        });
+      } catch {
+        chosen = undefined;
+      }
+      if (chosen === null) {
+        diagStatus = "cancelled";
+        return;
+      }
+      diagStatus = "writing…";
+      diagStatus = `saved to ${await saveDiagnostics(chosen ?? undefined)}`;
     } catch (e) {
       diagStatus = `error: ${e}`;
     } finally {

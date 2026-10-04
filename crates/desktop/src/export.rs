@@ -7,7 +7,8 @@ use tauri::State;
 
 use birdsorter_core::data::{analysis_store, labels, library};
 use birdsorter_core::io::export::{
-    export_items, ExportItem, ExportLayout, ExportMode, ExportOptions, ExportReport,
+    export_items, space_warning_for, total_source_bytes, ExportItem, ExportLayout, ExportMode,
+    ExportOptions, ExportReport,
 };
 
 use crate::state::AppState;
@@ -19,6 +20,8 @@ pub(crate) struct ExportResultDto {
     exported: usize,
     failed: Vec<String>,
     destination: String,
+    /// Advisory: set when a copy looks too big for the destination volume.
+    warning: Option<String>,
 }
 
 /// Layout + rename, as sent by the export dialog.
@@ -31,7 +34,7 @@ pub(crate) struct ExportOptionsDto {
     rename: Option<String>,
 }
 
-fn to_dto(report: ExportReport) -> ExportResultDto {
+fn to_dto(report: ExportReport, warning: Option<String>) -> ExportResultDto {
     ExportResultDto {
         exported: report.exported,
         failed: report
@@ -40,7 +43,18 @@ fn to_dto(report: ExportReport) -> ExportResultDto {
             .map(|(p, e)| format!("{}: {e}", p.display()))
             .collect(),
         destination: report.destination.to_string_lossy().to_string(),
+        warning,
     }
+}
+
+/// Advisory low-space check for a copy — never blocks the export. A move
+/// within one volume writes nothing (a cross-volume move does, but we cannot
+/// tell them apart here), so only `Copy` is checked.
+fn copy_space_warning(mode: ExportMode, items: &[ExportItem], dest: &Path) -> Option<String> {
+    if mode != ExportMode::Copy {
+        return None;
+    }
+    space_warning_for(total_source_bytes(items), dest)
 }
 
 fn export_opts(opts: &ExportOptionsDto) -> Result<ExportOptions, String> {
@@ -86,12 +100,13 @@ pub(crate) async fn export_file(
         let lf = library::get_file(&conn, file)
             .map_err(err)?
             .ok_or_else(|| "file not found".to_string())?;
-        let item = ExportItem {
+        let items = vec![ExportItem {
             src: lf.absolute_path,
             species: species_of(&conn, file)?,
-        };
-        let report = export_items(&[item], Path::new(&dest), mode, &opts).map_err(err)?;
-        Ok(to_dto(report))
+        }];
+        let warning = copy_space_warning(mode, &items, Path::new(&dest));
+        let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
+        Ok(to_dto(report, warning))
     })
     .await
 }
@@ -135,8 +150,9 @@ pub(crate) async fn export_keepers(
                 species: species_of(&conn, f.file.id)?,
             });
         }
+        let warning = copy_space_warning(mode, &items, Path::new(&dest));
         let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
-        Ok(to_dto(report))
+        Ok(to_dto(report, warning))
     })
     .await
 }

@@ -57,15 +57,16 @@ Commands:
   diagnostics [--out <file>] [--db <path>]  Print a local, redacted diagnostics report
       --out <file>              Write to <file> instead of stdout
       --db <path>               Override the library database location
-  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+  thumb <raw> <out.jpg> [max]   Extract the embedded preview as a JPEG
+  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
-  version                     Print version
-  help                        Show this message
+  version                     Print version (-V / --version)
+  help                        Show this message (-h / --help)
 "
 }
 
@@ -74,9 +75,15 @@ Commands:
 /// stdout as plain `println!`.
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }
+
+/// Default `RUST_LOG` for a run: our own diagnostics at `warn`, but rawler's
+/// per-file decoder warnings ("no preview image support", ambiguous lens
+/// lookups) are expected on every Canon file and would bury real output —
+/// they stay available with `RUST_LOG=rawler=warn`.
+pub(crate) const DEFAULT_LOG: &str = "warn,rawler=error";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -96,11 +103,11 @@ fn main() -> ExitCode {
         Some("probe") => cmd_probe(&args[1..]),
         Some("genimage") => cmd_genimage(&args[1..]),
         Some("selftest") => cmd_selftest(),
-        Some("version") => {
+        Some("version") | Some("-V") | Some("--version") => {
             println!("birdsorter {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some("help") | None => {
+        Some("help") | Some("-h") | Some("--help") | None => {
             print!("{}", usage());
             ExitCode::SUCCESS
         }
@@ -598,6 +605,14 @@ fn cmd_export(args: &[String]) -> ExitCode {
             });
         }
         let opts = ExportOptions { layout, rename };
+        if mode == ExportMode::Copy {
+            let needed = birdsorter_core::io::export::total_source_bytes(&items);
+            if let Some(msg) =
+                birdsorter_core::io::export::space_warning_for(needed, Path::new(dest))
+            {
+                eprintln!("warning: {msg}");
+            }
+        }
         let report = export_items(&items, Path::new(dest), mode, &opts)?;
         println!(
             "exported {} file(s) to {}",
@@ -1216,6 +1231,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
+    let started = std::time::Instant::now();
     let mut last_line = 0usize;
     let progress: IngestProgress = ingest_folder(&conn, folder_id, &ctx, |p| {
         let done = p.decoded + p.failed;
@@ -1231,10 +1247,18 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     })?;
 
     println!();
+    let secs = started.elapsed().as_secs_f64();
     println!(
         "done: {} analysed, {} failed, {} total",
         progress.analyzed, progress.failed, progress.total
     );
+    if progress.analyzed > 0 && secs > 0.0 {
+        println!(
+            "throughput: {:.2} img/s ({:.1} s)",
+            progress.analyzed as f64 / secs,
+            secs
+        );
+    }
     for (name, reason) in &progress.failures {
         eprintln!("  ! {name}: {reason}");
     }

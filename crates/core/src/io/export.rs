@@ -215,6 +215,30 @@ fn bare_items(files: &[PathBuf]) -> Vec<ExportItem> {
         .collect()
 }
 
+/// Total bytes of the exportable sources (missing files count as 0), i.e. an
+/// upper bound on what a copy writes.
+pub fn total_source_bytes(items: &[ExportItem]) -> u64 {
+    items
+        .iter()
+        .filter_map(|i| std::fs::metadata(&i.src).ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// A warning when `needed` bytes will not fit on `dest`'s volume, else `None`.
+/// Advisory, like [`crate::io::disk::low_space_warning`]: an unreadable volume
+/// returns `None` rather than failing the export.
+pub fn space_warning_for(needed: u64, dest: &Path) -> Option<String> {
+    let free = crate::io::disk::available_space(dest).ok()?;
+    (needed > free).then(|| {
+        format!(
+            "the export needs ~{:.1} GB but only {:.1} GB is free on the destination drive",
+            needed as f64 / 1e9,
+            free as f64 / 1e9
+        )
+    })
+}
+
 /// Copy or move `items` into `dest`, arranging them per `opts`.
 ///
 /// Missing sources are reported per-file rather than aborting the run.
@@ -354,6 +378,36 @@ mod tests {
         let report = export_files(&[a], &nested, ExportMode::Copy).unwrap();
         assert_eq!(report.exported, 1);
         assert!(nested.join("a.cr3").is_file());
+    }
+
+    #[test]
+    fn total_source_bytes_sums_existing_and_ignores_missing() {
+        let src = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "a.cr3", "12345");
+        let b = write(src.path(), "b.cr3", "123");
+        let items = vec![
+            ExportItem {
+                src: a,
+                species: None,
+            },
+            ExportItem {
+                src: b,
+                species: None,
+            },
+            ExportItem {
+                src: src.path().join("gone.cr3"),
+                species: None,
+            },
+        ];
+        assert_eq!(total_source_bytes(&items), 8);
+    }
+
+    #[test]
+    fn space_warning_fires_only_when_it_does_not_fit() {
+        let dst = tempfile::tempdir().unwrap();
+        assert!(space_warning_for(1, dst.path()).is_none());
+        let msg = space_warning_for(u64::MAX, dst.path()).unwrap();
+        assert!(msg.contains("free on the destination"), "{msg}");
     }
 
     #[test]

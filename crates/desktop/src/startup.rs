@@ -102,12 +102,18 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
-/// Route `tracing` diagnostics to stderr, honouring `RUST_LOG` (default `warn`).
+/// Default `RUST_LOG`: our own diagnostics at `warn`, but rawler's per-file
+/// decoder warnings ("no preview image support", ambiguous lens lookups) are
+/// expected on every Canon file and would bury real ones — keep them opt-in
+/// with `RUST_LOG=rawler=warn`.
+const DEFAULT_LOG: &str = "warn,rawler=error";
+
+/// Route `tracing` diagnostics to stderr, honouring `RUST_LOG` (default above).
 /// The release build has no console, so this is mainly useful for dev runs; the
 /// panic hook still appends to `crash.log`.
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }
 

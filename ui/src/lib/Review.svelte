@@ -470,9 +470,10 @@
       if (typeof dest !== "string") return;
       status = "exporting…";
       const r = await exportFile(fileId, dest, "copy");
+      const warn = r.warning ? ` · warning: ${r.warning}` : "";
       status = r.exported
-        ? `exported to ${r.destination}${r.failed.length ? ` · ${r.failed.length} failed` : ""}`
-        : `nothing exported${r.failed.length ? ` · ${r.failed[0]}` : ""}`;
+        ? `exported to ${r.destination}${r.failed.length ? ` · ${r.failed.length} failed` : ""}${warn}`
+        : `nothing exported${r.failed.length ? ` · ${r.failed[0]}` : ""}${warn}`;
     } catch (e) {
       status = `error: ${e}`;
     }

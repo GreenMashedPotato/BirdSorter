@@ -410,6 +410,8 @@ export interface ExportResult {
   exported: number;
   failed: string[];
   destination: string;
+  /** Advisory: set when a copy looked too big for the destination drive. */
+  warning: string | null;
 }
 
 export interface CacheReport {

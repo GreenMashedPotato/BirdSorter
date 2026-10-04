@@ -56,8 +56,10 @@ on a 28-core Windows box.
 2. ⬜ **Downscale before the FFT** — `fft_high_freq_ratio` runs on the full
    normalised image (18 ms at 1600×1200). A 2× pre-downscale would quarter the
    cost; needs a calibration check so the threshold semantics hold.
-3. ⬜ **Cross-image species batching** — feeds N images' crops into one call.
-   Measured to be **counterproductive on CPU** (see above), so leave off.
+3. ✅ **Cross-image species batching** — feeds N images' crops into one call.
+   Measured **counterproductive on CPU** (289 ms/crop at batch 1 vs 472 ms/crop at
+   batch 4), so the classifier runs crops one at a time and only batches on a GPU
+   provider. Closed as "won't do" with the measurement recorded above.
 4. ⬜ **Parallel species sessions** — the session sits behind a `Mutex`, so crops
    serialize. A small pool of sessions (one per worker) would parallelize, at the
    cost of one model copy per worker (~85 MB each).

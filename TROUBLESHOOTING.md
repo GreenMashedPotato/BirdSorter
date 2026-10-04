@@ -9,9 +9,16 @@ exact command and its output.
   ```bash
   RUST_LOG=info  birdsorter probe shot.CR3      # chosen execution provider, etc.
   RUST_LOG=debug birdsorter analyze <folder>    # per-region detector details
+  RUST_LOG=warn,rawler=warn birdsorter analyze <folder>   # per-file RAW decoder warnings
   ```
-  Default is `warn`. The desktop build has no console in release; its panics are
-  appended to `<user data>\BirdSorter\data\crash.log` (see `ARCHITECTURE.md` §6).
+  Default is `warn,rawler=error`: our own diagnostics at `warn`, but rawler's
+  per-file decoder warnings ("no preview image support", ambiguous lens lookups)
+  are expected on every Canon file, so they are muted to keep real output
+  readable. The desktop build has no console in release; its panics are appended
+  to `<user data>\BirdSorter\data\crash.log` (see `ARCHITECTURE.md` §6). For a bug
+  report, `birdsorter diagnostics --out report.txt` (or Settings ▸ Diagnostics)
+  writes a **redacted** local report that includes the recent crash lines and
+  strips your home directory from every path — nothing is sent anywhere.
 - **Always run the app in `--release`.** Debug RAW decode is ~10× slower and
   looks like a hang: `cargo run --release -p birdsorter-desktop`.
 
