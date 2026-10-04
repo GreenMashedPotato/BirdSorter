@@ -124,7 +124,14 @@ on a 28-core Windows box.
     scanned and opened in the review; a **second** launch is forwarded to the
     running window by `tauri-plugin-single-instance`. macOS uses
     `RunEvent::Opened` instead — see `MACOS_TODO.md`.
-22. ⬜ **crash reporting opt-in** (e.g. Sentry) — mention with a clear privacy note.
+22. ✅ **Diagnostics opt-in** (was "crash reporting") — **Settings ▸ Diagnostics → Save
+    diagnostics…** writes a *local* report (versions, compute device, schema, library counts,
+    model status + sizes, paths, recent `crash.log` lines) to a file you can attach to a bug
+    report; the CLI has `birdsorter diagnostics [--out <file>]` too. **Nothing is ever
+    transmitted** — no DSN or hosted service is wired, which is the honest, privacy-first
+    version. The user's home directory is stripped from every path (`~`) and free text, and
+    other absolute paths keep only their last components, so a shared report leaks no username
+    or layout. Verified on a real isolated library (report contains no `Users\…`).
 
 ## Architecture (open)
 

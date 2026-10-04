@@ -196,6 +196,7 @@ pub(crate) fn run() {
             library::reset_ratings,
             app::app_info,
             app::clean_cache,
+            app::save_diagnostics,
             app::take_open_request,
             analysis::rescore,
             export::export_keepers,

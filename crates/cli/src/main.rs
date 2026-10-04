@@ -16,7 +16,9 @@ use birdsorter_core::data::library;
 use birdsorter_core::data::models;
 use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
-use birdsorter_core::data::{analysis_store, db, eye_labels, library::ScanReport};
+use birdsorter_core::data::{
+    analysis_store, db, diagnostics, eye_labels, library::ScanReport, paths,
+};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
@@ -52,6 +54,9 @@ Commands:
   cleancache [--all] [--db <path>] [--cache <dir>]  Delete orphaned thumbnails
       --all                     Clear the whole cache
       --cache <dir>             Prune this cache dir instead of the default
+  diagnostics [--out <file>] [--db <path>]  Print a local, redacted diagnostics report
+      --out <file>              Write to <file> instead of stdout
+      --db <path>               Override the library database location
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
@@ -84,6 +89,7 @@ fn main() -> ExitCode {
         Some("export") => cmd_export(&args[1..]),
         Some("export-eyelabels") => cmd_export_eyelabels(&args[1..]),
         Some("cleancache") => cmd_cleancache(&args[1..]),
+        Some("diagnostics") => cmd_diagnostics(&args[1..]),
         Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
         Some("preview") => cmd_preview(&args[1..]),
@@ -720,6 +726,107 @@ fn cmd_cleancache(args: &[String]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("cleancache failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Print (or write) the opt-in diagnostics report: versions, compute device,
+/// model status, library counts, redacted paths and recent crash lines.
+///
+/// Nothing is transmitted — this only reads the library/models and prints a
+/// report. The user's home directory is scrubbed from every path.
+fn cmd_diagnostics(args: &[String]) -> ExitCode {
+    let opt = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let out = opt("--out");
+    let db_override = opt("--db");
+
+    let run = || -> birdsorter_core::Result<String> {
+        let detection = DetectionSettings::load_default();
+        let model_dir = registry::default_model_dir()?;
+        let models = registry::builtin_models()
+            .into_iter()
+            .map(|spec| {
+                let status = registry::status(&model_dir, &spec);
+                let bytes = spec
+                    .files
+                    .iter()
+                    .filter_map(|f| std::fs::metadata(model_dir.join(f)).ok())
+                    .map(|m| m.len())
+                    .sum();
+                diagnostics::ModelLine {
+                    key: spec.key,
+                    status: format!("{status:?}").to_lowercase(),
+                    bytes,
+                }
+            })
+            .collect();
+
+        let db_path = match &db_override {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        // A missing/broken library must not stop the report from being written.
+        let (schema, counts) = match db::connect(&db_path) {
+            Ok(conn) => (
+                db::schema_version(&conn).ok().flatten().unwrap_or(-1),
+                diagnostics::library_counts(&conn).unwrap_or_default(),
+            ),
+            Err(_) => (-1, Default::default()),
+        };
+
+        let mut report_paths: Vec<(&str, String)> = vec![
+            ("data", paths::data_dir()?.display().to_string()),
+            ("models", model_dir.display().to_string()),
+            ("database", db_path.display().to_string()),
+        ];
+        if let Ok(p) = birdsorter_core::io::cache::default_cache_dir() {
+            report_paths.push(("cache", p.display().to_string()));
+        }
+
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let crash_log_tail = std::fs::read_to_string(db_path.with_file_name("crash.log"))
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+
+        Ok(diagnostics::build_report(&diagnostics::Diagnostics {
+            app_version: env!("CARGO_PKG_VERSION"),
+            build_date: option_env!("BUILD_DATE").unwrap_or("dev build"),
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            compute: &detection.device,
+            schema_version: schema,
+            schema_expected: db::SCHEMA_VERSION,
+            counts,
+            models,
+            paths: report_paths,
+            crash_log_tail,
+            home,
+        }))
+    };
+
+    match run() {
+        Ok(report) => {
+            if let Some(p) = &out {
+                if let Err(e) = std::fs::write(p, &report) {
+                    eprintln!("diagnostics: cannot write {p}: {e}");
+                    return ExitCode::FAILURE;
+                }
+                println!("wrote diagnostics to {p}");
+            } else {
+                print!("{report}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("diagnostics failed: {e}");
             ExitCode::FAILURE
         }
     }

@@ -509,6 +509,14 @@ export async function cleanCache(clearAll = false): Promise<CacheReport> {
   return invoke("clean_cache", { clearAll });
 }
 
+/** Write a local diagnostics report (versions, compute device, model status,
+ *  library counts, redacted paths, recent crash lines) for a bug report.
+ *  Nothing is ever transmitted; the path of the written file is returned. When
+ *  `path` is omitted the backend picks a timestamped file in the config dir. */
+export async function saveDiagnostics(path?: string): Promise<string> {
+  return invoke("save_diagnostics", { path: path ?? null });
+}
+
 /** Layout for an export: `flat`, one folder per capture `date`, or per `species`. */
 export type ExportLayout = "flat" | "date" | "species";
 
