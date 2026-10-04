@@ -97,10 +97,12 @@ raw-sorter-app/
 │       │                   saliency, mod
 │       ├── io/             raw (rawler), decoder, develop (demosaic),
 │       │                   cache (thumb/preview), thumb, hash (xxh3),
-│       │                   exif, xmp (rating sidecar), export, trash
+│       │                   exif, xmp (rating sidecar), export, trash, disk
+│       │                   (free-space checks)
 │       ├── data/           db (schema + migrations), library (scan/re-link),
 │       │                   analysis_store, labels, settings, registry
-│       │                   (model downloads), models, eye_labels
+│       │                   (model downloads), models, eye_labels, paths
+│       │                   (portable mode), diagnostics (opt-in report)
 │       ├── pipeline/       ingest (orchestration, batching, cancel),
 │       │                   stages (select_subject, classify_species,
 │       │                   subject_first, resolve_detections)
@@ -109,8 +111,9 @@ raw-sorter-app/
 │                           wrapper with the one-shot GPU→CPU fallback)
 ├── crates/cli/             birdsorter — headless CLI (hash, analyze, list,
 │                           bursts, export, export-eyelabels, train,
-│                           cleancache, thumb, preview, probe, genimage,
-│                           selftest). CI smoke-tester and power-user tool.
+│                           cleancache, diagnostics, thumb, preview, probe,
+│                           genimage, selftest). CI smoke-tester and power-user
+│                           tool.
 ├── crates/desktop/         Thin Tauri v2 adapter
 │   └── src/
 │       ├── main.rs         module list + startup::run()
@@ -171,8 +174,9 @@ transport is **data URLs returned from a disk cache keyed by content hash**
   `set_subject_box`, `remove_subject`, `identify_subject`, `get_settings`,
   `set_settings`, `get_detection_settings`, `set_detection_settings`,
   `species_labels`, `rate_files`, `auto_rate`, `reset_ratings`, `app_info`,
-  `clean_cache`, `rescore`, `export_keepers`, `export_file`, `train`,
-  `models_status`, `download_model`, `import_model`, `remove_model`.
+  `clean_cache`, `save_diagnostics`, `take_open_request`, `rescore`,
+  `export_keepers`, `export_file`, `train`, `models_status`, `download_model`,
+  `import_model`, `remove_model`.
 - **Events** (core → UI, throttled): `scan-progress`, `scan-done`,
   `scan-error`, `analysis-progress`, `analysis-done`, `analysis-error`.
 - Anything that touches disk or CPU runs on a blocking worker
