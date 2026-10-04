@@ -131,8 +131,10 @@ on a 28-core Windows box.
 23. ✅ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
     `parse_subject_species`: proptest properties assert arbitrary input never
     panics, plus round-trips for valid input.
-24. ⬜ **Integration test with a real RAW file** — download a small public CR3 in a
-    gated test and assert the full pipeline's output shape/ordering.
+24. ✅ **Integration test with a real RAW file** — `crates/core/tests/real_raw.rs`,
+    gated on `BIRDSORTER_TEST_RAW=<file>` (no network, no committed fixture):
+    decodes at analysis resolution, builds the full feature vector (all metrics in
+    range) and asserts a well-formed verdict. Verified against a real 26 MP CR3.
 25. 🟡 **Richer `CoreError`** — the domain-meaningful errors are typed:
     `ModelLoad`, `Inference`, `Config`, `InvalidInput`, `NotFound`, `Download`,
     `ModelArchive` (all with constructors). The runtime/model layer, registry,
