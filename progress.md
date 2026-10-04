@@ -275,6 +275,10 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **CI**: `.github/workflows/ci.yml` now runs the UI unit tests (`npm test`) too
+  — they were missing from the matrix. A new nightly `bench.yml` runs the analysis
+  criterion benches and uploads the report (a hard regression gate needs a
+  committed baseline and is still open).
 - **Gated real-RAW integration test**: `crates/core/tests/real_raw.rs` runs the
   decode → features → verdict path on a real file when `BIRDSORTER_TEST_RAW` is
   set (no network, no committed fixture). Verified locally against a 26 MP CR3.
