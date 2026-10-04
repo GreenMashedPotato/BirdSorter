@@ -275,6 +275,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Multi-region background sampling**: the background reference is the **median
+  of the four rectangles** outside the subject box (top/bottom/left/right) rather
+  than the single largest, so one busy strip (another bird, a frame edge) no longer
+  drags the bokeh ratio around. Two tests pin it (median; a busy strip is ignored).
+  Cost measured with criterion: `compute_features` within noise at 640/1600,
+  +~6% at 2400.
 - **CI**: `.github/workflows/ci.yml` now runs the UI unit tests (`npm test`) too
   — they were missing from the matrix. A new nightly `bench.yml` runs the analysis
   criterion benches and uploads the report (a hard regression gate needs a

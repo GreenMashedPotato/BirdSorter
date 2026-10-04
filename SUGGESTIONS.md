@@ -159,8 +159,10 @@ on a 28-core Windows box.
     `runtime::OnnxEyeDetector` refines `eye_sharpness_worst`), so only the
     200–400 labelled files + a real training run remain; the detector set still
     needs `tools/train_bird_detector.py` + labels. See `EYE_MODEL.md`.
-30. ⬜ **Multi-region background sampling** — median of several background
-    rectangles instead of the largest single one.
+30. ✅ **Multi-region background sampling** — the background reference is now the
+    median of the four rectangles outside the subject box (top/bottom/left/right),
+    so one busy strip (another bird, a frame edge) no longer drags the bokeh ratio.
+    Cost: `compute_features` within noise at 640/1600, **+~6%** at 2400.
 
 ## Documentation (open)
 

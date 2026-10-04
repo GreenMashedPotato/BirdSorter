@@ -668,8 +668,24 @@ fn subject_metrics(subj_gray: &Array2<f32>) -> SubjectMetrics {
     }
 }
 
-/// Background reference = the largest single rectangle outside the bbox,
-/// normalised to the same long side as the subject so the ratio is comparable.
+/// Median of a small slice (averages the two middles for an even count).
+fn median(values: &mut [f32]) -> f32 {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) * 0.5
+    }
+}
+
+/// Background reference: the median of the four rectangles outside the bbox
+/// (top, bottom, left, right), each normalised to the same long side as the
+/// subject so the ratio is comparable.
+///
+/// The median is more robust than the single largest region — one strip can
+/// contain another bird or the frame edge, and averaging it in would drag the
+/// background sharpness around.
 fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32, f32) {
     let (x0, y0, x1, y1) = (
         bbox.x as usize,
@@ -690,13 +706,17 @@ fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32,
     if x1 < w {
         pieces.push(rgb.slice(s![y0..y1, x1..w, ..]));
     }
-    match pieces.iter().max_by_key(|p| p.len()) {
-        Some(p) => {
-            let bg_gray = normalise_size(&to_gray(p), TARGET_LONG_SIDE);
-            (variance_of_laplacian(&bg_gray), tenengrad(&bg_gray))
-        }
-        None => (f32::NAN, f32::NAN), // caller substitutes subject values
+    if pieces.is_empty() {
+        return (f32::NAN, f32::NAN); // caller substitutes subject values
     }
+    let mut laps: Vec<f32> = Vec::with_capacity(pieces.len());
+    let mut tens: Vec<f32> = Vec::with_capacity(pieces.len());
+    for p in &pieces {
+        let bg_gray = normalise_size(&to_gray(p), TARGET_LONG_SIDE);
+        laps.push(variance_of_laplacian(&bg_gray));
+        tens.push(tenengrad(&bg_gray));
+    }
+    (median(&mut laps), median(&mut tens))
 }
 
 /// Compute the full feature vector for one RGB image.
@@ -954,6 +974,41 @@ mod tests {
         );
         assert!(f.tenengrad_subject > f.tenengrad_bg);
         assert!((f.subject_area_fraction - (96.0 * 96.0) / (256.0 * 256.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn median_takes_the_middle() {
+        assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 2.5);
+        assert_eq!(median(&mut [5.0]), 5.0);
+    }
+
+    #[test]
+    fn background_ignores_one_busy_strip() {
+        // Sharp subject on flat surroundings, but one large *sharp* strip
+        // (another bird, or a busy frame edge). A "largest single region"
+        // reference would read that strip and kill the ratio; the median of the
+        // four strips ignores it.
+        let (w, h) = (200usize, 200usize);
+        let mut canvas = constant(w, h, 120);
+        let sharp = checkerboard(w, h, 4);
+        for y in 50..90 {
+            for x in 50..150 {
+                canvas[[y, x]] = sharp[[y, x]]; // subject
+            }
+        }
+        for y in 90..200 {
+            for x in 0..200 {
+                canvas[[y, x]] = sharp[[y, x]]; // the large busy strip
+            }
+        }
+        let img = rgb_from_gray(&canvas);
+        let f = compute_features(&img, Some(Subject::from_bbox(BBox::new(50, 50, 100, 40))));
+        assert!(
+            f.subject_to_bg_ratio > 2.5,
+            "ratio was {} (the busy strip leaked into the background)",
+            f.subject_to_bg_ratio
+        );
     }
 
     #[test]
