@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use birdsorter_core::data::{db, registry};
 use birdsorter_core::io::cache::ThumbCache;
@@ -111,6 +111,15 @@ fn init_tracing() {
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }
 
+/// The first argument that names an existing file (file association / "Open
+/// with"). Skips argv[0] and any flags.
+fn first_file_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| Path::new(a).is_file())
+        .cloned()
+}
+
 /// Build and run the desktop app.
 pub(crate) fn run() {
     init_tracing();
@@ -121,14 +130,24 @@ pub(crate) fn run() {
 
     // File association / "Open with": the launched file, if any (Windows passes
     // it in argv; macOS delivers it via `RunEvent::Opened`, see MACOS_TODO.md).
-    let open_request = std::env::args()
-        .skip(1)
-        .find(|a| std::path::Path::new(a).is_file());
+    let open_request = first_file_arg(&std::env::args().collect::<Vec<_>>());
 
     // Fail fast on a broken schema, but do not prevent the window from opening.
     let _ = open(&db_path);
 
     tauri::Builder::default()
+        // Must be the first plugin: a second launch (e.g. double-clicking another
+        // RAW) forwards its argv here so the running window opens that file.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(path) = first_file_arg(&argv) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut slot) = state.open_request.lock() {
+                        *slot = Some(path.clone());
+                    }
+                }
+                let _ = app.emit("open-file", path);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

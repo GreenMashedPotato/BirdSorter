@@ -290,8 +290,10 @@ detection → sharpness verdict → species ID → grid/review UI).
 - **File associations / open-with**: the bundle registers the RAW extensions
   (CR2/CR3/NEF/ARW/RAF/ORF/RW2/DNG). A file the app is launched with (Windows
   argv) is picked up via a `take_open_request` command, its folder is added and
-  scanned, and the file is opened in the review once the scan finishes. macOS
-  (`RunEvent::Opened`) is noted in `MACOS_TODO.md`.
+  scanned, and the file is opened in the review once the scan finishes.
+  `tauri-plugin-single-instance` forwards a **second** launch's file to the
+  running window (`open-file` event). macOS (`RunEvent::Opened`) is noted in
+  `MACOS_TODO.md`.
 - **Drag-and-drop folder import**: dropping a folder onto the window adds and
   scans it (the toolbar's Add path now goes through `addFolderAndScan`). A small
   `preferredDropPath` helper picks the folder out of a mixed drop (unit-tested);

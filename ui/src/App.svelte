@@ -14,6 +14,7 @@
     queryFiles,
     getThumbnail,
     takeOpenRequest,
+    onOpenFile,
     labelFiles,
     undoLabels,
     rateFiles,
@@ -858,6 +859,7 @@
         progress = null;
         status = `scan error: ${message}`;
       }),
+      onOpenFile((path) => void openFilePath(path)),
     ];
     for (const pending of unlisteners) {
       void pending.then((off) => cleanups.push(off)).catch(() => {});
