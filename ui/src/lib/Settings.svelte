@@ -4,6 +4,7 @@
     DEFAULT_DETECTION_SETTINGS,
     DEFAULT_SETTINGS,
     cleanCache,
+    saveDiagnostics,
     type DetectionSettings,
     type ScoreSettings,
   } from "./api";
@@ -43,6 +44,21 @@
       cacheStatus = `error: ${e}`;
     } finally {
       cacheBusy = false;
+    }
+  }
+
+  let diagStatus = $state("");
+  let diagBusy = $state(false);
+
+  async function runDiagnostics() {
+    diagBusy = true;
+    diagStatus = "writing…";
+    try {
+      diagStatus = `saved to ${await saveDiagnostics()}`;
+    } catch (e) {
+      diagStatus = `error: ${e}`;
+    } finally {
+      diagBusy = false;
     }
   }
 
@@ -260,6 +276,19 @@
           <button onclick={() => runCache(false)} disabled={cacheBusy}>Clean orphaned thumbnails</button>
           <button onclick={() => runCache(true)} disabled={cacheBusy}>Clear all thumbnails</button>
           <span class="status">{cacheStatus}</span>
+        </div>
+      </section>
+
+      <section>
+        <h3>Diagnostics</h3>
+        <p class="status">
+          <strong>Off by default.</strong> Nothing is ever sent anywhere. This writes a local report
+          (version, compute device, model status, library counts, recent crash lines) that you can
+          attach to a bug report yourself. Your home directory is stripped from every path in it.
+        </p>
+        <div class="row">
+          <button onclick={runDiagnostics} disabled={diagBusy}>Save diagnostics…</button>
+          <span class="status">{diagStatus}</span>
         </div>
       </section>
     </div>

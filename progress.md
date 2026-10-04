@@ -2,7 +2,7 @@
 
 Living status doc for BirdSorter. See `plan.md` for the architecture and roadmap.
 
-_Last updated: 2026-09-25_
+_Last updated: 2026-10-04_
 
 ## Where we are
 
@@ -10,9 +10,15 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **190 unit tests**, `cargo fmt` + `cargo clippy -D warnings` clean
+- **261 unit tests** (+41 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
+- **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
+  on `Macro` (4 files) and `Sacred-2026` (198 files) runs clean end-to-end (decode →
+  detect → verdict → species). The 198-file run is a **cold, full-decode** 92 s → **2.16 img/s**
+  (detector only, single library, page cache empty); rawler logs "no preview image support"
+  per CR3, so the embedded-preview fast path is skipped and every frame is fully decoded —
+  the I/O/decode bound, not the metrics.
 - Feature extraction is **~50% faster** than the first cut (criterion benches in
   `crates/core/benches/analysis.rs`)
 - GPU: DirectML verified on a real NVIDIA GPU; sliced inference recovers distant
@@ -134,6 +140,16 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Opt-in diagnostics** (SUGGESTIONS 22): a redacted, local report for bug reports. Core
+  `data::diagnostics` builds it (app version/build, OS/arch, compute device, schema, library
+  counts, model statuses + sizes, redacted paths, recent `crash.log` lines) and strips the
+  user's home directory from every path and from free text (`~`), reducing other absolute
+  paths to their last three components. Surfaced as **Settings ▸ Diagnostics → Save
+  diagnostics…** (a timestamped file in the config dir, or a path you pick) and as
+  `birdsorter diagnostics [--out <file>]`. **Nothing is transmitted** — no DSN or remote
+  service is wired, which is the honest, privacy-first form of "crash reporting". Verified on
+  a real isolated library (198 analysed CR3s): the written report contains no `Users\…` path.
+  Six core tests + two UI tests.
 - **Silhouette fallback detector** (`analysis::silhouette`): classical detection of
   dark compact blobs against a bright, uniform background (integral-image local
   background, connected components, and a background-uniformity gate computed
