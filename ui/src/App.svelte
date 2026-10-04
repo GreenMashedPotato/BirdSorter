@@ -694,11 +694,12 @@
           });
         }
       }
+      const warn = r.warning ? ` · warning: ${r.warning}` : "";
       status = r.exported
         ? `exported ${r.exported} keeper${r.exported === 1 ? "" : "s"} to ${r.destination}${
             r.failed.length ? ` · ${r.failed.length} failed` : ""
-          }`
-        : "nothing to export";
+          }${warn}`
+        : `nothing to export${warn}`;
     } catch (e) {
       status = `error: ${e}`;
     }

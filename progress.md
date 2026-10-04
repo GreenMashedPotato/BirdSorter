@@ -140,6 +140,15 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Quick wins (CLI/log polish + export guard)**: the CLI gained `-V/--version` and
+  `-h/--help`, its help no longer crams `thumb` and `preview` onto one line, and
+  `analyze` now prints `throughput: N img/s`. The default `RUST_LOG` is
+  `warn,rawler=error`, so rawler's expected per-file decoder warnings ("no preview
+  image support", ambiguous lens lookups) no longer bury real output — restore them
+  with `RUST_LOG=warn,rawler=warn`. A keeper **copy** now warns when the destination
+  volume looks too small (core `total_source_bytes` + `space_warning_for`, printed by
+  the CLI and shown in the UI status line). The diagnostics button now opens a native
+  **save** dialog (falling back to the timestamped default when none is available).
 - **Opt-in diagnostics** (SUGGESTIONS 22): a redacted, local report for bug reports. Core
   `data::diagnostics` builds it (app version/build, OS/arch, compute device, schema, library
   counts, model statuses + sizes, redacted paths, recent `crash.log` lines) and strips the
