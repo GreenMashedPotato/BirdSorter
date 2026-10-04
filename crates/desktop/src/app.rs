@@ -11,6 +11,17 @@ use birdsorter_core::io::cache::ThumbCache;
 use crate::state::AppState;
 use crate::util::{blocking, err, open};
 
+/// A file path the app was launched to open (file association / "Open with"),
+/// taken once so the UI opens it a single time. `None` when launched normally.
+#[tauri::command]
+pub(crate) fn take_open_request(state: State<AppState>) -> Option<String> {
+    state
+        .open_request
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
 /// Current scoring thresholds.
 #[tauri::command]
 pub(crate) fn get_settings() -> ScoreSettings {

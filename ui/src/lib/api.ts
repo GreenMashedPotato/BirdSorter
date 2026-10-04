@@ -423,6 +423,12 @@ export async function speciesLabels(): Promise<string[]> {
   return invoke("species_labels");
 }
 
+/** A file path the app was launched to open (file association / "Open with"),
+ *  consumed once. `null` when launched normally. */
+export async function takeOpenRequest(): Promise<string | null> {
+  return invoke("take_open_request");
+}
+
 /** Re-run detection + species ID for one file (the review "Identify" button). */
 export async function identifySubject(file: number): Promise<AnalysisDetail> {
   return invoke("identify_subject", { file });

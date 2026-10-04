@@ -13,6 +13,7 @@
     cancelAnalysis,
     queryFiles,
     getThumbnail,
+    takeOpenRequest,
     labelFiles,
     undoLabels,
     rateFiles,
@@ -54,6 +55,7 @@
   import ExportDialog from "./lib/ExportDialog.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { basename, dirname } from "@tauri-apps/api/path";
   import { preferredDropPath } from "./lib/dnd";
 
   let folders = $state<FolderInfo[]>([]);
@@ -523,6 +525,21 @@
     await addFolderAndScan(path);
   }
 
+  /// A file the OS launched us to open: add its folder, then open that file in
+  /// the review once the scan has run (see the `onScanDone` handler).
+  let pendingOpenFile: string | null = null;
+
+  async function openFilePath(path: string) {
+    if (!inTauri) return;
+    try {
+      const folder = await dirname(path);
+      pendingOpenFile = await basename(path);
+      await addFolderAndScan(folder);
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   async function browseForFolder() {
     if (!inTauri) return;
     try {
@@ -791,6 +808,13 @@
       /* not running inside Tauri */
     }
 
+    // File association / "Open with": the OS may have launched us with a file.
+    void takeOpenRequest()
+      .then((path) => {
+        if (path) void openFilePath(path);
+      })
+      .catch(() => {});
+
     const unlisteners = [
       onProgress((p) => {
         progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
@@ -821,6 +845,13 @@
         })`;
         await refreshFolders();
         await refreshFiles();
+        // Open the file the OS launched us with, now that it is in the library.
+        if (pendingOpenFile !== null) {
+          const name = pendingOpenFile.toLowerCase();
+          pendingOpenFile = null;
+          const f = files.find((x) => x.filename.toLowerCase() === name);
+          if (f) openReview(f.id);
+        }
       }),
       onScanError((message) => {
         busy = false;

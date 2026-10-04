@@ -12,4 +12,6 @@ pub(crate) struct AppState {
     pub(crate) cancel: Mutex<Option<CancelToken>>,
     /// Separate token so a long scan can be cancelled independently.
     pub(crate) scan_cancel: Mutex<Option<CancelToken>>,
+    /// A file path the app was launched to open (file association / "Open with").
+    pub(crate) open_request: Mutex<Option<String>>,
 }

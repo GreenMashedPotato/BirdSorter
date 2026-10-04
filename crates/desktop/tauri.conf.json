@@ -24,6 +24,14 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico", "icons/icon.png"],
+    "fileAssociations": [
+      {
+        "ext": ["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"],
+        "name": "RAW image",
+        "description": "Camera RAW image",
+        "role": "Editor"
+      }
+    ],
     "resources": {
       "../../models/bird_det_v1.onnx": "models/bird_det_v1.onnx"
     }
