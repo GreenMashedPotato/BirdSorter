@@ -141,8 +141,10 @@ on a 28-core Windows box.
     trainer, library, XMP, decoder, disk and box paths use them. `Other` now remains
     only for internal cases (the raw ONNX wrapper, JPEG encode, panic boundaries)
     and test helpers. `#[source]` chains on the typed variants are still open.
-26. ⬜ **Benchmarks in CI** — criterion with a tolerance gate (noisy on shared
-    runners; probably a nightly job rather than per-PR).
+26. 🟡 **Benchmarks in CI** — a nightly `bench.yml` runs the analysis criterion
+    benches and uploads the HTML report (and warms a baseline in the cargo cache);
+    a hard >15% regression *gate* still needs a committed baseline. CI also now runs
+    the UI unit tests (`npm test`).
 
 ## Model quality (open)
 
