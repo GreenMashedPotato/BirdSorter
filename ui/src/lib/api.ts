@@ -429,6 +429,12 @@ export async function takeOpenRequest(): Promise<string | null> {
   return invoke("take_open_request");
 }
 
+/** A file the app was asked to open while already running (a second launch,
+ *  forwarded by the single-instance plugin). */
+export function onOpenFile(cb: (path: string) => void): Promise<UnlistenFn> {
+  return listen<string>("open-file", (e) => cb(e.payload));
+}
+
 /** Re-run detection + species ID for one file (the review "Identify" button). */
 export async function identifySubject(file: number): Promise<AnalysisDetail> {
   return invoke("identify_subject", { file });

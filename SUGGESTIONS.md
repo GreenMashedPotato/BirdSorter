@@ -119,10 +119,11 @@ on a 28-core Windows box.
 20. ✅ **Portable mode** — a `portable.flag` next to the executable keeps the DB,
     models, settings and cache under `<exe dir>/BirdSorterData`;
     `BIRDSORTER_DATA_DIR` forces a portable root (tests/CI).
-21. 🟡 **File associations** for RAW extensions — the bundle registers CR2/CR3/NEF/
-    ARW/RAF/ORF/RW2/DNG, and a launched file (Windows argv) is added, scanned and
-    opened in the review. macOS delivers the path via `RunEvent::Opened` instead,
-    which is not wired yet (see `MACOS_TODO.md`).
+21. 🟡 **File associations** for RAW extensions — the bundle registers
+    CR2/CR3/NEF/ARW/RAF/ORF/RW2/DNG. A launched file (Windows argv) is added,
+    scanned and opened in the review; a **second** launch is forwarded to the
+    running window by `tauri-plugin-single-instance`. macOS uses
+    `RunEvent::Opened` instead — see `MACOS_TODO.md`.
 22. ⬜ **crash reporting opt-in** (e.g. Sentry) — mention with a clear privacy note.
 
 ## Architecture (open)
