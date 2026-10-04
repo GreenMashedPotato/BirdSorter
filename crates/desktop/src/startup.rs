@@ -119,6 +119,12 @@ pub(crate) fn run() {
     let cache = ThumbCache::open_default()
         .unwrap_or_else(|_| ThumbCache::new(std::env::temp_dir().join("birdsorter-thumbs")));
 
+    // File association / "Open with": the launched file, if any (Windows passes
+    // it in argv; macOS delivers it via `RunEvent::Opened`, see MACOS_TODO.md).
+    let open_request = std::env::args()
+        .skip(1)
+        .find(|a| std::path::Path::new(a).is_file());
+
     // Fail fast on a broken schema, but do not prevent the window from opening.
     let _ = open(&db_path);
 
@@ -134,6 +140,7 @@ pub(crate) fn run() {
             cache,
             cancel: Mutex::new(None),
             scan_cancel: Mutex::new(None),
+            open_request: Mutex::new(open_request),
         })
         .invoke_handler(tauri::generate_handler![
             library::list_folders,
@@ -170,6 +177,7 @@ pub(crate) fn run() {
             library::reset_ratings,
             app::app_info,
             app::clean_cache,
+            app::take_open_request,
             analysis::rescore,
             export::export_keepers,
             export::export_file,

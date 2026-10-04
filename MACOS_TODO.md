@@ -161,6 +161,10 @@ curl -L -o /tmp/sample.CR3 "<a Canon R5 CR3 or any raw you have>"
   a rescan re-links it.
 - Menu bar / window chrome (Tauri v2 uses the system menu on macOS).
 - Dark mode legibility of the grid and review view.
+- **Open with / file associations**: unlike Windows (argv), macOS delivers a
+  double-clicked file through `RunEvent::Opened`. Wire it in `startup::run`
+  (store the path in `AppState.open_request` and emit an event the UI consumes,
+  mirroring `take_open_request`) so opening a RAW from Finder works.
 
 ---
 
