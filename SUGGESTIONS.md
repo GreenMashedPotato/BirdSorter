@@ -45,7 +45,7 @@ on a 28-core Windows box.
 | Item | Status |
 |---|---|
 | 🟡 **Batched species inference** — the iNat21 export **does** have a dynamic `batch` axis, but one batched call is *slower* per crop than per-crop inference on CPU (measured 289 ms/crop at batch 1 vs 472 ms/crop at batch 4, 28 threads), so the classifier now runs crops one at a time and only batches when a GPU provider is active. The model-gated agreement test still covers the raw batched routine. | measured, resolved |
-| 🟡 **Pre-allocated convolution buffers** — `sobel_pair` halved the allocations (4 → 2 per image), but buffers are still allocated per call. A thread-local pool is the next step. | open |
+| ✅ **Pre-allocated convolution buffers** — a thread-local pool reuses each thread's scratch buffers, so the ~7.7 MB `Array2::zeros` per convolution pass is skipped (every pixel is overwritten anyway). Measured on the 1600×1200 metric benches: **tenengrad −24%**, **variance_of_laplacian −21%**, **directionality −19%**. | done |
 
 ---
 
