@@ -222,6 +222,57 @@ fn sym_index(i: isize, n: usize) -> usize {
     }
 }
 
+thread_local! {
+    /// Reusable convolution output buffers, keyed by size. `convolve3x3_same`
+    /// writes every pixel, so a recycled buffer's stale contents are harmless —
+    /// reuse only skips the multi-megabyte zeroing of a fresh allocation. Each
+    /// worker thread has its own pool, so there is no contention.
+    static CONV_POOL: RefCell<Vec<Array2<f32>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_conv_buffer(h: usize, w: usize) -> Array2<f32> {
+    CONV_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        if let Some(i) = pool.iter().position(|b| b.dim() == (h, w)) {
+            pool.swap_remove(i)
+        } else {
+            Array2::zeros((h, w))
+        }
+    })
+}
+
+/// Return a scratch convolution buffer for reuse (bounded, so the pool cannot
+/// grow without limit).
+fn recycle_conv_buffer(buf: Array2<f32>) {
+    CONV_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        if pool.len() < 8 {
+            pool.push(buf);
+        }
+    });
+}
+
+/// One border pixel of a 3x3 same-padding convolution (symmetric boundary).
+#[inline]
+fn border_pixel<S: Data<Elem = f32>>(
+    img: &ArrayBase<S, Ix2>,
+    k: &[[f32; 3]; 3],
+    y: usize,
+    x: usize,
+    h: usize,
+    w: usize,
+) -> f32 {
+    let mut acc = 0.0f32;
+    for (ky, row) in k.iter().enumerate() {
+        let yy = sym_index(y as isize + ky as isize - 1, h);
+        for (kx, kv) in row.iter().enumerate() {
+            let xx = sym_index(x as isize + kx as isize - 1, w);
+            acc += kv * img[[yy, xx]];
+        }
+    }
+    acc
+}
+
 /// Same-padding 3x3 convolution with symmetric boundaries.
 ///
 /// Uses direct slice access in the interior (no bounds checks) and only falls
@@ -231,7 +282,7 @@ fn convolve3x3_same<S: Data<Elem = f32>>(
     k: &[[f32; 3]; 3],
 ) -> Array2<f32> {
     let (h, w) = img.dim();
-    let mut out = Array2::<f32>::zeros((h, w));
+    let mut out = take_conv_buffer(h, w);
     if h == 0 || w == 0 {
         return out;
     }
@@ -254,23 +305,16 @@ fn convolve3x3_same<S: Data<Elem = f32>>(
         }
     }
     // Border pixels: top/bottom rows, and left/right columns of interior rows.
+    // No per-row allocation: an interior row only touches its two edge columns.
     for y in 0..h {
-        let is_border_row = y == 0 || y + 1 >= h;
-        let cols: Vec<usize> = if !is_border_row && h >= 3 && w >= 3 {
-            vec![0, w - 1]
+        let interior_row = y > 0 && y + 1 < h && h >= 3 && w >= 3;
+        if interior_row {
+            out[[y, 0]] = border_pixel(img, k, y, 0, h, w);
+            out[[y, w - 1]] = border_pixel(img, k, y, w - 1, h, w);
         } else {
-            (0..w).collect()
-        };
-        for &x in &cols {
-            let mut acc = 0.0f32;
-            for (ky, row) in k.iter().enumerate() {
-                let yy = sym_index(y as isize + ky as isize - 1, h);
-                for (kx, kv) in row.iter().enumerate() {
-                    let xx = sym_index(x as isize + kx as isize - 1, w);
-                    acc += kv * img[[yy, xx]];
-                }
+            for x in 0..w {
+                out[[y, x]] = border_pixel(img, k, y, x, h, w);
             }
-            out[[y, x]] = acc;
         }
     }
     out
@@ -302,10 +346,12 @@ pub fn variance_of_laplacian<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f
     let lap = convolve3x3_same(gray, &k);
     let n = lap.len() as f32;
     if n == 0.0 {
+        recycle_conv_buffer(lap);
         return 0.0;
     }
     let mean = lap.iter().sum::<f32>() / n;
     let var = lap.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / n;
+    recycle_conv_buffer(lap);
     normalize(var, LAPLACIAN_SCALE)
 }
 
@@ -314,15 +360,17 @@ pub fn variance_of_laplacian<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f
 pub fn tenengrad<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f32 {
     let (gx, gy) = sobel_pair(gray);
     let n = gx.len() as f32;
-    if n == 0.0 {
-        return 0.0;
-    }
-    let energy = gx
-        .iter()
-        .zip(gy.iter())
-        .map(|(&a, &b)| a * a + b * b)
-        .sum::<f32>()
-        / n;
+    let energy = if n == 0.0 {
+        0.0
+    } else {
+        gx.iter()
+            .zip(gy.iter())
+            .map(|(&a, &b)| a * a + b * b)
+            .sum::<f32>()
+            / n
+    };
+    recycle_conv_buffer(gx);
+    recycle_conv_buffer(gy);
     normalize(energy, TENENGRAD_SCALE)
 }
 
@@ -486,6 +534,8 @@ pub fn gradient_directionality<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) ->
         cy += 2.0 * a * b / mag;
         total += mag;
     }
+    recycle_conv_buffer(gx);
+    recycle_conv_buffer(gy);
     if total <= 0.0 {
         return 0.0;
     }

@@ -275,6 +275,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   `refactor.md` is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
+- **Perf: pooled convolution buffers**: `convolve3x3_same` now takes its output
+  buffer from a per-thread pool (and callers recycle it), so the multi-megabyte
+  `Array2::zeros` is skipped — the convolution overwrites every pixel, so a
+  reused buffer is safe. The per-row `Vec` in the border pass is gone too.
+  Measured (criterion, 1600×1200, this machine, vs. the previous commit):
+  **tenengrad −24%**, **variance_of_laplacian −21%**, **directionality −19%**;
+  `local_contrast`/`brenner`/`fft` unchanged. Correctness unchanged (253 tests).
 - **Export layout in the UI**: the toolbar's **Export keepers** now opens an
   `ExportDialog` (layout flat/date/species + optional rename pattern) before the
   folder picker; the desktop `export_keepers`/`export_file` commands take an
