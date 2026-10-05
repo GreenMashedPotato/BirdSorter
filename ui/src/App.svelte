@@ -58,6 +58,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { basename, dirname } from "@tauri-apps/api/path";
   import { preferredDropPath } from "./lib/dnd";
+  import { pickStartupFolder, rememberedFolder, rememberFolder } from "./lib/session";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
@@ -417,6 +418,7 @@
 
   async function selectFolder(id: number) {
     activeFolder = id;
+    rememberFolder(id);
     setSelected(new Set());
     resetThumbs();
     await refreshFiles();
@@ -481,8 +483,9 @@
 
   async function refreshFolders() {
     folders = await listFolders();
-    if (activeFolder === null && folders.length > 0) {
-      activeFolder = folders[0].id;
+    if (activeFolder === null) {
+      // Reopen the folder from last session when it is still in the library.
+      activeFolder = pickStartupFolder(folders, rememberedFolder());
     }
   }
 
@@ -506,6 +509,7 @@
     try {
       const id = await addFolder(path);
       activeFolder = id;
+      rememberFolder(id);
       await refreshFolders();
       status = "scanning…";
       progress = { label: "Scanning", done: 0, total: 0 };

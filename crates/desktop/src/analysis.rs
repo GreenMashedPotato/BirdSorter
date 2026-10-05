@@ -58,6 +58,8 @@ pub(crate) struct BoxDto {
 pub(crate) struct AnalysisDetailDto {
     file_id: i64,
     filename: String,
+    /// EXIF capture time, as stored at scan (`YYYY-MM-DDTHH:MM:SS`).
+    captured_at: Option<String>,
     label: Option<String>,
     predicted: Option<String>,
     score: Option<f32>,
@@ -119,6 +121,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         return Ok(AnalysisDetailDto {
             file_id: file,
             filename: lf.file.filename,
+            captured_at: lf.file.captured_at,
             label,
             predicted: None,
             score: None,
@@ -163,6 +166,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
     Ok(AnalysisDetailDto {
         file_id: file,
         filename: lf.file.filename,
+        captured_at: lf.file.captured_at,
         label,
         predicted: Some(a.predicted_label.clone()),
         score: Some(a.sharpness_score),
