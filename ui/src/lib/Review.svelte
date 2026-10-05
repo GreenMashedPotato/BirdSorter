@@ -879,6 +879,7 @@
 <div class="review">
   <div class="review-bar">
     <strong>{detail?.filename ?? "loading…"}</strong>
+    {#if detail?.capturedAt}<span class="status">{detail.capturedAt.replace("T", " ")}</span>{/if}
     {#if detail?.predicted}
       <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
       <span class="status">score {detail.score?.toFixed(3)}</span>

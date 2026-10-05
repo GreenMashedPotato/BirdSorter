@@ -65,6 +65,8 @@ export interface Box {
 export interface AnalysisDetail {
   fileId: number;
   filename: string;
+  /** EXIF capture time as stored at scan (`YYYY-MM-DDTHH:MM:SS`), if any. */
+  capturedAt: string | null;
   label: string | null;
   predicted: string | null;
   score: number | null;

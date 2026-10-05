@@ -50,6 +50,7 @@ vi.mock("./lib/api", async (importOriginal) => {
   const detail = (id: number) => ({
     fileId: id,
     filename: `img${id}.cr3`,
+    capturedAt: "2026-07-14T09:31:22",
     label: null,
     predicted: "sharp",
     score: 0.9,
@@ -112,6 +113,11 @@ describe("review view", () => {
     vi.mocked(analysisDetail).mockClear();
     await openFirstReview();
     expect(analysisDetail).toHaveBeenCalledWith(1);
+  });
+
+  it("shows the capture time from the file", async () => {
+    const { getByText } = await openFirstReview();
+    expect(getByText("2026-07-14 09:31:22")).toBeTruthy();
   });
 
   it("navigates to the next frame with the J button", async () => {

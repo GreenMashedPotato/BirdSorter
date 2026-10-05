@@ -140,6 +140,12 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Two UX quick wins**: the app **reopens the folder you had open** last session —
+  the id is remembered in `localStorage`, and a stale id falls back to the first
+  folder (pure `pickStartupFolder` / `rememberedFolder` / `rememberFolder` helpers in
+  `ui/src/lib/session.ts`, unit-tested). And the review bar now shows the file's
+  **capture time** (`AnalysisDetailDto.captured_at`, already stored at scan) — verified
+  against real CR3s, e.g. `2026-05-08 22:23:43`.
 - **Quick wins (CLI/log polish + export guard)**: the CLI gained `-V/--version` and
   `-h/--help`, its help no longer crams `thumb` and `preview` onto one line, and
   `analyze` now prints `throughput: N img/s`. The default `RUST_LOG` is
