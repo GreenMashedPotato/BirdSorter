@@ -92,10 +92,13 @@ detection → sharpness verdict → species ID → grid/review UI).
   (~769 MiB / 806 MB). Both seed their resources into
   `%APPDATA%\BirdSorter\data\models` on first run. Release workflow covers
   Windows x64 + macOS arm64/x64. Unsigned for now.
-- **Latest local model-bundled installer (2026-10-19)**: built from `6ad0534`
-  plus the Phase 1.4 explicit-columns change, after all gates passed.
-  `BirdSorter_0.1.0_x64-setup.exe`, 806,280,400 bytes, SHA-256
-  `DF8435773FC1316ADA5724982F86EDAD7AF5CCE2BFBE1771DDDDB192AB3F978C`.
+- **Latest model-bundled installers (2026-10-19)**: built from `9c145a9` with
+  `scripts/release.sh --models` after all gates passed. Both are recorded in
+  `target/release/bundle/release-manifest.json` and `SHA256SUMS.txt`:
+  - `nsis/BirdSorter_0.1.0_x64-setup.exe` - 806,331,885 bytes, SHA-256
+    `c972dec8341163d0250727100cb26f901d4d85bd66f8c4031e311e03120eac5a`
+  - `msi/BirdSorter_0.1.0_x64_en-US.msi` - 827,580,416 bytes, SHA-256
+    `3dedf9248f5cfcc8fcf21c19e47d37c057d3182f8b51c267c41b682eb92db35e`
   The generated `installer.nsi` packages `models/bird_det_v1.onnx` plus
   `bird_species.onnx`, `bird_species.labels.json` and
   `bird_species.meta.json`, so species ID works offline out of the box.
