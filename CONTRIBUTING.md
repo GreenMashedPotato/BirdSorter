@@ -33,6 +33,9 @@ duplicate core analysis logic; the UI must not bypass commands to touch files.
 cd ui && npm install && npm run build && cd ..   # Tauri embeds ui/dist
 cargo run --release -p birdsorter-desktop        # ALWAYS --release for the app
 cargo run -p birdsorter-cli -- selftest          # headless smoke test
+
+scripts/build.sh                                 # gates + release binary
+scripts/build.sh --models --bundle               # installers with the species model
 ```
 
 Debug RAW decode is ~10× slower — a debug desktop run looks like a hang.
@@ -40,6 +43,7 @@ Debug RAW decode is ~10× slower — a debug desktop run looks like a hang.
 ## The gates (run before you commit)
 
 ```bash
+node scripts/version.mjs check
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -49,8 +53,24 @@ npm test             # vitest
 npm run build
 ```
 
-All of these must pass. CI runs the same set (plus a criterion perf check on
-nightly). Do not package an installer from a red build.
+All of these must pass. `scripts/build.sh` runs the whole list for you; CI runs
+the same set (plus a criterion perf check on nightly). Do not package an
+installer from a red build — `scripts/release.sh` refuses a dirty tree and
+reruns every gate.
+
+## Versioning
+
+`crates/desktop/tauri.conf.json` is the app manifest and its top-level `version`
+is canonical. Never edit the version copies by hand:
+
+```bash
+node scripts/version.mjs show
+node scripts/version.mjs set 0.2.0   # tauri.conf + Cargo workspace + UI package
+node scripts/version.mjs check       # fails on drift; also run by CI
+```
+
+The About dialog and diagnostics read the Tauri package version at runtime, so
+the installed app always reports the manifest version.
 
 ## Recipes
 

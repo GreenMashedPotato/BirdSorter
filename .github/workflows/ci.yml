@@ -63,6 +63,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      - name: Version consistency
+        run: node scripts/version.mjs check
       - name: Install
         working-directory: ui
         run: npm ci
