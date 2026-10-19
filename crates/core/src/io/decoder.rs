@@ -74,7 +74,7 @@ impl ImageDecoder for ImageCrateDecoder {
         let img = image::open(path)
             .map_err(|e| CoreError::raw_decode(path, format!("image decode: {e}")))?;
         Ok(DecodedImage {
-            rgb: dynamic_to_rgb(&img, self.max_long_side),
+            rgb: dynamic_to_rgb(img, self.max_long_side),
         })
     }
 }
@@ -94,21 +94,27 @@ pub fn scale_to_fit(w: u32, h: u32, max_long_side: u32) -> (u32, u32) {
 }
 
 /// Convert a `DynamicImage` to `H x W x 3` u8, optionally downscaling first.
-pub fn dynamic_to_rgb(img: &DynamicImage, max_long_side: Option<u32>) -> Array3<u8> {
+///
+/// Takes the image by value so the decoded buffer is moved rather than cloned
+/// twice (once for the no-resize case, once by `to_rgb8`) and the RGB vector is
+/// moved into the array. The analysis path decodes a full-resolution preview for
+/// every RAW, so those copies matter on memory-constrained machines.
+pub fn dynamic_to_rgb(img: DynamicImage, max_long_side: Option<u32>) -> Array3<u8> {
     let (w, h) = img.dimensions();
     let resized = match max_long_side {
         Some(max) if w.max(h) > max => {
             let (nw, nh) = scale_to_fit(w, h, max);
             img.resize_exact(nw, nh, FilterType::Triangle)
         }
-        _ => img.clone(),
+        _ => img,
     };
-    let rgb = resized.to_rgb8();
+    let rgb = resized.into_rgb8();
     let (w, h) = rgb.dimensions();
     let raw = rgb.into_raw();
-    Array3::from_shape_fn((h as usize, w as usize, 3), |(y, x, c)| {
-        raw[(y * w as usize + x) * 3 + c]
-    })
+    let shape = (h as usize, w as usize, 3);
+    // `into_raw()` yields exactly `h * w * 3` bytes for an RGB8 image; the
+    // fallback only guards the (unreachable) shape mismatch without panicking.
+    Array3::from_shape_vec(shape, raw).unwrap_or_else(|_| Array3::zeros(shape))
 }
 
 /// Try several decoders in order, returning the first success. The last error
@@ -171,7 +177,7 @@ mod tests {
     #[test]
     fn dynamic_to_rgb_converts_and_downscales() {
         let img = gradient(100, 50);
-        let rgb = dynamic_to_rgb(&img, Some(10));
+        let rgb = dynamic_to_rgb(img, Some(10));
         assert_eq!(rgb.dim(), (5, 10, 3));
         // First pixel keeps the red channel gradient pattern (x=0).
         assert_eq!(rgb[[0, 0, 2]], 128);
@@ -179,7 +185,7 @@ mod tests {
 
     #[test]
     fn dynamic_to_rgb_without_limit_keeps_size() {
-        let rgb = dynamic_to_rgb(&gradient(20, 10), None);
+        let rgb = dynamic_to_rgb(gradient(20, 10), None);
         assert_eq!(rgb.dim(), (10, 20, 3));
     }
 

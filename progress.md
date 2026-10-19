@@ -161,6 +161,12 @@ detection → sharpness verdict → species ID → grid/review UI).
   batch is now capped at one decoded image per worker (max 8) instead of a fixed 8,
   so 1–4-core machines no longer keep eight 2400 px images resident. Settings round
   trip and `resolved_threads` are unit-tested; the UI save path has a component test.
+- **Decode copies removed**: `dynamic_to_rgb` now takes the `DynamicImage` by value,
+  converts with `into_rgb8()` and moves the RGB buffer into the ndarray
+  (`from_shape_vec`), instead of cloning the decoded image, cloning again for the RGB
+  conversion, and copying a third time into the array. That removes two full-image
+  copies per file on the analysis path — peak RSS and memory bandwidth that matter on
+  low-memory machines. Verified on a real CR3 (decode → analyse, 0 failures).
 - **Request coalescing for thumbnails/previews** (SUGGESTIONS 6): core
   `io::thumb::RenderGates` is a per-key single-flight map with weakly-held gates;
   `cached_coalesced` re-checks the cache after taking the gate, so a duplicate
