@@ -86,9 +86,19 @@ detection → sharpness verdict → species ID → grid/review UI).
   folders with thousands of images stay responsive.
 - **Eye heuristic**: computed on a size-normalised subject crop (512 px), so eye
   sharpness is comparable across subjects of very different sizes.
-- **Packaging**: `tauri build` produces an NSIS setup (18 MB) and an MSI (32 MB);
-  the detector ships as a bundled resource. Release workflow added for Windows
-  x64 + macOS arm64/x64. Unsigned for now.
+- **Packaging**: two flavours. The default `tauri build` bundles the detector
+  (NSIS setup ~18 MiB, MSI ~32 MiB). The model-bundled build adds the iNat21
+  species model with `--config tauri.models.conf.json --bundles nsis`
+  (~769 MiB / 806 MB). Both seed their resources into
+  `%APPDATA%\BirdSorter\data\models` on first run. Release workflow covers
+  Windows x64 + macOS arm64/x64. Unsigned for now.
+- **Latest local model-bundled installer (2026-10-19)**: built from `6ad0534`
+  plus the Phase 1.4 explicit-columns change, after all gates passed.
+  `BirdSorter_0.1.0_x64-setup.exe`, 806,280,400 bytes, SHA-256
+  `DF8435773FC1316ADA5724982F86EDAD7AF5CCE2BFBE1771DDDDB192AB3F978C`.
+  The generated `installer.nsi` packages `models/bird_det_v1.onnx` plus
+  `bird_species.onnx`, `bird_species.labels.json` and
+  `bird_species.meta.json`, so species ID works offline out of the box.
 - **GPU acceleration**: the desktop build enables **DirectML on Windows** and
   **CoreML on macOS**; the runtime probes the EP and **falls back to CPU
   automatically** (verified: DirectML ran both detector and species on a real
@@ -588,6 +598,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.
+- **Refactor Phase 1.4 (completed)**: the four `SELECT f.*` library queries now
+  list the exact `files` columns via `FILE_COLUMNS`, matching `row_to_file`, so a
+  future schema column cannot silently change what the library reads. Only
+  `COUNT(*)` aggregates remain.
 - **Refactor Phase 1.1 regression test**: `changing_file_content_makes_it_pending_again`
   proves end-to-end that replacing a RAW's bytes and rescanning marks it pending
   again (was silently showing stale analysis before the fix).

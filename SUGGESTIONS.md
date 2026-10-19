@@ -49,7 +49,7 @@ on a 28-core Windows box.
 
 ---
 
-## Performance (open)
+## Performance
 
 1. ⬜ **Separable Sobel** — the 3×3 kernels do 9 multiplies/pixel; two 1-D passes
    do 6 and are more cache-friendly.
@@ -68,7 +68,7 @@ on a 28-core Windows box.
 6. ⬜ **Request coalescing for thumbnails** — the UI already queues and caps
    in-flight requests; a backend-side batch command would cut IPC further.
 
-## Correctness & robustness (open)
+## Correctness & robustness
 
 7. ⬜ **Anti-aliased `normalise_size`** — strided subsampling aliases high
    frequencies. A box/area average is more faithful, but it shifts every metric
@@ -86,7 +86,7 @@ on a 28-core Windows box.
     `tracing`; the CLI and desktop init a subscriber from `RUST_LOG` (default
     `warn`). The CLI's own user output stays plain `println!`.
 
-## UX & features (open)
+## UX & features
 
 11. ✅ **Undo** for the last label action — `undo_labels` drops the most recent
     label row per file (reverting to the previous label, or unlabelled), a 20-deep
@@ -111,22 +111,22 @@ on a 28-core Windows box.
     luminance histogram in the corner (pure `lumaHistogram` helper, unit-tested).
 19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
     highest-scoring frame as Sharp, skipping files you already labelled; undoable.
-18. ✅ **Drag-and-drop folder import** onto the window — a dropped folder is added
+20. ✅ **Drag-and-drop folder import** onto the window — a dropped folder is added
     and scanned via `add_folder`/`scan_folder` (a small `preferredDropPath` helper
     picks the folder out of a mixed drop; unit-tested).
 
-## Packaging & distribution (open)
+## Packaging & distribution
 
-19. ⬜ **Auto-updater** — `tauri-plugin-updater`; only after signing works.
-20. ✅ **Portable mode** — a `portable.flag` next to the executable keeps the DB,
+21. ⬜ **Auto-updater** — `tauri-plugin-updater`; only after signing works.
+22. ✅ **Portable mode** — a `portable.flag` next to the executable keeps the DB,
     models, settings and cache under `<exe dir>/BirdSorterData`;
     `BIRDSORTER_DATA_DIR` forces a portable root (tests/CI).
-21. 🟡 **File associations** for RAW extensions — the bundle registers
+23. 🟡 **File associations** for RAW extensions — the bundle registers
     CR2/CR3/NEF/ARW/RAF/ORF/RW2/DNG. A launched file (Windows argv) is added,
     scanned and opened in the review; a **second** launch is forwarded to the
     running window by `tauri-plugin-single-instance`. macOS uses
     `RunEvent::Opened` instead — see `MACOS_TODO.md`.
-22. ✅ **Diagnostics opt-in** (was "crash reporting") — **Settings ▸ Diagnostics → Save
+24. ✅ **Diagnostics opt-in** (was "crash reporting") — **Settings ▸ Diagnostics → Save
     diagnostics…** writes a *local* report (versions, compute device, schema, library counts,
     model status + sizes, paths, recent `crash.log` lines) to a file you can attach to a bug
     report; the CLI has `birdsorter diagnostics [--out <file>]` too. **Nothing is ever
@@ -135,52 +135,85 @@ on a 28-core Windows box.
     other absolute paths keep only their last components, so a shared report leaks no username
     or layout. Verified on a real isolated library (report contains no `Users\…`).
 
-## Architecture (open)
+## Architecture
 
-23. ✅ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
+25. ✅ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
     `parse_subject_species`: proptest properties assert arbitrary input never
     panics, plus round-trips for valid input.
-24. ✅ **Integration test with a real RAW file** — `crates/core/tests/real_raw.rs`,
+26. ✅ **Integration test with a real RAW file** — `crates/core/tests/real_raw.rs`,
     gated on `BIRDSORTER_TEST_RAW=<file>` (no network, no committed fixture):
     decodes at analysis resolution, builds the full feature vector (all metrics in
     range) and asserts a well-formed verdict. Verified against a real 26 MP CR3.
-25. 🟡 **Richer `CoreError`** — the domain-meaningful errors are typed:
+27. 🟡 **Richer `CoreError`** — the domain-meaningful errors are typed:
     `ModelLoad`, `Inference`, `Config`, `InvalidInput`, `NotFound`, `Download`,
     `ModelArchive` (all with constructors). The runtime/model layer, registry,
     trainer, library, XMP, decoder, disk and box paths use them. `Other` now remains
     only for internal cases (the raw ONNX wrapper, JPEG encode, panic boundaries)
     and test helpers. `#[source]` chains on the typed variants are still open.
-26. 🟡 **Benchmarks in CI** — a nightly `bench.yml` runs the analysis criterion
+28. 🟡 **Benchmarks in CI** — a nightly `bench.yml` runs the analysis criterion
     benches and uploads the HTML report (and warms a baseline in the cargo cache);
     a hard >15% regression *gate* still needs a committed baseline. CI also now runs
     the UI unit tests (`npm test`).
 
-## Model quality (open)
+## Model quality
 
-26. ✅ **Species model decided**: iNat21 ConvNeXt-Large (10,000 species) is the
+29. ✅ **Species model decided**: iNat21 ConvNeXt-Large (10,000 species) is the
     app's model; common names added via `tools/enrich_common_names.py`.
-27. ⬜ **Confidence calibration** (temperature scaling) for the detector.
-28. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
+30. ⬜ **Confidence calibration** (temperature scaling) for the detector.
+31. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
     the birds, but a few may be missing; a second source (IOC/Clements) could
     fill the gaps.
-29. 🟡 **Fine-tuned detector / eye model** — the **eye pipeline is complete**
+32. 🟡 **Fine-tuned detector / eye model** — the **eye pipeline is complete**
     (label → `export-eyelabels` → `tools/train_eye.py` → `bird_eye.onnx` →
     `runtime::OnnxEyeDetector` refines `eye_sharpness_worst`), so only the
     200–400 labelled files + a real training run remain; the detector set still
     needs `tools/train_bird_detector.py` + labels. See `EYE_MODEL.md`.
-30. ✅ **Multi-region background sampling** — the background reference is now the
+33. ✅ **Multi-region background sampling** — the background reference is now the
     median of the four rectangles outside the subject box (top/bottom/left/right),
     so one busy strip (another bird, a frame edge) no longer drags the bokeh ratio.
     Cost: `compute_features` within noise at 640/1600, **+~6%** at 2400.
 
-## Documentation (open)
+## Documentation
 
-31. ✅ **Architecture doc** — `ARCHITECTURE.md` (system + pipeline diagrams, module
+34. ✅ **Architecture doc** — `ARCHITECTURE.md` (system + pipeline diagrams, module
     map, runtime tiers, IPC, storage locations).
-32. ✅ **Contributing guide** — `CONTRIBUTING.md` (dependency direction, the gates,
+35. ✅ **Contributing guide** — `CONTRIBUTING.md` (dependency direction, the gates,
     recipes for a metric/detector/model/UI panel/command, invariants).
-33. ✅ **Troubleshooting guide** — `TROUBLESHOOTING.md` (GPU EP fallback, models,
+36. ✅ **Troubleshooting guide** — `TROUBLESHOOTING.md` (GPU EP fallback, models,
     slow runs, stale results, cache, trash/undo, `RUST_LOG`).
+
+---
+
+## Remaining work (open or partial)
+
+Everything the refactor plan (`refactor.md`) listed is done. What is left is
+product/distribution work or work deliberately deferred:
+
+**Blocked on external input**
+
+- **Fine-tuned detector / eye model** — tooling is complete; needs 200–400
+  labelled eye files (label in-app) or COCO/own detector labels, then a training
+  run. See `EYE_MODEL.md`.
+- **macOS validation** — CoreML, `.app`/`.dmg`, notarization, Intel + Apple
+  Silicon, and HEIC via ImageIO still need a Mac (`MACOS_TODO.md`).
+- **Signing** — Windows signing is wired and needs a certificate; macOS needs
+  the Apple Developer Program. Auto-updater waits for this.
+
+**Deliberately deferred (measured)**
+
+- Cross-image species batching is slower on CPU (closed with measurements).
+- Per-batch analysis transactions are not worth it: per-file commits are atomic
+  and only cost a re-run of the partial batch after a crash.
+
+**Open improvements**
+
+- Separable Sobel; FFT pre-downscale; parallel species sessions; thumbnail
+  encode batching; backend request coalescing.
+- Anti-aliased `normalise_size` + scoring recalibration.
+- Multi-folder view; histogram (done) vs. configurable multi-folder workspace.
+- Detector confidence calibration (temperature scaling).
+- Common-name coverage beyond the 1,461/10,000 Wikidata matches.
+- `CoreError` `#[source]` chains; committed benchmark baseline for a hard CI gate.
 
 ---
 

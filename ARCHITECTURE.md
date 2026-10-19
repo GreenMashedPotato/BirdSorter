@@ -7,9 +7,11 @@ Two ideas drive the shape of the code:
 
 1. **All logic lives in `birdsorter-core`**, which has no GUI/runtime coupling.
    The pipeline is headless and unit-testable; the desktop shell is thin glue.
-2. **CPU-first.** The installer ships no neural-network models and needs no
-   CUDA/driver install; it runs on any machine and accelerates when a GPU
-   execution provider happens to be available.
+2. **CPU-first.** Both installer flavours are self-contained: the default build
+   ships the detector (~11 MB), and the model-bundled flavour also ships the
+   iNaturalist 2021 species model (~820 MB). Neither needs a CUDA/driver
+   install; inference runs on CPU and accelerates when a GPU execution provider
+   is available.
 
 ---
 

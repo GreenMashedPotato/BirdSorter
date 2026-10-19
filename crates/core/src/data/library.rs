@@ -33,6 +33,14 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg",
 ];
 
+/// The exact `files` columns read by [`row_to_file`].
+///
+/// Queries list these explicitly rather than `f.*`, so adding a column to the
+/// table cannot silently change what the library reads (Phase 1.4).
+const FILE_COLUMNS: &str = "f.id, f.folder_id, f.relative_path, f.filename, \
+     f.content_hash, f.filesize, f.mtime, f.format, f.imported_at, \
+     f.trashed_at, f.captured_at, f.rating";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRow {
     pub id: i64,
@@ -454,7 +462,7 @@ fn files_query(
     order_extra: &str,
 ) -> Result<Vec<LibraryFile>> {
     let sql = format!(
-        "SELECT f.*, fo.path AS folder_path
+        "SELECT {FILE_COLUMNS}, fo.path AS folder_path
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
@@ -523,15 +531,17 @@ pub fn files_with_predicted_label(
     folder_id: i64,
     label: &str,
 ) -> Result<Vec<LibraryFile>> {
-    let sql = "SELECT f.*, fo.path AS folder_path
-                 FROM files f
-                 JOIN folders fo ON fo.id = f.folder_id
-                 JOIN analysis a ON a.file_id = f.id
-                WHERE f.folder_id = ?1
-                  AND f.trashed_at IS NULL
-                  AND a.predicted_label = ?2
-                ORDER BY f.filename ASC";
-    let mut stmt = conn.prepare(sql)?;
+    let sql = format!(
+        "SELECT {FILE_COLUMNS}, fo.path AS folder_path
+           FROM files f
+           JOIN folders fo ON fo.id = f.folder_id
+           JOIN analysis a ON a.file_id = f.id
+          WHERE f.folder_id = ?1
+            AND f.trashed_at IS NULL
+            AND a.predicted_label = ?2
+          ORDER BY f.filename ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params![folder_id, label], |r| {
         let folder_path: String = r.get("folder_path")?;
         let file = row_to_file(r)?;
@@ -550,16 +560,18 @@ pub fn files_with_latest_label(
     folder_id: i64,
     label: crate::data::labels::UserLabel,
 ) -> Result<Vec<LibraryFile>> {
-    let sql = "SELECT f.*, fo.path AS folder_path
-                 FROM files f
-                 JOIN folders fo ON fo.id = f.folder_id
-                WHERE f.folder_id = ?1
-                  AND f.trashed_at IS NULL
-                  AND (SELECT l.user_label FROM labels l
-                        WHERE l.file_id = f.id
-                        ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
-                ORDER BY f.filename ASC";
-    let mut stmt = conn.prepare(sql)?;
+    let sql = format!(
+        "SELECT {FILE_COLUMNS}, fo.path AS folder_path
+           FROM files f
+           JOIN folders fo ON fo.id = f.folder_id
+          WHERE f.folder_id = ?1
+            AND f.trashed_at IS NULL
+            AND (SELECT l.user_label FROM labels l
+                  WHERE l.file_id = f.id
+                  ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
+          ORDER BY f.filename ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params![folder_id, label.as_str()], |r| {
         let folder_path: String = r.get("folder_path")?;
         let file = row_to_file(r)?;
@@ -658,11 +670,11 @@ pub fn list_files_with_details(
 }
 
 pub fn get_file(conn: &Connection, file_id: i64) -> Result<Option<LibraryFile>> {
-    let mut stmt = conn.prepare(
-        "SELECT f.*, fo.path AS folder_path
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {FILE_COLUMNS}, fo.path AS folder_path
            FROM files f JOIN folders fo ON fo.id = f.folder_id
-          WHERE f.id = ?1",
-    )?;
+          WHERE f.id = ?1"
+    ))?;
     let mut rows = stmt.query_map([file_id], |r| {
         let folder_path: String = r.get("folder_path")?;
         let file = row_to_file(r)?;
