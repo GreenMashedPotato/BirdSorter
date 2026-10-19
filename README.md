@@ -124,7 +124,7 @@ Output goes to `target/release/bundle/`.
 | Build | Command | Contents |
 |---|---|---|
 | Default | `tauri build` | app + the bundled **detector** only. Works on any machine — the species model is installed later from Models ▸ Install from file. |
-| With the species model | `tauri build --config tauri.models.conf.json --bundles nsis` (Windows) / `… --bundles dmg` (macOS) | also bundles the **iNaturalist 2021 model (~820 MB)** and seeds it on first run, so testers get working ID with no downloads. Windows installer ≈ **769 MB**. |
+| With the species model | `tauri build --config tauri.models.conf.json --bundles nsis` (Windows) / `… --bundles dmg` (macOS) | also bundles the **iNaturalist 2021 model (~820 MB)** and seeds it on first run, so testers get working ID with no downloads. Windows installer ≈ **769 MiB / 806 MB**. |
 
 `tauri.models.conf.json` is a merge overlay (Tauri accepts repeated `--config`),
 so it combines with the signing config:
