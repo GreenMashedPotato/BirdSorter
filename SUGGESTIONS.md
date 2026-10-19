@@ -90,8 +90,8 @@ on a 28-core Windows box.
 
 - ✅ **JPEG/TIFF + wider RAW support**: the scanner accepts every `rawler` format
   (Canon/Nikon/Sony/OM/Fuji/Panasonic/Pentax/DNG plus X3F, SRW, KDC, ERF, IIQ,
-  MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG EXIF supplies **capture time**
-  (bursts, `--by date`) and **orientation** (portrait shots decode upright);
+  MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG/TIFF EXIF supplies **capture
+  time** (bursts, `--by date`) and **orientation** (portrait shots decode upright);
   `thumb`/`preview`/`probe` work on JPEG too, and file associations list the same
   extensions.
 
