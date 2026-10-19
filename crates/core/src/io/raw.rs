@@ -64,7 +64,7 @@ impl ImageDecoder for RawDecoder {
             .or_else(|_| load_full(path))
             .or_else(|_| load_developed(path))?;
         Ok(DecodedImage {
-            rgb: dynamic_to_rgb(&img, self.max_long_side),
+            rgb: dynamic_to_rgb(img, self.max_long_side),
         })
     }
 }
