@@ -1,31 +1,65 @@
-//! Capture-time extraction for burst grouping.
+//! Capture-time and orientation extraction.
 //!
-//! Reads EXIF `DateTimeOriginal` from a RAW via `rawler` and normalizes it to a
-//! sortable ISO-ish string (camera local time, no timezone). Falls back to
-//! `None` when a file has no usable timestamp.
+//! RAW metadata comes from `rawler`'s metadata pass; JPEG (APP1) and TIFF (root
+//! IFD) EXIF are parsed directly with rawler's public format modules. Times are
+//! normalized to a sortable ISO-ish string (camera local time, no timezone);
+//! anything missing yields `None`.
 
+use std::io::Read;
 use std::path::Path;
 
 use rawler::analyze::{analyze_metadata, AnalyzerData};
 use rawler::exif::Exif;
 use rawler::formats::jfif::Jfif;
+use rawler::formats::tiff::IFD;
 use rawler::RawFile;
 
-/// EXIF from a JPEG's APP1 segment. `None` for non-JPEG or corrupt files.
+const JPEG_SOI: [u8; 2] = [0xFF, 0xD8];
+const TIFF_LITTLE_ENDIAN: [u8; 4] = *b"II*\0";
+const TIFF_BIG_ENDIAN: [u8; 4] = *b"MM\0*";
+
+/// Cheap magic check, so a JPEG/TIFF parser is never pointed at a RAW (and a
+/// JFIF parse never scans a whole non-JPEG file).
+fn starts_with(path: &Path, magic: &[u8]) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let n = magic.len().min(4);
+    let mut buf = [0u8; 4];
+    file.read_exact(&mut buf[..n]).is_ok() && buf[..n] == magic[..n]
+}
+
+/// EXIF from a JPEG's APP1 segment.
 fn jpeg_exif(path: &Path) -> Option<Exif> {
+    if !starts_with(path, &JPEG_SOI) {
+        return None;
+    }
     let file = std::fs::File::open(path).ok()?;
     let mut raw = RawFile::new(path, file);
     let jfif = Jfif::new(&mut raw).ok()?;
     Exif::new(jfif.exif_ifd()?).ok()
 }
 
+/// EXIF from a TIFF's root IFD (also covers TIFF-based ordinary images).
+fn tiff_exif(path: &Path) -> Option<Exif> {
+    if !starts_with(path, &TIFF_LITTLE_ENDIAN) && !starts_with(path, &TIFF_BIG_ENDIAN) {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let ifd = IFD::new_root(&mut file, 0).ok()?;
+    Exif::new(&ifd).ok()
+}
+
+fn exif_capture_time(exif: Exif) -> Option<String> {
+    exif.date_time_original
+        .and_then(|s| normalize_exif_datetime(&s))
+}
+
 /// EXIF capture time as `YYYY-MM-DDTHH:MM:SS`, or `None`.
 pub fn capture_time(path: &Path) -> Option<String> {
-    raw_capture_time(path).or_else(|| {
-        jpeg_exif(path)?
-            .date_time_original
-            .and_then(|s| normalize_exif_datetime(&s))
-    })
+    raw_capture_time(path)
+        .or_else(|| jpeg_exif(path).and_then(exif_capture_time))
+        .or_else(|| tiff_exif(path).and_then(exif_capture_time))
 }
 
 /// Capture time for a RAW, via rawler's metadata pass.
@@ -37,10 +71,12 @@ fn raw_capture_time(path: &Path) -> Option<String> {
     normalize_exif_datetime(&meta.raw_metadata.exif.date_time_original?)
 }
 
-/// EXIF orientation (1–8) for a JPEG, or `None`. RAW previews are already
+/// EXIF orientation (1–8) for a JPEG/TIFF, or `None`. RAW previews are already
 /// oriented by the camera, so this is applied only to ordinary image decodes.
 pub fn orientation(path: &Path) -> Option<u16> {
-    jpeg_exif(path)?.orientation
+    jpeg_exif(path)
+        .or_else(|| tiff_exif(path))
+        .and_then(|exif| exif.orientation)
 }
 
 /// `"2026:01:01 10:00:00"` → `"2026-01-01T10:00:00"`.

@@ -156,10 +156,10 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 - **JPEG/TIFF and wider RAW coverage**: the scanner now accepts every format
   `rawler` decodes (Canon, Nikon, Sony, OM System, Fujifilm, Panasonic, Pentax,
-  DNG, plus X3F/SRW/KDC/ERF/IIQ/MEF/MOS/MRW/NKD/TFR/ARI) and JPEG/TIFF. JPEG
-  EXIF is read directly through rawler's public JFIF parser: **capture time**
-  (bursts, `--by date`) and **orientation** (portrait shots decode upright) work
-  without a new dependency. `thumb`/`preview`/`probe` accept JPEG, and the bundle
+  DNG, plus X3F/SRW/KDC/ERF/IIQ/MEF/MOS/MRW/NKD/TFR/ARI) and JPEG/TIFF.
+  JPEG/TIFF EXIF is read directly through rawler's public format parsers: **capture
+  time** (bursts, `--by date`) and **orientation** (portrait shots decode upright)
+  work without a new dependency, for both JPEG and TIFF. `thumb`/`preview`/`probe` accept JPEG, and the bundle
   file associations cover the same extensions. Verified against a real Canon JPEG
   (`BIRDSORTER_TEST_JPEG` gated test: capture time, orientation, upright decode).
 - **Low-end efficiency controls**: `DetectionSettings` gained `species` (default on)

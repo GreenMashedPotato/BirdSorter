@@ -61,7 +61,7 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   Fujifilm `raf`, Panasonic `rw2`, Pentax `pef`, DNG, plus Sigma `x3f`, Samsung
   `srw`, Kodak `dcr`/`dcs`/`kdc`, Epson `erf`, Leaf `mos`/`tfr`, Mamiya `mef`,
   Minolta `mrw`, Phase One `iiq` and Arri `ari`.
-- **Ordinary images**: JPEG (`jpg`/`jpeg`) and TIFF (`tif`/`tiff`). JPEG EXIF
+- **Ordinary images**: JPEG (`jpg`/`jpeg`) and TIFF (`tif`/`tiff`). Their EXIF
   **capture time** (burst grouping, `--by date` export) and **orientation** are
   read, so portrait shots appear upright and join bursts/date folders.
 - HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
