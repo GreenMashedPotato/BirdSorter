@@ -210,14 +210,18 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
         },
     };
     let scorer = scorer_for(conn, ScoreSettings::load_default()).map_err(err)?;
-    let species: Option<Box<dyn SpeciesClassifier>> =
+    let species: Option<Box<dyn SpeciesClassifier>> = if det.species {
         match birdsorter_core::runtime::load_species_classifier(device) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "species model could not be loaded");
                 None
             }
-        };
+        }
+    } else {
+        tracing::info!("species identification disabled in settings");
+        None
+    };
     // The eye model is small and CPU-only: a GPU provider round-trip is not
     // worth it, and DirectML already trips on other models.
     let eye: Option<Box<dyn EyeDetector>> =
@@ -255,12 +259,18 @@ fn run_analysis(
         tracing::warn!("{msg}");
     }
 
-    let threads = std::thread::available_parallelism()
+    // Workers come from the settings (0 = auto). Peak memory scales with this, so
+    // low-end machines can dial it down; the batch never holds more decoded images
+    // than there are workers (capped at 8 for detector efficiency).
+    let detection = DetectionSettings::load_default();
+    let available = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4)
+        .unwrap_or(4);
+    let threads = detection
+        .resolved_threads(available)
         .min(MAX_DECODE_THREADS);
     let ctx = IngestContext {
-        batch_size: 8,
+        batch_size: threads.clamp(1, 8),
         decode_threads: threads,
         cancel: Some(cancel),
         species: pipe.species.as_deref(),

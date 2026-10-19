@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **265 unit tests** (+49 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **266 unit tests** (+50 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -154,6 +154,13 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Low-end efficiency controls**: `DetectionSettings` gained `species` (default on)
+  and `threads` (`0` = auto). Turning species off skips the ~818 MB classifier and
+  its ~350 ms/crop (Settings ▸ Performance, or `analyze --no-species`); a lower
+  thread count bounds peak memory and CPU contention (`--threads n`). The analysis
+  batch is now capped at one decoded image per worker (max 8) instead of a fixed 8,
+  so 1–4-core machines no longer keep eight 2400 px images resident. Settings round
+  trip and `resolved_threads` are unit-tested; the UI save path has a component test.
 - **Request coalescing for thumbnails/previews** (SUGGESTIONS 6): core
   `io::thumb::RenderGates` is a per-key single-flight map with weakly-held gates;
   `cached_coalesced` re-checks the cache after taking the gate, so a duplicate

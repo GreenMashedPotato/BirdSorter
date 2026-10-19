@@ -39,6 +39,8 @@ Commands:
       --model <path.onnx>       Use a YOLO ONNX detector (needs a model file)
       --species-model <path.onnx>   Bird species classifier ONNX (optional)
       --species-labels <path.json>  Labels for the species classifier
+      --no-species              Skip species identification (saves ~800 MB RAM)
+      --threads <n>             Decode workers (default: all cores; lower = less RAM)
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
@@ -1027,6 +1029,8 @@ struct AnalyzeArgs {
     folder: String,
     model: Option<String>,
     no_detect: bool,
+    no_species: bool,
+    threads: Option<usize>,
     force: bool,
     db_path: Option<String>,
     species_model: Option<String>,
@@ -1037,6 +1041,8 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut folder = None;
     let mut model = None;
     let mut no_detect = false;
+    let mut no_species = false;
+    let mut threads = None;
     let mut force = false;
     let mut db_path = None;
     let mut species_model = None;
@@ -1053,6 +1059,11 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
                 species_labels = Some(it.next().ok_or("--species-labels needs a path")?.clone())
             }
             "--no-detect" => no_detect = true,
+            "--no-species" => no_species = true,
+            "--threads" => {
+                let v = it.next().ok_or("--threads needs a number")?;
+                threads = Some(v.parse::<usize>().map_err(|_| "--threads needs a number")?);
+            }
             "--force" => force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => folder = Some(other.to_string()),
@@ -1062,6 +1073,8 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
         folder: folder.ok_or("expected a folder path")?,
         model,
         no_detect,
+        no_species,
+        threads,
         force,
         db_path,
         species_model,
@@ -1164,7 +1177,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     // Species identification (optional): explicit flags, else whatever species
     // model is installed (a fixed-head ViT or an open-vocabulary CLIP bundle).
     let species_device = DevicePreference::from_setting(&DetectionSettings::load_default().device);
-    let species: Option<Box<dyn SpeciesClassifier>> = if args.no_detect {
+    let species: Option<Box<dyn SpeciesClassifier>> = if args.no_detect || args.no_species {
         None
     } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
         Some(Box::new(OnnxSpeciesClassifier::from_files(
@@ -1187,6 +1200,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             "species identification: enabled ({} available)",
             c.available()
         ),
+        None if args.no_species => println!("species identification: disabled (--no-species)"),
         None => println!(
             "species identification: no model installed (use --species-model/--species-labels)"
         ),
@@ -1221,11 +1235,15 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             None
         }
     };
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let decode_threads = args.threads.unwrap_or(available).clamp(1, available);
     let ctx = IngestContext {
-        batch_size: 8,
-        decode_threads: std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4),
+        // Bound peak memory by the worker count: a batch never holds more
+        // decoded images than there are workers (capped at 8).
+        batch_size: decode_threads.clamp(1, 8),
+        decode_threads,
         species: species.as_deref(),
         eye: eye.as_deref(),
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())

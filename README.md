@@ -212,6 +212,17 @@ Two detector/preview knobs live outside the scoring panel:
   Bayer sensors only — X-Trans/Fuji files report a clear message; the camera
   preview is used for those.
 
+### Low-end machines
+
+Settings ▸ **Performance** has the two levers that matter on small laptops:
+
+- **Species identification** — off skips the ~818 MB classifier (and its ~350 ms
+  per crop). The verdict, boxes, bokeh and eye metrics are unaffected.
+- **Analysis threads** — `0` (auto) uses every core; a lower value holds fewer
+  decoded images at once (smaller peak memory) and reduces CPU contention.
+
+From the CLI: `birdsorter analyze <folder> --no-species --threads 2`.
+
 ### Training the bird models
 
 `tools/train_bird_detector.py` fine-tunes and exports the two planned models —
