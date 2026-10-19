@@ -3,8 +3,10 @@
 //! Prefers the RAW's embedded preview (fast, no demosaic) and falls back to a
 //! full image decode for JPEG/PNG inputs. Results are small JPEGs.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::{Arc, Mutex, Weak};
 
 use image::imageops::FilterType;
 use image::ImageOutputFormat;
@@ -73,6 +75,77 @@ pub fn cached(
     let bytes = render()?;
     let _ = cache.put(key, &bytes);
     Ok(bytes)
+}
+
+/// Per-key gates that coalesce concurrent renders of the same cache entry.
+///
+/// A caller holds the gate across the cache re-check and the render, so a
+/// duplicate request for a thumbnail already being produced waits and then reads
+/// the fresh cache entry instead of decoding the same RAW again. Entries are held
+/// weakly, so the map shrinks back to empty as callers finish.
+#[derive(Default)]
+pub struct RenderGates {
+    gates: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl RenderGates {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The gate for `key`; keep the returned handle alive while locking it.
+    fn gate(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut gates = match self.gates.lock() {
+            Ok(gates) => gates,
+            // A poisoned map holds no data worth recovering differently.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        gates.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(existing) = gates.get(key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(key.to_string(), Arc::downgrade(&gate));
+        gate
+    }
+}
+
+/// Like [`cached`], but concurrent requests for the same key coalesce: the first
+/// renders and stores, the rest wait and read the freshly cached result.
+pub fn cached_coalesced(
+    cache: &ThumbCache,
+    gates: &RenderGates,
+    key: &str,
+    render: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if let Some(hit) = cache.get(key) {
+        return Ok(hit);
+    }
+    let gate = gates.gate(key);
+    let _held = match gate.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Another caller may have finished while this one waited for the gate.
+    if let Some(hit) = cache.get(key) {
+        return Ok(hit);
+    }
+    let bytes = render()?;
+    let _ = cache.put(key, &bytes);
+    Ok(bytes)
+}
+
+/// [`thumbnail_cached`] with request coalescing.
+pub fn thumbnail_cached_with(
+    cache: &ThumbCache,
+    gates: &RenderGates,
+    path: &Path,
+    hash: &str,
+    max_dim: u32,
+) -> Result<Vec<u8>> {
+    cached_coalesced(cache, gates, &render_key(hash, max_dim), || {
+        thumbnail_bytes(path, max_dim)
+    })
 }
 
 /// JPEG-encode an already-decoded RGB image (`H x W x 3`).
@@ -166,5 +239,48 @@ mod tests {
     #[test]
     fn render_key_distinguishes_sizes() {
         assert_ne!(render_key("abc", 512), render_key("abc", 2400));
+    }
+
+    #[test]
+    fn concurrent_requests_for_the_same_key_render_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let gates = RenderGates::new();
+        let calls = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                cached_coalesced(&cache, &gates, "same", || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    // Keep the gate long enough for the other caller to arrive.
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    Ok(vec![1, 2, 3])
+                })
+                .unwrap()
+            });
+            let b = scope.spawn(|| {
+                cached_coalesced(&cache, &gates, "same", || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![9, 9, 9])
+                })
+                .unwrap()
+            });
+            // Whichever caller wins, both must get the one stored result.
+            assert_eq!(a.join().unwrap(), b.join().unwrap());
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one render");
+    }
+
+    #[test]
+    fn coalesced_cache_hit_never_renders() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let gates = RenderGates::new();
+        cache.put("k", b"cached").unwrap();
+
+        let out = cached_coalesced(&cache, &gates, "k", || panic!("must not render")).unwrap();
+        assert_eq!(out, b"cached");
     }
 }

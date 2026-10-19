@@ -60,13 +60,20 @@ on a 28-core Windows box.
    Measured **counterproductive on CPU** (289 ms/crop at batch 1 vs 472 ms/crop at
    batch 4), so the classifier runs crops one at a time and only batches on a GPU
    provider. Closed as "won't do" with the measurement recorded above.
-4. ⬜ **Parallel species sessions** — the session sits behind a `Mutex`, so crops
-   serialize. A small pool of sessions (one per worker) would parallelize, at the
-   cost of one model copy per worker (~85 MB each).
+4. 🟡 **Parallel species sessions** — the session sits behind a `Mutex`, so crops
+   serialize. A per-worker pool is **not worth it for the current model**: one copy
+   of the iNat21 ConvNeXt is **818 MB** (the old ~85 MB figure predates it), so a
+   pool would add gigabytes of RSS, and cross-image batching is already measured
+   slower on CPU. Revisit if the species model is quantized or shrunk.
 5. ⬜ **Thumbnail encode batching** — libjpeg-turbo can encode several thumbnails
    in parallel.
-6. ⬜ **Request coalescing for thumbnails** — the UI already queues and caps
-   in-flight requests; a backend-side batch command would cut IPC further.
+6. ✅ **Request coalescing for thumbnails/previews** — core `RenderGates` (a
+   per-key single-flight map with weakly-held gates) plus `cached_coalesced` /
+   `thumbnail_cached_with`; `AppState` owns one and both preview commands use it, so
+   duplicate concurrent renders of the same cache key wait and read the fresh entry
+   instead of decoding the RAW twice. Unit-tested: two threads, one render. A backend
+   *batch* command would still cut IPC, but Tauri invocations are cheap and
+   coalescing is the rule-mandated part (`rule.md` §9).
 
 ## Correctness & robustness
 
@@ -207,8 +214,9 @@ work or work deliberately deferred:
 
 **Open improvements**
 
-- Separable Sobel; FFT pre-downscale; parallel species sessions; thumbnail
-  encode batching; backend request coalescing.
+- Separable Sobel; FFT pre-downscale; thumbnail encode batching.
+- Parallel species sessions is deferred pending a smaller/quantized model
+  (818 MB per session makes a pool impractical).
 - Anti-aliased `normalise_size` + scoring recalibration.
 - Multi-folder view; histogram (done) vs. configurable multi-folder workspace.
 - Detector confidence calibration (temperature scaling).

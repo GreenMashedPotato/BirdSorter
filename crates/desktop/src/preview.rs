@@ -13,7 +13,9 @@ use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
 use birdsorter_core::io::raw::RawDecoder;
-use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
+use birdsorter_core::io::thumb::{
+    cached_coalesced, encode_rgb_jpeg, render_key, thumbnail_cached_with, RenderGates,
+};
 
 use crate::config::{ANALYSIS_LONG_SIDE, DEVELOP_MAX_LONG_SIDE, THUMB_LONG_SIDE};
 use crate::state::AppState;
@@ -27,14 +29,20 @@ fn data_url(bytes: Vec<u8>) -> String {
     format!("data:image/jpeg;base64,{b64}")
 }
 
-fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
+fn thumbnail_impl(
+    cache_root: &Path,
+    db_path: &Path,
+    gates: &RenderGates,
+    file: i64,
+) -> Result<String, String> {
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
     let cache = ThumbCache::new(cache_root.to_path_buf());
-    let bytes = thumbnail_cached(
+    let bytes = thumbnail_cached_with(
         &cache,
+        gates,
         &lf.absolute_path,
         &lf.file.content_hash,
         THUMB_LONG_SIDE,
@@ -52,6 +60,7 @@ fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String
 fn preview_impl(
     cache_root: &Path,
     db_path: &Path,
+    gates: &RenderGates,
     file: i64,
     mode: &str,
 ) -> Result<String, String> {
@@ -97,7 +106,7 @@ fn preview_impl(
         ),
     };
 
-    let bytes = cached(&cache, &key, render).map_err(err)?;
+    let bytes = cached_coalesced(&cache, gates, &key, render).map_err(err)?;
     Ok(data_url(bytes))
 }
 
@@ -106,7 +115,8 @@ fn preview_impl(
 pub(crate) async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
-    blocking(move || thumbnail_impl(&cache_root, &db_path, file)).await
+    let gates = state.render_gates.clone();
+    blocking(move || thumbnail_impl(&cache_root, &db_path, &gates, file)).await
 }
 
 /// Higher-resolution preview for the review view, as a data URL.
@@ -118,6 +128,7 @@ pub(crate) async fn preview_image(
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
+    let gates = state.render_gates.clone();
     let mode = mode.unwrap_or_else(|| "fast".to_string());
-    blocking(move || preview_impl(&cache_root, &db_path, file, &mode)).await
+    blocking(move || preview_impl(&cache_root, &db_path, &gates, file, &mode)).await
 }
