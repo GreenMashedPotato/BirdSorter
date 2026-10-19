@@ -59,10 +59,10 @@ Commands:
   diagnostics [--out <file>] [--db <path>]  Print a local, redacted diagnostics report
       --out <file>              Write to <file> instead of stdout
       --db <path>               Override the library database location
-  thumb <raw> <out.jpg> [max]   Extract the embedded preview as a JPEG
-  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+  thumb <photo> <out.jpg> [max] Extract a JPEG thumbnail (RAW preview or JPEG/TIFF)
+  preview <photo> <out.jpg> [max] Render an analysis-resolution preview (RAW or JPEG)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
-  probe <raw> [--model <onnx>]  Decode one file and print detections + features
+  probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
@@ -426,7 +426,9 @@ fn cmd_thumb(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1024);
-    match birdsorter_core::io::raw::encode_thumbnail(Path::new(src), max) {
+    // `thumbnail_bytes` tries the RAW embedded preview first and falls back to
+    // decoding JPEG/TIFF (applying their EXIF orientation).
+    match birdsorter_core::io::thumb::thumbnail_bytes(Path::new(src), max) {
         Ok(bytes) => match std::fs::write(out, &bytes) {
             Ok(()) => {
                 println!("wrote {out} ({} KB)", bytes.len() / 1024);

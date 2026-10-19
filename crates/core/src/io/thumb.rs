@@ -26,6 +26,9 @@ pub fn thumbnail_bytes(path: &Path, max_dim: u32) -> Result<Vec<u8>> {
     super::decoder::ensure_file_within(path, super::decoder::MAX_IMAGE_FILE_BYTES)?;
     let img = image::open(path)
         .map_err(|e| CoreError::raw_decode(path, format!("thumbnail decode: {e}")))?;
+    // The RAW fast path above is already camera-oriented; ordinary images
+    // (JPEG/TIFF) need their EXIF orientation applied.
+    let img = super::decoder::apply_orientation(img, super::exif::orientation(path));
     encode_jpeg(&img, max_dim)
 }
 

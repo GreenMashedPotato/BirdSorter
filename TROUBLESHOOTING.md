@@ -52,6 +52,18 @@ rebuilds the session on CPU once and retries.
 - **`ort` is pinned to `=2.0.0-rc.11`** on purpose (rc.13 dropped Intel-macOS
   binaries). Don't widen it without testing on a Mac.
 
+## File formats
+
+- **RAW**: Canon CR3/CR2/CRW, Nikon NEF/NRW, Sony ARW/SR2/SRF, Olympus/OM System
+  ORF, Fujifilm RAF, Panasonic RW2, Pentax PEF, DNG, plus the further `rawler`
+  formats (X3F, SRW, DCR/DCS/KDC, ERF, IIQ, MEF, MOS, MRW, NKD, TFR, ARI).
+- **JPEG/TIFF**: supported. EXIF capture time (bursts, `--by date`) and
+  orientation are applied, so portrait JPEGs are upright and group correctly.
+- **HEIC** is not supported yet (needs libheif; macOS could use ImageIO — see
+  `MACOS_TODO.md`).
+- A supported-extension file that cannot be decoded is reported per file; the
+  rest of the run continues.
+
 ## Slow analysis
 
 - **No species model / small images are fast**; the two big costs are RAW decode

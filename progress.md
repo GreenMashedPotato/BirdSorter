@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **266 unit tests** (+50 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **269 unit tests** (+50 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -154,6 +154,14 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **JPEG/TIFF and wider RAW coverage**: the scanner now accepts every format
+  `rawler` decodes (Canon, Nikon, Sony, OM System, Fujifilm, Panasonic, Pentax,
+  DNG, plus X3F/SRW/KDC/ERF/IIQ/MEF/MOS/MRW/NKD/TFR/ARI) and JPEG/TIFF. JPEG
+  EXIF is read directly through rawler's public JFIF parser: **capture time**
+  (bursts, `--by date`) and **orientation** (portrait shots decode upright) work
+  without a new dependency. `thumb`/`preview`/`probe` accept JPEG, and the bundle
+  file associations cover the same extensions. Verified against a real Canon JPEG
+  (`BIRDSORTER_TEST_JPEG` gated test: capture time, orientation, upright decode).
 - **Low-end efficiency controls**: `DetectionSettings` gained `species` (default on)
   and `threads` (`0` = auto). Turning species off skips the ~818 MB classifier and
   its ~350 ms/crop (Settings ▸ Performance, or `analyze --no-species`); a lower

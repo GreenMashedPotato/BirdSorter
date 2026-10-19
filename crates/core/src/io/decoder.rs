@@ -73,9 +73,29 @@ impl ImageDecoder for ImageCrateDecoder {
         ensure_file_within(path, MAX_IMAGE_FILE_BYTES)?;
         let img = image::open(path)
             .map_err(|e| CoreError::raw_decode(path, format!("image decode: {e}")))?;
+        // JPEG/TIFF pixels are stored unrotated; the camera's orientation tag
+        // lives in EXIF. RAW embedded previews are already camera-oriented.
+        let img = apply_orientation(img, super::exif::orientation(path));
         Ok(DecodedImage {
             rgb: dynamic_to_rgb(img, self.max_long_side),
         })
+    }
+}
+
+/// Apply an EXIF orientation (1–8) to a decoded image.
+///
+/// Mirrors the standard mapping: 2/4 mirror, 3 rotates 180°, 5–8 are the
+/// transposes/rotations (6 = 90° clockwise, 8 = 90° counter-clockwise).
+pub fn apply_orientation(img: DynamicImage, orientation: Option<u16>) -> DynamicImage {
+    match orientation.unwrap_or(1) {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
     }
 }
 
@@ -187,6 +207,21 @@ mod tests {
     fn dynamic_to_rgb_without_limit_keeps_size() {
         let rgb = dynamic_to_rgb(gradient(20, 10), None);
         assert_eq!(rgb.dim(), (10, 20, 3));
+    }
+
+    #[test]
+    fn applies_exif_orientation() {
+        let img = gradient(4, 2);
+        // 90°/270° orientations swap the axes; mirrors keep them.
+        for o in [5u16, 6, 7, 8] {
+            let out = apply_orientation(img.clone(), Some(o));
+            assert_eq!((out.width(), out.height()), (2, 4), "orientation {o}");
+        }
+        for o in [1u16, 2, 3, 4, 99] {
+            let out = apply_orientation(img.clone(), Some(o));
+            assert_eq!((out.width(), out.height()), (4, 2), "orientation {o}");
+        }
+        assert_eq!(apply_orientation(img, None).width(), 4);
     }
 
     #[test]

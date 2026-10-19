@@ -21,16 +21,22 @@ use crate::{CoreError, Result};
 ///
 /// Covers the brands bird photographers actually use: Canon (`cr3`, `cr2`,
 /// `crw`), Nikon (`nef`, `nrw`), Sony (`arw`, `sr2`, `srf`), OM System / Olympus
-/// (`orf`), plus Fujifilm (`raf`), Panasonic (`rw2`), Pentax (`pef`) and DNG.
+/// (`orf`), plus Fujifilm (`raf`), Panasonic (`rw2`), Pentax (`pef`) and DNG —
+/// and every further format rawler ships a decoder for.
 pub const RAW_EXTENSIONS: &[&str] = &[
     "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef", "dng",
+    // Further rawler formats: Sigma (x3f), Samsung (srw), Kodak (dcr/dcs/kdc),
+    // Epson (erf), Leaf (mos/tfr), Mamiya (mef), Minolta (mrw), Nikon (nkd),
+    // Phase One (iiq), Arri (ari).
+    "ari", "dcr", "dcs", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nkd", "srw", "tfr", "x3f",
 ];
 
-/// Extensions the scanner picks up: RAW plus common JPEG. (Birders sometimes
-/// shoot JPEG, and it makes the pipeline easy to exercise in tests.)
+/// Extensions the scanner picks up: RAW plus ordinary photographs (JPEG/TIFF).
+/// Birders sometimes shoot JPEG, and it makes the pipeline easy to exercise.
 pub const PHOTO_EXTENSIONS: &[&str] = &[
     "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef", "dng",
-    "jpg", "jpeg",
+    "ari", "dcr", "dcs", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nkd", "srw", "tfr", "x3f",
+    "jpg", "jpeg", "tif", "tiff",
 ];
 
 /// The exact `files` columns read by [`row_to_file`].
@@ -837,12 +843,11 @@ mod tests {
 
     #[test]
     fn scanner_accepts_the_major_raw_brands() {
-        // Canon, Nikon, Sony and OM System / Olympus must all be picked up;
-        // decoding is delegated to rawler, which has a dedicated decoder for
-        // each of these formats (cr2/cr3/crw, nef/nrw, arw/srw, orf).
+        // Every format rawler ships a decoder for must be picked up.
         for ext in [
-            "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "rw2", "raf", "pef",
-            "dng",
+            "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef",
+            "dng", "ari", "dcr", "dcs", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nkd", "srw",
+            "tfr", "x3f",
         ] {
             assert!(PHOTO_EXTENSIONS.contains(&ext), "missing extension: {ext}");
             assert!(
@@ -853,25 +858,40 @@ mod tests {
     }
 
     #[test]
-    fn scan_discovers_raw_files_only() {
+    fn scanner_accepts_jpeg_and_tiff_but_not_other_files() {
+        for ext in ["jpg", "jpeg", "tif", "tiff"] {
+            assert!(PHOTO_EXTENSIONS.contains(&ext), "missing photo: {ext}");
+            assert!(!RAW_EXTENSIONS.contains(&ext), "{ext} is not RAW");
+        }
+        for ext in ["txt", "json", "xmp", "on1"] {
+            assert!(!PHOTO_EXTENSIONS.contains(&ext), "must ignore: {ext}");
+        }
+    }
+
+    #[test]
+    fn scan_discovers_photos_and_ignores_other_files() {
         let (dir, conn) = setup();
         write(dir.path(), "a.cr3", b"aaa");
         write(dir.path(), "sub/b.nef", b"bbbb");
         write(dir.path(), "notes.txt", b"ignore me");
         write(dir.path(), "sub/c.dng", b"c");
+        write(dir.path(), "sub/d.jpg", b"jpg");
+        write(dir.path(), "sidecar.xmp", b"xmp");
 
         let fid = add_folder(&conn, dir.path()).unwrap();
         let report = scan_folder(&conn, fid).unwrap();
-        assert_eq!(report.seen, 3);
-        assert_eq!(report.added, 3);
+        assert_eq!(report.seen, 4);
+        assert_eq!(report.added, 4);
 
         let files = list_files(&conn, fid, false, false).unwrap();
         let names: Vec<&str> = files.iter().map(|f| f.file.filename.as_str()).collect();
-        assert_eq!(names, vec!["a.cr3", "b.nef", "c.dng"]);
+        assert_eq!(names, vec!["a.cr3", "b.nef", "c.dng", "d.jpg"]);
         let cr3 = files.iter().find(|f| f.file.filename == "a.cr3").unwrap();
         assert_eq!(cr3.file.format, "CR3");
         assert_eq!(cr3.file.relative_path, "a.cr3");
         assert_eq!(cr3.absolute_path, dir.path().join("a.cr3"));
+        let jpg = files.iter().find(|f| f.file.filename == "d.jpg").unwrap();
+        assert_eq!(jpg.file.format, "JPG");
     }
 
     #[test]

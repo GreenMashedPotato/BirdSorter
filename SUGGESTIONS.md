@@ -86,6 +86,15 @@ on a 28-core Windows box.
   image per worker (capped at 8) instead of a fixed 8, so 1–4-core machines no
   longer keep eight 2400 px images resident.
 
+### Format coverage (done)
+
+- ✅ **JPEG/TIFF + wider RAW support**: the scanner accepts every `rawler` format
+  (Canon/Nikon/Sony/OM/Fuji/Panasonic/Pentax/DNG plus X3F, SRW, KDC, ERF, IIQ,
+  MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG EXIF supplies **capture time**
+  (bursts, `--by date`) and **orientation** (portrait shots decode upright);
+  `thumb`/`preview`/`probe` work on JPEG too, and file associations list the same
+  extensions.
+
 ## Correctness & robustness
 
 7. ⬜ **Anti-aliased `normalise_size`** — strided subsampling aliases high
