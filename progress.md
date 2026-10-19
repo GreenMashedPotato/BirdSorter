@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **263 unit tests** (+49 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **265 unit tests** (+49 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -154,6 +154,16 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Request coalescing for thumbnails/previews** (SUGGESTIONS 6): core
+  `io::thumb::RenderGates` is a per-key single-flight map with weakly-held gates;
+  `cached_coalesced` re-checks the cache after taking the gate, so a duplicate
+  concurrent render waits for the first and reads the fresh entry instead of
+  decoding the same RAW twice. `AppState` owns one and both preview commands use it.
+  Two unit tests (two threads → exactly one render; a cache hit never renders).
+- **Parallel species sessions closed as not worthwhile** for the current model: one
+  iNat21 ConvNeXt session is **818 MB**, so a per-worker pool would add gigabytes of
+  RSS (the old ~85 MB estimate predates the model), and cross-image batching is
+  already measured slower on CPU. Revisit only if the species model is shrunk.
 - **Cleanup**: removed the now-complete `refactor.md` execution plan (its outcome is
   captured in this file and `SUGGESTIONS.md`); `rule.md`'s doc index now also lists
   `README.md` and `SUGGESTIONS.md`. Converted the last `eprintln!` debug lines in

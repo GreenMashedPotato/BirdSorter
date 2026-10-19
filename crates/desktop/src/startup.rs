@@ -1,12 +1,13 @@
 //! App bootstrap: model seeding, the panic hook, and the Tauri builder.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use birdsorter_core::data::{db, registry};
 use birdsorter_core::io::cache::ThumbCache;
+use birdsorter_core::io::thumb::RenderGates;
 use birdsorter_core::runtime::DETECTOR_ONNX;
 
 use crate::state::AppState;
@@ -163,6 +164,7 @@ pub(crate) fn run() {
         .manage(AppState {
             db_path,
             cache,
+            render_gates: Arc::new(RenderGates::new()),
             cancel: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             open_request: Mutex::new(open_request),
