@@ -54,6 +54,19 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   full decode + detection + feature extraction), versus 1.38 img/s
   single-threaded.
 
+### Supported formats
+
+- **RAW** (decoded by `rawler`, embedded preview first): Canon `cr3`/`cr2`/`crw`,
+  Nikon `nef`/`nrw`/`nkd`, Sony `arw`/`sr2`/`srf`, OM System/Olympus `orf`,
+  Fujifilm `raf`, Panasonic `rw2`, Pentax `pef`, DNG, plus Sigma `x3f`, Samsung
+  `srw`, Kodak `dcr`/`dcs`/`kdc`, Epson `erf`, Leaf `mos`/`tfr`, Mamiya `mef`,
+  Minolta `mrw`, Phase One `iiq` and Arri `ari`.
+- **Ordinary images**: JPEG (`jpg`/`jpeg`) and TIFF (`tif`/`tiff`). JPEG EXIF
+  **capture time** (burst grouping, `--by date` export) and **orientation** are
+  read, so portrait shots appear upright and join bursts/date folders.
+- HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
+  ImageIO path).
+
 ## Layout
 
 ```

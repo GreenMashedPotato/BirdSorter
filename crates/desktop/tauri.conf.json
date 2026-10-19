@@ -26,10 +26,20 @@
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "fileAssociations": [
       {
-        "ext": ["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"],
+        "ext": [
+          "cr3", "cr2", "crw", "nef", "nrw", "arw", "sr2", "srf", "orf", "raf", "rw2", "pef",
+          "dng", "ari", "dcr", "dcs", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nkd", "srw",
+          "tfr", "x3f"
+        ],
         "name": "RAW image",
         "description": "Camera RAW image",
         "role": "Editor"
+      },
+      {
+        "ext": ["jpg", "jpeg", "tif", "tiff"],
+        "name": "Photograph",
+        "description": "JPEG or TIFF photograph",
+        "role": "Viewer"
       }
     ],
     "resources": {
