@@ -14,6 +14,7 @@ raw-sorter-app/
   crates/cli/        Headless CLI over core
   ui/                Svelte 5 frontend
   tools/             Offline model training/export/packaging tools
+  scripts/           Build/release/version scripts (bash + PowerShell wrappers)
   models/            Small development/bundled detector artifacts
   dist-models/       Large distribution-only model artifacts; not committed
   plan.md            Architecture and product plan

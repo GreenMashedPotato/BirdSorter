@@ -129,9 +129,46 @@ Output goes to `target/release/bundle/`.
 `tauri.models.conf.json` is a merge overlay (Tauri accepts repeated `--config`),
 so it combines with the signing config:
 `tauri build --config tauri.signing.json --config tauri.models.conf.json --bundles nsis`.
-The model files live in `dist-models/inat21/` (gitignored) — build them on the
+The model files live in `dist-models/inat21/` (gitignored) - build them on the
 shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./MODELS.md)).
 That is why the default config references only the committed detector.
+
+### Scripts (recommended)
+
+The same commands are wrapped in cross-platform scripts (Git Bash / macOS /
+Linux; PowerShell wrappers on Windows):
+
+```bash
+scripts/build.sh                     # version check + all gates + release binary
+scripts/build.sh --models            # detector + iNat21 species, no installer
+scripts/build.sh --bundle            # detector-only installers
+scripts/build.sh --bundle --models   # fully self-contained installer
+scripts/release.sh --models          # strict gates + installers + hashes/manifest
+```
+
+`release.sh` refuses a dirty working tree, builds every installer format for the
+host OS, and writes `target/release/bundle/SHA256SUMS.txt` plus
+`release-manifest.json` (version, commit, flavour, per-artifact SHA-256). On
+Windows use `.\scripts\build.ps1` / `.\scripts\release.ps1`, which call the
+same `.sh` logic through Git Bash.
+
+### Versioning
+
+`crates/desktop/tauri.conf.json` is the app manifest - the Tauri equivalent of
+an iOS `Info.plist`: product name, version, identifier, window, bundle
+resources and file associations all live there. Its top-level `version` is the
+single source of truth; the Rust workspace and `ui/package.json` mirror it, and
+the About dialog and diagnostics read the Tauri version at runtime.
+
+```bash
+node scripts/version.mjs show          # print the canonical version
+node scripts/version.mjs check         # fail if any copy drifted
+node scripts/version.mjs set 0.2.0     # update every copy
+```
+
+Both build scripts run `check` first and stop on drift. Tauri can also point
+`version` at a `package.json` or fall back to `Cargo.toml`, but keeping the
+explicit string here makes the installed app's version obvious.
 
 Releases are built by `.github/workflows/release.yml` (Windows x64, macOS arm64
 and x64); those runners do not have the 820 MB model, so they produce the default

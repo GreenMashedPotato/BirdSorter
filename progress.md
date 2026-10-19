@@ -598,6 +598,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 - **Refactor Phase 4 (XMP)**: the rating matcher now tolerates single-quoted
   attributes and whitespace around `=` instead of only `xmp:Rating="`. Covered by
   a new test; unrelated metadata is still preserved.
+- **Build/release scripts + single-source version (2026-10-19)**:
+  `scripts/build.sh` runs version checking, fmt/clippy/tests, UI
+  check/vitest/build, then a release binary or installers; `--models` includes
+  the iNat21 species bundle. `scripts/release.sh` is the strict variant: clean
+  tree required, all gates, host installers, `SHA256SUMS.txt` and
+  `release-manifest.json`. Windows has `build.ps1`/`release.ps1` wrappers over
+  the same Git Bash logic. `crates/desktop/tauri.conf.json` is the canonical
+  app manifest/version; `scripts/version.mjs` mirrors it into the Cargo
+  workspace and UI package and fails the build on drift. About/diagnostics now
+  read the Tauri package version at runtime instead of `CARGO_PKG_VERSION`.
 - **Refactor Phase 1.4 (completed)**: the four `SELECT f.*` library queries now
   list the exact `files` columns via `FILE_COLUMNS`, matching `row_to_file`, so a
   future schema column cannot silently change what the library reads. Only

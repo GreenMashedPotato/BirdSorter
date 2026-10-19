@@ -80,7 +80,7 @@ pub(crate) struct AppInfoDto {
 /// Author, build date and the third-party / dataset disclaimers shown in the
 /// About dialog (opened by clicking the app name).
 #[tauri::command]
-pub(crate) fn app_info() -> AppInfoDto {
+pub(crate) fn app_info(app: tauri::AppHandle) -> AppInfoDto {
     let d = |name: &str, license: &str, note: &str| DisclaimerDto {
         name: name.to_string(),
         license: license.to_string(),
@@ -88,7 +88,8 @@ pub(crate) fn app_info() -> AppInfoDto {
     };
     AppInfoDto {
         name: "BirdSorter".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        // Tauri reads this from `tauri.conf.json`, the single source of truth.
+        version: app.package_info().version.to_string(),
         build_date: option_env!("BUILD_DATE").unwrap_or("dev build").to_string(),
         author: "Michel Gunawan".to_string(),
         contact: "https://www.instagram.com/michael.wildlife/".to_string(),
@@ -179,11 +180,13 @@ fn default_diagnostics_path() -> Result<PathBuf, String> {
 /// scrubbed of the user's home directory by `data::diagnostics`.
 #[tauri::command]
 pub(crate) async fn save_diagnostics(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     path: Option<String>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
+    let app_version = app.package_info().version.to_string();
     blocking(move || {
         let detection = DetectionSettings::load_default();
         let model_dir = registry::default_model_dir().map_err(err)?;
@@ -224,7 +227,7 @@ pub(crate) async fn save_diagnostics(
         paths.push(("database", db_path.display().to_string()));
 
         let report = diagnostics::build_report(&diagnostics::Diagnostics {
-            app_version: env!("CARGO_PKG_VERSION"),
+            app_version: &app_version,
             build_date: option_env!("BUILD_DATE").unwrap_or("dev build"),
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
