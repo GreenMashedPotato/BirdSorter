@@ -22,7 +22,8 @@ raw-sorter-app/
   CONTRIBUTING.md    How to add code (deps, gates, recipes, invariants)
   TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
   progress.md        Living implementation status
-  refactor.md        Refactoring execution plan
+  SUGGESTIONS.md     Backlog of improvements, status-tagged
+  README.md          Front page: build, run, package
   MODELS.md          Model contracts and licenses
   EYE_MODEL.md       Eye model data/training/runtime contract
   MACOS_TODO.md      Mac-specific validation brief

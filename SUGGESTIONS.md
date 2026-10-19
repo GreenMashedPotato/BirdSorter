@@ -186,8 +186,8 @@ on a 28-core Windows box.
 
 ## Remaining work (open or partial)
 
-Everything the refactor plan (`refactor.md`) listed is done. What is left is
-product/distribution work or work deliberately deferred:
+Everything the hardening plan listed is done. What is left is product/distribution
+work or work deliberately deferred:
 
 **Blocked on external input**
 

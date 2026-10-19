@@ -10,15 +10,16 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **261 unit tests** (+41 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **263 unit tests** (+49 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
   on `Macro` (4 files) and `Sacred-2026` (198 files) runs clean end-to-end (decode →
-  detect → verdict → species). The 198-file run is a **cold, full-decode** 92 s → **2.16 img/s**
-  (detector only, single library, page cache empty); rawler logs "no preview image support"
-  per CR3, so the embedded-preview fast path is skipped and every frame is fully decoded —
-  the I/O/decode bound, not the metrics.
+  detect → verdict → species). The 198-file run is a **cold** 92 s → **2.16 img/s** (detector
+  only, page cache empty). Note: rawler's CR3 `preview_image()` is unimplemented (it logs
+  "no preview image support" once per file), but the decode falls through to `full_image()`,
+  which extracts the embedded full-res JPEG — so CR3 already takes the no-demosaic fast path.
+  The cold figure is I/O-bound (reading ~35 MB × 198) plus JPEG decode + resize, not demosaicing.
 - Feature extraction is **~50% faster** than the first cut (criterion benches in
   `crates/core/benches/analysis.rs`)
 - GPU: DirectML verified on a real NVIDIA GPU; sliced inference recovers distant
@@ -153,6 +154,12 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Cleanup**: removed the now-complete `refactor.md` execution plan (its outcome is
+  captured in this file and `SUGGESTIONS.md`); `rule.md`'s doc index now also lists
+  `README.md` and `SUGGESTIONS.md`. Converted the last `eprintln!` debug lines in
+  `runtime/species.rs` to `tracing::debug!`, and removed a `.unwrap()` in
+  `learning/trainer.rs` (label→class index now returns a typed `InvalidInput` instead
+  of panicking on unexpected label data).
 - **Two UX quick wins**: the app **reopens the folder you had open** last session —
   the id is remembered in `localStorage`, and a stale id falls back to the first
   folder (pure `pickStartupFolder` / `rememberedFolder` / `rememberFolder` helpers in
@@ -316,7 +323,7 @@ detection → sharpness verdict → species ID → grid/review UI).
   (mark writes through, survives a re-query, clearing removes it), and the UI
   suite covers rapid J/K navigation — a held frame response released after the
   user moved on cannot overwrite the open file. With these, every phase of
-  `refactor.md` is landed. Per-batch transactions are deliberately skipped
+  the hardening plan is landed. Per-batch transactions are deliberately skipped
   (per-file commit is atomic and gives crash resume).
 
 - **Multi-region background sampling**: the background reference is the **median
