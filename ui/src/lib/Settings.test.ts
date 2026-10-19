@@ -67,6 +67,29 @@ describe("Settings diagnostics", () => {
     );
   });
 
+  it("passes the low-end performance controls through on save", async () => {
+    const onSave = vi.fn();
+    const { getByLabelText, getByText } = render(Settings, {
+      props: {
+        settings: DEFAULT_SETTINGS,
+        detection: DEFAULT_DETECTION_SETTINGS,
+        onSave,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.change(getByLabelText("Analysis threads"), { target: { value: "2" } });
+    await fireEvent.change(getByLabelText("Species identification"), {
+      target: { value: "off" },
+    });
+    await fireEvent.click(getByText("Save & re-score"));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ threads: 2, species: false }),
+    );
+  });
+
   it("surfaces a write failure without throwing", async () => {
     saveDialog.mockResolvedValue("C:\\shots\\diag.txt");
     saveDiagnostics.mockRejectedValue("disk full");

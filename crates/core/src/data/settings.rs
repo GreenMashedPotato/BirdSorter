@@ -121,6 +121,14 @@ pub struct DetectionSettings {
     /// `"gpu"`. CPU wins for these small models; GPU providers pay off for
     /// larger networks.
     pub device: String,
+    /// Parallel decode workers. `0` = auto (all available cores). Lower values
+    /// bound peak memory (each worker holds a decoded analysis image) and reduce
+    /// CPU contention on low-end machines.
+    pub threads: u32,
+    /// Run species identification when a model is installed. The iNat21 model is
+    /// ~818 MB of RSS and ~350 ms per crop, so disabling it is the single biggest
+    /// saving on memory-constrained machines.
+    pub species: bool,
 }
 
 impl Default for DetectionSettings {
@@ -129,6 +137,8 @@ impl Default for DetectionSettings {
             slice_mode: "fallback".to_string(),
             slice_grid: 6,
             device: "cpu".to_string(),
+            threads: 0,
+            species: true,
         }
     }
 }
@@ -139,6 +149,17 @@ impl DetectionSettings {
         YoloConfig {
             slice: SliceMode::from_setting(&self.slice_mode, self.slice_grid),
             ..YoloConfig::default()
+        }
+    }
+
+    /// Worker count to use: `0` means auto (`available`), and an explicit value
+    /// is clamped to `1..=available` so a stale setting cannot over-subscribe.
+    pub fn resolved_threads(&self, available: usize) -> usize {
+        let available = available.max(1);
+        if self.threads == 0 {
+            available
+        } else {
+            (self.threads as usize).clamp(1, available)
         }
     }
 
@@ -239,6 +260,8 @@ mod tests {
             slice_mode: "always".into(),
             slice_grid: 4,
             device: "auto".into(),
+            threads: 2,
+            species: false,
         };
         s.save(&p).unwrap();
         assert_eq!(DetectionSettings::load(&p), s);
@@ -247,12 +270,27 @@ mod tests {
             DetectionSettings::load(dir.path().join("missing.json")),
             DetectionSettings::default()
         );
-        // Older files without `device` / `slice_mode` still parse.
+        // Older files without the newer fields still parse, with defaults.
         std::fs::write(&p, r#"{"slice_grid":2}"#).unwrap();
         let partial = DetectionSettings::load(&p);
         assert_eq!(partial.slice_grid, 2);
         assert_eq!(partial.device, "cpu");
         assert_eq!(partial.slice_mode, "fallback");
+        assert_eq!(partial.threads, 0);
+        assert!(partial.species);
+    }
+
+    #[test]
+    fn resolved_threads_handles_auto_and_clamps() {
+        let mut s = DetectionSettings::default();
+        assert_eq!(s.resolved_threads(8), 8, "0 means auto");
+        assert_eq!(s.resolved_threads(0), 1, "never zero workers");
+
+        s.threads = 3;
+        assert_eq!(s.resolved_threads(8), 3);
+        assert_eq!(s.resolved_threads(2), 2, "clamped to available");
+        s.threads = 99;
+        assert_eq!(s.resolved_threads(4), 4);
     }
 
     #[test]

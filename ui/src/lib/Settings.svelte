@@ -255,6 +255,47 @@
         </p>
       </section>
 
+      <section>
+        <h3>Performance</h3>
+        <p class="status">
+          For smaller machines. Analysis holds one decoded image per worker, and species
+          identification keeps the ~800 MB species model in memory. Lower the workers or turn
+          species off to cut memory and CPU cost.
+        </p>
+        <div class="row">
+          <label for="analysis-threads">Analysis threads</label>
+          <select
+            id="analysis-threads"
+            value={String(localDetection.threads)}
+            onchange={(e) =>
+              (localDetection = { ...localDetection, threads: Number(e.currentTarget.value) })}
+          >
+            <option value="0">Auto — all cores</option>
+            <option value="1">1 — least memory</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="species-enabled">Species identification</label>
+          <select
+            id="species-enabled"
+            value={localDetection.species ? "on" : "off"}
+            onchange={(e) =>
+              (localDetection = {
+                ...localDetection,
+                species: e.currentTarget.value === "on",
+              })}
+          >
+            <option value="on">On — name birds (uses ~800 MB)</option>
+            <option value="off">Off — skip species (fastest, least memory)</option>
+          </select>
+        </div>
+      </section>
+
       <details>
         <summary>Advanced rules — every parameter the scorer uses</summary>        {#each RULES as group (group.section)}
           <section>

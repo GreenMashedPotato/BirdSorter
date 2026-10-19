@@ -75,6 +75,17 @@ on a 28-core Windows box.
    *batch* command would still cut IPC, but Tauri invocations are cheap and
    coalescing is the rule-mandated part (`rule.md` §9).
 
+### Low-end / low-memory controls (done)
+
+- ✅ **Species identification can be disabled** (Settings ▸ Performance, CLI
+  `--no-species`): skips the ~818 MB model and ~350 ms/crop. Default stays on.
+- ✅ **Analysis threads setting** (`0` = auto; Settings ▸ Performance, CLI
+  `--threads <n>`): bounds peak memory (each worker holds a decoded image) and
+  reduces CPU contention on small machines.
+- ✅ **Memory-bounded batches**: the analysis batch holds at most one decoded
+  image per worker (capped at 8) instead of a fixed 8, so 1–4-core machines no
+  longer keep eight 2400 px images resident.
+
 ## Correctness & robustness
 
 7. ⬜ **Anti-aliased `normalise_size`** — strided subsampling aliases high

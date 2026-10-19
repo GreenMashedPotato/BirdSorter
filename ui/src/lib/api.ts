@@ -204,12 +204,18 @@ export interface DetectionSettings {
   slice_grid: number;
   /** `"cpu"` (default), `"auto"` or `"gpu"`. */
   device: string;
+  /** Decode workers; `0` = all cores. Lower bounds peak memory. */
+  threads: number;
+  /** Run species identification when a model is installed (~800 MB of RSS). */
+  species: boolean;
 }
 
 export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
   slice_mode: "fallback",
   slice_grid: 6,
   device: "cpu",
+  threads: 0,
+  species: true,
 };
 
 export function sliceGridLabel(grid: number): string {
