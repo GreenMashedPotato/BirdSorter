@@ -68,7 +68,7 @@ impl OnnxSpeciesClassifier {
         }
         if debug_onnx() {
             let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
-            eprintln!(
+            tracing::debug!(
                 "[onnx] loading species model {} ({} bytes)",
                 model.display(),
                 size
@@ -139,7 +139,7 @@ impl OnnxSpeciesClassifier {
             let n = buf.len() as f32;
             let mean = buf.iter().sum::<f32>() / n;
             let sd = (buf.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n).sqrt();
-            eprintln!(
+            tracing::debug!(
                 "[onnx] buf len={} mean={mean:.3} std={sd:.3} first={:?}",
                 buf.len(),
                 &buf[..buf.len().min(4)]
@@ -154,7 +154,7 @@ impl OnnxSpeciesClassifier {
             let sd = (data.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
                 / data.len() as f32)
                 .sqrt();
-            eprintln!(
+            tracing::debug!(
                 "[onnx] len={} head={:?} mean={mean:.4} std={sd:.4}",
                 data.len(),
                 head
@@ -187,7 +187,7 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
                 Ok(results) => return Ok(results),
                 Err(e) => {
                     if debug_onnx() {
-                        eprintln!("[onnx] batched species inference failed ({e}); per-crop");
+                        tracing::debug!("[onnx] batched species inference failed ({e}); per-crop");
                     }
                 }
             }

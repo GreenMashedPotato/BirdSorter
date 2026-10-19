@@ -284,10 +284,14 @@ pub fn train(conn: &Connection, models_dir: &Path) -> Result<TrainResult> {
             "need at least 2 different label classes",
         ));
     }
-    let y_idx: Vec<usize> = ys
-        .iter()
-        .map(|s| classes.iter().position(|c| c == s).unwrap())
-        .collect();
+    let mut y_idx = Vec::with_capacity(ys.len());
+    for s in &ys {
+        let idx = classes
+            .iter()
+            .position(|c| c == s)
+            .ok_or_else(|| CoreError::invalid_input(format!("unexpected label class '{s}'")))?;
+        y_idx.push(idx);
+    }
     let n_classes = classes.len();
 
     let cv_accuracy = cross_val_accuracy(&xs, &y_idx, n_classes, N_FOLDS);

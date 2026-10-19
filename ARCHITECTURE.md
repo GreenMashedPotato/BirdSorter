@@ -214,7 +214,6 @@ without the flag. Absent either, nothing changes.
 - Product plan, milestones, performance budgets: [`plan.md`](./plan.md)
 - Current status and backlog: [`progress.md`](./progress.md) · [`SUGGESTIONS.md`](./SUGGESTIONS.md)
 - Engineering rules (invariants, error handling, DB/model/UI rules): [`rule.md`](./rule.md)
-- The hardening plan that shaped the current layout: [`refactor.md`](./refactor.md)
 - Model contracts and provenance: [`MODELS.md`](./MODELS.md) · [`EYE_MODEL.md`](./EYE_MODEL.md)
 - Building, running and packaging: [`README.md`](./README.md) · [`SIGNING.md`](./SIGNING.md) · [`MACOS_TODO.md`](./MACOS_TODO.md)
 - Adding code / debugging: [`CONTRIBUTING.md`](./CONTRIBUTING.md) · [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)

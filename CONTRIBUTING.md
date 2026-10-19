@@ -9,8 +9,8 @@ and gives recipes for the common changes. **Read these three first:**
 - [`plan.md`](./plan.md) — architecture and the product decisions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — how the crates and the pipeline fit together.
 
-`progress.md` is the living status; `refactor.md` is the hardening plan that
-shaped the current layout.
+`progress.md` is the living status; `SUGGESTIONS.md` is the status-tagged
+backlog of improvements.
 
 ## Layout & dependency direction
 
