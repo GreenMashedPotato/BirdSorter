@@ -6,7 +6,7 @@ and gives recipes for the common changes. **Read these three first:**
 - [`rule.md`](./rule.md) — the engineering rules (invariants, error handling,
   DB/model/UI rules). This is the standing reference; a change that breaks a
   rule needs an explicit, justified exception.
-- [`plan.md`](./plan.md) — architecture and the product decisions.
+- [`implemented.md`](./implemented.md) — what has shipped, with measurements.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — how the crates and the pipeline fit together.
 
 `progress.md` is the living status; `SUGGESTIONS.md` is the status-tagged

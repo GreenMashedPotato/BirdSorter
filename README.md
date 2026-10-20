@@ -11,6 +11,9 @@ groups bursts, and (optionally) identifies species.
 with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
 providers — no CUDA install, no driver hunting, and models download on demand.
 
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the system design and performance
+budgets, and [`implemented.md`](./implemented.md) for what has shipped.
+
 ## Status
 
 Early. The headless Rust core is underway (M1 of the plan):

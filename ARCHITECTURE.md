@@ -154,7 +154,7 @@ try the configured provider (Auto/GPU)
        └─ CPU failure → typed error (never a silent "no subject")
 ```
 
-Capability degrades in tiers (see `plan.md` §3.3): **T0** works with no model
+Capability degrades in tiers: **T0** works with no model
 at all (embedded previews + classical sharpness + saliency/silhouette
 detectors); **T1** adds the bundled YOLO11n detector; **T2** adds the optional
 species classifier and eye model; **T3** uses a GPU execution provider
@@ -209,9 +209,27 @@ without the flag. Absent either, nothing changes.
 
 ---
 
-## 7. Where to go next
+## 7. Performance budgets
 
-- Product plan, milestones, performance budgets: [`plan.md`](./plan.md)
+Targets for CPU-only hardware (8-core i5-1240P / M1 class), with a GPU execution
+provider as the comparison. Current measurements are in `implemented.md`.
+
+| Metric | CPU-only | With a GPU EP |
+|---|---|---|
+| RAW decode (analysis resolution) | 200–500 ms, parallel ×cores | same (CPU-bound) |
+| YOLO11n @640, batch 8 | 80–200 ms/img | 15–50 ms/img |
+| Species ID @384 crop (iNat21 ConvNeXt-L) | ~350 ms/crop; can be disabled | same |
+| Sharpness feature vector | 30–100 ms/img | same |
+| **Sustained ingest** (no species) | **≥ 4 img/s** | ≥ 10 img/s |
+| Cold start → usable UI | **< 1.5 s** | — |
+| Peak RAM during ingest | ≤ 1.5 GB without species | ≤ 2 GB |
+| Install size (no models) | **≤ 80 MB** | — |
+
+---
+
+## 8. Where to go next
+
+- Shipped work (features, change log, measurements): [`implemented.md`](./implemented.md)
 - Current status and backlog: [`progress.md`](./progress.md) · [`SUGGESTIONS.md`](./SUGGESTIONS.md)
 - Engineering rules (invariants, error handling, DB/model/UI rules): [`rule.md`](./rule.md)
 - Model contracts and provenance: [`MODELS.md`](./MODELS.md) · [`EYE_MODEL.md`](./EYE_MODEL.md)

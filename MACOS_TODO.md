@@ -5,7 +5,7 @@ hardware yet; every item lists how to check it and what to report back.
 
 Repo: `https://github.com/GreenMashedPotato/raw-sorter-app` (private)
 Branch: `main`
-Read first: `progress.md` (status + decisions), `plan.md` (architecture),
+Read first: `progress.md` (status + decisions), `ARCHITECTURE.md` (architecture),
 `SIGNING.md` (certificates), `README.md` (build/run).
 
 ---

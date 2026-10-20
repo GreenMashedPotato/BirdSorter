@@ -1,260 +1,93 @@
 # Suggestions for BirdSorter
 
-Improvements, features and polish — with status. Ordered by area, then impact.
+Open and partial improvements only. Everything that has shipped — including the
+performance measurements — is archived in [`implemented.md`](./implemented.md);
+current status is in [`progress.md`](./progress.md).
 
-**Legend:** ✅ done · 🟡 partially done / blocked · ⬜ open
-
----
-
-## Done in this round (with measurements)
-
-All numbers from `cargo bench -p birdsorter-core` (`crates/core/benches/analysis.rs`)
-on a 28-core Windows box.
-
-| Change | Effect |
-|---|---|
-| ✅ **Trig-free gradient directionality** — replaced per-pixel `atan2`/`cos`/`sin` with the double-angle identities (`|g|·cos2θ = (a²−b²)/|g|`, `|g|·sin2θ = 2ab/|g|`), one `sqrt` per pixel | **51 ms → 9 ms** on 1600×1200; this single metric was the dominant cost |
-| ✅ **Parallel feature extraction** — full-image / subject / background metric groups are independent, so they run under `rayon::join` (images ≥ 256²; below that the join overhead isn't worth it) | **57 ms → 31 ms** per image at 2400 px |
-| ✅ **Fused YOLO preprocessing** — resize + letterbox + NCHW normalisation in one pass, precomputed column tables, unchecked source reads; no intermediate resized image | **5.2 ms → 3.0 ms** per tile (**−42%**); sliced inference runs ~17 tiles per frame |
-| ✅ **FFT plan reuse** — a thread-local `FftPlanner` (plans were re-derived on every call) + blocked transpose instead of strided gather/scatter | included in the feature-extraction win above |
-| ✅ **`to_gray` contiguous fast path** | ~2× on the luma conversion |
-| ✅ **Shared Sobel computation** — `tenengrad` and `gradient_directionality` each built gx/gy independently (4 convolutions); now share one `sobel_pair` (2) | included above |
-| ✅ **Convolution interior fast path** — `sym_index` only on the 1-pixel border instead of 18 calls per pixel | included above |
-| ✅ **Background normalisation** — the background crop is normalised to the same long side as the subject, so `subject_to_bg_ratio` compares like with like | correctness fix |
-| ✅ **N+1 query elimination** — the grid did 1 + 2N queries; now a single `JOIN` (`list_files_with_details`) | grid load is O(1) queries |
-| ✅ **Benchmarks** — `crates/core/benches/analysis.rs` covers the hot paths | keeps the above honest |
-| ✅ **Property tests for scoring** — score always in `[0,1]`, and monotonic in subject sharpness | new tests |
-| ✅ **Model-load error hints** — opset/truncated-download hints in the ONNX load failure | clearer failures |
-| ✅ **Two-phase ("smart") detection** — full frame first; the tile grid runs **only** on frames that found nothing. Batching made tiling ~free, so this is the best of both: distant birds recovered (raptor 0.88 vs missed) at no measurable cost (8.1–8.7 s vs 8.6–8.7 s / 40 frames). | new default |
-| ✅ **Species ID: iNaturalist 2021 ConvNeXt-Large (10,000 species)** — `tools/export_inat21.py` exports `timm/convnext_large_mlp.laion2b_ft_augreg_inat21` with the canonical 10k labels; `tools/enrich_common_names.py` adds English common names (`Ardea cinerea (Grey Heron)`). Measured **`Ardea alba (Great Egret)` 0.977** where the old 526-class ViT said Snowy Egret 0.373. Now the app's only species model; the ViT and BioCLIP options were dropped. | done |
-| ✅ **Recall threshold for the "look harder" pass** — `YoloConfig::fallback_conf` (0.15) is used for the fallback/edge/tile pass only, since small in-flight birds score weakly. | done |
-| ✅ **Re-analyse after tuning** — `analyze_folder` takes `force` (CLI `--force`), the toolbar has **Re-analyze all**, and Analyze prompts when nothing is pending. Verified on real frames: three silhouette-in-flight shots that were `no_subject` now detect at conf 0.90-0.95. | done |
-| ✅ **Silhouette fallback detector** — classical blob detection for backlit birds on flat sky, used only when the network finds nothing. | done |
-| ✅ **Star ratings 0-5** — DB column + XMP sidecar sync (`xmp:Rating`, merged safely), grid/review stars, Auto-star and Reset stars. | done |
-| ✅ **About dialog** — author, contact, version, build date, and licences/disclaimers (the species model is CC-BY-NC-4.0). | done |
-| ✅ **Species fine-tuning tool** — `tools/train_species.py` (folder-per-class or HF dataset → `bird_species.onnx` + labels + meta), with iNat-2021 Aves (~1,486 species) guidance. | done |
-| ✅ **Model-driven preprocessing** — `meta.json` can request CLIP-style shortest-side resize + centre-crop and bicubic filtering (0.011 → 0.947 on the egret when added). | done |
-| ✅ **Thumbnail cache GC** — `ThumbCache::retain(hash set)` + `cleancache` CLI + Settings ▸ Maintenance | reclaimed **45.9 MB** of 46.6 MB on a real library while keeping all 40 referenced entries |
-| ✅ **Export keepers** — copy/move labelled keepers (`--label`), or by scorer verdict (`--predicted`), never overwriting (name gets ` (1)`); CLI `export`, a toolbar button, and a Core API module | verified end-to-end on real CR3s: 15 copied, 40 originals untouched, second run created 15 `(1)` copies |
-| ✅ **Grid keyboard navigation** — arrows move a visible cursor (scrolling the virtualized grid to follow), Space toggles selection, Enter opens the review, Home/End jump to row ends | new |
-| ✅ **Label-based filters** — *My keepers*, *My rejects*, *Unlabelled* chips (the existing chips filter by *predicted* verdict) | new |
-| ✅ **1:1 zoom** — a button that scales the preview to actual pixels (`ZOOM_MAX` raised to 16×) | new |
-
-### Blocked / partial
-
-| Item | Status |
-|---|---|
-| 🟡 **Batched species inference** — the iNat21 export **does** have a dynamic `batch` axis, but one batched call is *slower* per crop than per-crop inference on CPU (measured 289 ms/crop at batch 1 vs 472 ms/crop at batch 4, 28 threads), so the classifier now runs crops one at a time and only batches when a GPU provider is active. The model-gated agreement test still covers the raw batched routine. | measured, resolved |
-| ✅ **Pre-allocated convolution buffers** — a thread-local pool reuses each thread's scratch buffers, so the ~7.7 MB `Array2::zeros` per convolution pass is skipped (every pixel is overwritten anyway). Measured on the 1600×1200 metric benches: **tenengrad −24%**, **variance_of_laplacian −21%**, **directionality −19%**. | done |
+**Legend:** 🟡 partial / blocked · ⬜ open
 
 ---
 
 ## Performance
 
-1. ⬜ **Separable Sobel** — the 3×3 kernels do 9 multiplies/pixel; two 1-D passes
-   do 6 and are more cache-friendly.
-2. ⬜ **Downscale before the FFT** — `fft_high_freq_ratio` runs on the full
-   normalised image (18 ms at 1600×1200). A 2× pre-downscale would quarter the
-   cost; needs a calibration check so the threshold semantics hold.
-3. ✅ **Cross-image species batching** — feeds N images' crops into one call.
-   Measured **counterproductive on CPU** (289 ms/crop at batch 1 vs 472 ms/crop at
-   batch 4), so the classifier runs crops one at a time and only batches on a GPU
-   provider. Closed as "won't do" with the measurement recorded above.
-4. 🟡 **Parallel species sessions** — the session sits behind a `Mutex`, so crops
-   serialize. A per-worker pool is **not worth it for the current model**: one copy
-   of the iNat21 ConvNeXt is **818 MB** (the old ~85 MB figure predates it), so a
-   pool would add gigabytes of RSS, and cross-image batching is already measured
-   slower on CPU. Revisit if the species model is quantized or shrunk.
-5. ⬜ **Thumbnail encode batching** — libjpeg-turbo can encode several thumbnails
-   in parallel.
-6. ✅ **Request coalescing for thumbnails/previews** — core `RenderGates` (a
-   per-key single-flight map with weakly-held gates) plus `cached_coalesced` /
-   `thumbnail_cached_with`; `AppState` owns one and both preview commands use it, so
-   duplicate concurrent renders of the same cache key wait and read the fresh entry
-   instead of decoding the RAW twice. Unit-tested: two threads, one render. A backend
-   *batch* command would still cut IPC, but Tauri invocations are cheap and
-   coalescing is the rule-mandated part (`rule.md` §9).
+- ⬜ **Separable Sobel** — the 3×3 kernels do 9 multiplies/pixel; two 1-D passes do
+  6. Measure first: for a 3×3 kernel the extra memory pass may erase the win.
+- ⬜ **Downscale before the FFT** — `fft_high_freq_ratio` runs on the full
+  normalised image (18 ms at 1600×1200). A 2× pre-downscale would quarter the cost;
+  needs a scoring recalibration so the thresholds keep their meaning.
+- 🟡 **Parallel species sessions** — one session sits behind a `Mutex`, so crops
+  serialize. A per-worker pool is impractical for the current model: one iNat21
+  ConvNeXt session is **818 MB**, and cross-image batching is already measured
+  slower on CPU. Revisit only if the species model is quantized or shrunk.
+- ⬜ **Thumbnail encode batching** — libjpeg-turbo can encode several thumbnails in
+  parallel (needs an FFI dependency).
+- ⬜ **Request batching for thumbnails** — coalescing is in place; a backend batch
+  command would also cut IPC, though Tauri invocations are cheap.
 
-### Low-end / low-memory controls (done)
+## Preview adjustments (next)
 
-- ✅ **Species identification can be disabled** (Settings ▸ Performance, CLI
-  `--no-species`): skips the ~818 MB model and ~350 ms/crop. Default stays on.
-- ✅ **Analysis threads setting** (`0` = auto; Settings ▸ Performance, CLI
-  `--threads <n>`): bounds peak memory (each worker holds a decoded image) and
-  reduces CPU contention on small machines.
-- ✅ **Memory-bounded batches**: the analysis batch holds at most one decoded
-  image per worker (capped at 8) instead of a fixed 8, so 1–4-core machines no
-  longer keep eight 2400 px images resident.
-
-### Format coverage (done)
-
-- ✅ **JPEG/TIFF + wider RAW support**: the scanner accepts every `rawler` format
-  (Canon/Nikon/Sony/OM/Fuji/Panasonic/Pentax/DNG plus X3F, SRW, KDC, ERF, IIQ,
-  MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG/TIFF EXIF supplies **capture
-  time** (bursts, `--by date`) and **orientation** (portrait shots decode upright);
-  `thumb`/`preview`/`probe` work on JPEG too, and file associations list the same
-  extensions.
-
-### Verdicts & preview (done)
-
-- ✅ **Motion blur needs softness too**: directionality is computed on the subject
-  crop and only applied when the frame is already below the sharp threshold, so
-  sharp striped plumage/branches are not penalised. Burst members below **75%**
-  of the keeper's score are downgraded to `uncertain` with `soft_vs_burst`, which
-  catches mild subject movement the per-image metrics miss. Verified on a real
-  burst: the reported frame (0.496 vs the keeper's 0.683) is now `uncertain`.
-- ✅ **Preview adjustments**: exposure, contrast, shadows, highlights, white
-  balance (temperature/tint), vibrance, saturation, clarity and edge-preserving
-  denoise, applied to the cached review preview (never the original). Review
-  panel + CLI flags. Inspired by LightCraft (MIT/Apache-2.0).
+- ⬜ **Larger-radius clarity** — the current clarity is a 3×3 luma unsharp mask; a
+  guided filter at a larger radius matches LightCraft's look better.
+- ⬜ **Dehaze** — dark-channel prior with guided refinement (and negative values to
+  add atmosphere).
+- ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
+- ⬜ **Apply adjustments on export** — they are preview-only today; writing an
+  adjusted JPEG/TIFF is the natural next step.
 
 ## Correctness & robustness
 
-7. ⬜ **Anti-aliased `normalise_size`** — strided subsampling aliases high
-   frequencies. A box/area average is more faithful, but it shifts every metric
-   value, so it needs a scoring recalibration rather than a silent swap.
-8. ⬜ **Per-batch transactions during analysis** — `flush_batch` commits per file;
-   a crash mid-batch leaves a partially-analyzed batch (no corruption, just a
-   resume). Wrapping the batch in one transaction needs the `with_tx` callers
-   reworked to avoid nesting.
-9. ✅ **Disk-space check before analysis** — `io::disk` reads free space (works on
-   not-yet-created dirs by walking to an existing ancestor); the CLI and desktop
-   warn below `MIN_FREE_BYTES` (200 MB) on the data/cache drive before a run
-   starts, rather than failing mid-run.
-10. ✅ **Structured logging** — the runtime desktop diagnostics (GPU/EP selection,
-    provider fallback, detector batch/region failures, model-load failures) now use
-    `tracing`; the CLI and desktop init a subscriber from `RUST_LOG` (default
-    `warn`). The CLI's own user output stays plain `println!`.
+- ⬜ **Anti-aliased `normalise_size`** — strided subsampling aliases high
+  frequencies. A box/area average is more faithful, but it shifts every metric
+  value, so it needs a scoring recalibration rather than a silent swap.
 
 ## UX & features
 
-11. ✅ **Undo** for the last label action — `undo_labels` drops the most recent
-    label row per file (reverting to the previous label, or unlabelled), a 20-deep
-    stack, Ctrl+Z or the toolbar button. Trash still goes to the OS recycle bin
-    and is not undoable in-app.
-12. ✅ **Burst compare** — side-by-side panes with **synced zoom/pan**, the other
-    frame's boxes/verdict/species, and prev/next through the burst.
-13. ✅ **Star ratings** in addition to the four labels (0–5, grid + review, XMP).
-14. ✅ **Focus peaking** — a Sobel edge overlay on the review preview with a
-    threshold slider and a **green/red colour toggle** (`C`), computed
-    client-side and aligned with the zoomed image.
-15. ⬜ **Multi-folder view** (e.g. a day split across two cards).
-16. ✅ **Export from the review view** — "Export…" copies the open photo to a
-    folder you pick (`export_file`).
-17. ✅ **Configurable export layout** — core + CLI + UI. The toolbar's **Export
-    keepers** opens a dialog (layout `flat`/`date`/`species` + optional rename
-    pattern); the CLI takes `--by flat|date|species` and `--rename`. Layouts write
-    one folder per capture day (`YYYY-MM-DD` / `_no_date`) or per species
-    (`_no_species`); `--rename` rebuilds names from `{name}`/`{date}`/`{species}`,
-    keeping the extension and sanitising path-unsafe characters.
-18. ✅ **Histogram overlay** on the review preview — a **Histogram** toggle draws a
-    luminance histogram in the corner (pure `lumaHistogram` helper, unit-tested).
-19. ✅ **"Keep burst winners"** — one click labels every multi-frame burst's
-    highest-scoring frame as Sharp, skipping files you already labelled; undoable.
-20. ✅ **Drag-and-drop folder import** onto the window — a dropped folder is added
-    and scanned via `add_folder`/`scan_folder` (a small `preferredDropPath` helper
-    picks the folder out of a mixed drop; unit-tested).
+- ⬜ **Multi-folder view** (e.g. a day split across two cards). Culling already works
+  on file ids; the folder-scoped actions (Analyze / Re-score / Keep burst winners /
+  Export keepers) need a decision: primary folder or every selected folder.
 
 ## Packaging & distribution
 
-21. ⬜ **Auto-updater** — `tauri-plugin-updater`; only after signing works.
-22. ✅ **Portable mode** — a `portable.flag` next to the executable keeps the DB,
-    models, settings and cache under `<exe dir>/BirdSorterData`;
-    `BIRDSORTER_DATA_DIR` forces a portable root (tests/CI).
-23. 🟡 **File associations** for RAW extensions — the bundle registers
-    CR2/CR3/NEF/ARW/RAF/ORF/RW2/DNG. A launched file (Windows argv) is added,
-    scanned and opened in the review; a **second** launch is forwarded to the
-    running window by `tauri-plugin-single-instance`. macOS uses
-    `RunEvent::Opened` instead — see `MACOS_TODO.md`.
-24. ✅ **Diagnostics opt-in** (was "crash reporting") — **Settings ▸ Diagnostics → Save
-    diagnostics…** writes a *local* report (versions, compute device, schema, library counts,
-    model status + sizes, paths, recent `crash.log` lines) to a file you can attach to a bug
-    report; the CLI has `birdsorter diagnostics [--out <file>]` too. **Nothing is ever
-    transmitted** — no DSN or hosted service is wired, which is the honest, privacy-first
-    version. The user's home directory is stripped from every path (`~`) and free text, and
-    other absolute paths keep only their last components, so a shared report leaks no username
-    or layout. Verified on a real isolated library (report contains no `Users\…`).
+- ⬜ **Auto-updater** — `tauri-plugin-updater`; only after signing works.
+- 🟡 **File associations** — Windows registers the RAW/JPEG/TIFF extensions and
+  forwards a second launch to the running window; macOS `RunEvent::Opened` is still
+  pending (`MACOS_TODO.md`).
 
 ## Architecture
 
-25. ✅ **Fuzzing** for `SharpnessFeatures::from_json`, `parse_boxes`,
-    `parse_subject_species`: proptest properties assert arbitrary input never
-    panics, plus round-trips for valid input.
-26. ✅ **Integration test with a real RAW file** — `crates/core/tests/real_raw.rs`,
-    gated on `BIRDSORTER_TEST_RAW=<file>` (no network, no committed fixture):
-    decodes at analysis resolution, builds the full feature vector (all metrics in
-    range) and asserts a well-formed verdict. Verified against a real 26 MP CR3.
-27. 🟡 **Richer `CoreError`** — the domain-meaningful errors are typed:
-    `ModelLoad`, `Inference`, `Config`, `InvalidInput`, `NotFound`, `Download`,
-    `ModelArchive` (all with constructors). The runtime/model layer, registry,
-    trainer, library, XMP, decoder, disk and box paths use them. `Other` now remains
-    only for internal cases (the raw ONNX wrapper, JPEG encode, panic boundaries)
-    and test helpers. `#[source]` chains on the typed variants are still open.
-28. 🟡 **Benchmarks in CI** — a nightly `bench.yml` runs the analysis criterion
-    benches and uploads the HTML report (and warms a baseline in the cargo cache);
-    a hard >15% regression *gate* still needs a committed baseline. CI also now runs
-    the UI unit tests (`npm test`).
+- 🟡 **`CoreError` `#[source]` chains** — the typed variants carry messages, not
+  boxed sources. A wide ripple for little runtime value; deferred.
+- 🟡 **Benchmarks in CI** — a nightly `bench.yml` uploads the criterion report; a
+  hard >15% regression gate still needs a committed baseline and a stable runner.
 
 ## Model quality
 
-29. ✅ **Species model decided**: iNat21 ConvNeXt-Large (10,000 species) is the
-    app's model; common names added via `tools/enrich_common_names.py`.
-30. ⬜ **Confidence calibration** (temperature scaling) for the detector.
-31. ⬜ **Common-name coverage**: 1,461 of 10,000 labels matched Wikidata - mostly
-    the birds, but a few may be missing; a second source (IOC/Clements) could
-    fill the gaps.
-32. 🟡 **Fine-tuned detector / eye model** — the **eye pipeline is complete**
-    (label → `export-eyelabels` → `tools/train_eye.py` → `bird_eye.onnx` →
-    `runtime::OnnxEyeDetector` refines `eye_sharpness_worst`), so only the
-    200–400 labelled files + a real training run remain; the detector set still
-    needs `tools/train_bird_detector.py` + labels. See `EYE_MODEL.md`.
-33. ✅ **Multi-region background sampling** — the background reference is now the
-    median of the four rectangles outside the subject box (top/bottom/left/right),
-    so one busy strip (another bird, a frame edge) no longer drags the bokeh ratio.
-    Cost: `compute_features` within noise at 640/1600, **+~6%** at 2400.
-
-## Documentation
-
-34. ✅ **Architecture doc** — `ARCHITECTURE.md` (system + pipeline diagrams, module
-    map, runtime tiers, IPC, storage locations).
-35. ✅ **Contributing guide** — `CONTRIBUTING.md` (dependency direction, the gates,
-    recipes for a metric/detector/model/UI panel/command, invariants).
-36. ✅ **Troubleshooting guide** — `TROUBLESHOOTING.md` (GPU EP fallback, models,
-    slow runs, stale results, cache, trash/undo, `RUST_LOG`).
+- ⬜ **Detector confidence calibration** (temperature scaling) — needs a labelled
+  evaluation set.
+- ⬜ **Common-name coverage** — 1,461 of 10,000 labels matched Wikidata; a second
+  source (IOC/Clements) could fill the gaps.
+- 🟡 **Fine-tuned detector / eye model** — tooling is complete
+  (`tools/train_bird_detector.py`, `tools/train_eye.py`); needs 200–400 labelled eye
+  files (label in-app) or a detector dataset, then a training run. See
+  `EYE_MODEL.md`.
 
 ---
 
-## Remaining work (open or partial)
+## Deliberately not doing (measured)
 
-Everything the hardening plan listed is done. What is left is product/distribution
-work or work deliberately deferred:
+- **Cross-image species batching** — slower on CPU (289 ms/crop at batch 1 vs
+  472 ms/crop at batch 4, 28 threads).
+- **Per-batch analysis transactions** — per-file commits are atomic and give crash
+  resume; batching them would lose more work on a crash.
+- **Parallel species sessions** — 818 MB per session (see above).
 
-**Blocked on external input**
+## Blocked on external input
 
-- **Fine-tuned detector / eye model** — tooling is complete; needs 200–400
-  labelled eye files (label in-app) or COCO/own detector labels, then a training
-  run. See `EYE_MODEL.md`.
-- **macOS validation** — CoreML, `.app`/`.dmg`, notarization, Intel + Apple
-  Silicon, and HEIC via ImageIO still need a Mac (`MACOS_TODO.md`).
-- **Signing** — Windows signing is wired and needs a certificate; macOS needs
-  the Apple Developer Program. Auto-updater waits for this.
-
-**Deliberately deferred (measured)**
-
-- Cross-image species batching is slower on CPU (closed with measurements).
-- Per-batch analysis transactions are not worth it: per-file commits are atomic
-  and only cost a re-run of the partial batch after a crash.
-
-**Open improvements**
-
-- Separable Sobel; FFT pre-downscale; thumbnail encode batching.
-- Parallel species sessions is deferred pending a smaller/quantized model
-  (818 MB per session makes a pool impractical).
-- Anti-aliased `normalise_size` + scoring recalibration.
-- Multi-folder view; histogram (done) vs. configurable multi-folder workspace.
-- Detector confidence calibration (temperature scaling).
-- Common-name coverage beyond the 1,461/10,000 Wikidata matches.
-- `CoreError` `#[source]` chains; committed benchmark baseline for a hard CI gate.
+- **Fine-tuned detector / eye model** — see above.
+- **macOS validation** — CoreML, `.app`/`.dmg`, notarization, Intel + Apple Silicon,
+  and HEIC via ImageIO still need a Mac (`MACOS_TODO.md`).
+- **Signing** — Windows signing is wired and needs a certificate; macOS needs the
+  Apple Developer Program. The auto-updater waits for this.
 
 ---
 
