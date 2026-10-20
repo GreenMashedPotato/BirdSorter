@@ -1,9 +1,9 @@
 //! Non-destructive preview adjustments.
 //!
 //! A compact sRGB pipeline for the review preview: exposure, contrast, shadow
-//! lift, highlight compression and a small edge-preserving denoise. It runs on
-//! the already-decoded preview, so sliders stay responsive and originals are
-//! never touched.
+//! lift, highlight compression, white balance, vibrance/saturation, clarity and
+//! an edge-preserving denoise. It runs on the already-decoded preview, so
+//! sliders stay responsive and originals are never touched.
 //!
 //! The tone mapping follows the usual scene-referred idea (exposure in linear
 //! light, smooth shadow/highlight masks) without pulling in a full colour
@@ -27,6 +27,16 @@ pub struct Adjustments {
     pub highlights: f32,
     /// Edge-preserving denoise strength, `0..=1`.
     pub denoise: f32,
+    /// White balance: `-1` cool/blue … `+1` warm/amber.
+    pub temperature: f32,
+    /// White balance tint: `-1` green … `+1` magenta.
+    pub tint: f32,
+    /// Saturation boost that protects already-saturated colours, `-1..=1`.
+    pub vibrance: f32,
+    /// Uniform saturation, `-1..=1`.
+    pub saturation: f32,
+    /// Local mid-tone contrast (unsharp mask on luma), `-1..=1`.
+    pub clarity: f32,
 }
 
 impl Adjustments {
@@ -37,6 +47,11 @@ impl Adjustments {
             && self.shadows.abs() < 1e-4
             && self.highlights.abs() < 1e-4
             && self.denoise.abs() < 1e-4
+            && self.temperature.abs() < 1e-4
+            && self.tint.abs() < 1e-4
+            && self.vibrance.abs() < 1e-4
+            && self.saturation.abs() < 1e-4
+            && self.clarity.abs() < 1e-4
     }
 
     fn tone_is_identity(&self) -> bool {
@@ -44,6 +59,12 @@ impl Adjustments {
             && self.contrast.abs() < 1e-4
             && self.shadows.abs() < 1e-4
             && self.highlights.abs() < 1e-4
+            && self.temperature.abs() < 1e-4
+            && self.tint.abs() < 1e-4
+    }
+
+    fn colour_is_identity(&self) -> bool {
+        self.vibrance.abs() < 1e-4 && self.saturation.abs() < 1e-4
     }
 }
 
@@ -65,12 +86,22 @@ pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
     } else {
         rgb.clone()
     };
-    if adj.tone_is_identity() {
-        return out;
+    if !adj.tone_is_identity() {
+        let luts = channel_luts(adj);
+        let (h, w, c) = out.dim();
+        for y in 0..h {
+            for x in 0..w {
+                for k in 0..c {
+                    out[[y, x, k]] = luts[k.min(2)][out[[y, x, k]] as usize];
+                }
+            }
+        }
     }
-    let lut = tone_lut(adj);
-    for v in out.iter_mut() {
-        *v = lut[*v as usize];
+    if adj.clarity.abs() > 1e-4 {
+        out = clarity(&out, adj.clarity);
+    }
+    if !adj.colour_is_identity() {
+        out = vibrance_saturation(&out, adj.vibrance, adj.saturation);
     }
     out
 }
@@ -92,26 +123,102 @@ fn linear_to_srgb(v: f32) -> f32 {
     }
 }
 
-/// One LUT shared by the three channels (tone ops are per-channel identical).
-fn tone_lut(adj: &Adjustments) -> [u8; 256] {
-    let gain = 2f32.powf(adj.exposure.clamp(-2.0, 2.0));
+/// One LUT per channel: exposure and white balance are per-channel gains, the
+/// shadow/highlight/contrast curve is shared.
+fn channel_luts(adj: &Adjustments) -> [[u8; 256]; 3] {
+    let exposure = 2f32.powf(adj.exposure.clamp(-2.0, 2.0));
+    let warm = adj.temperature.clamp(-1.0, 1.0);
+    let tint = adj.tint.clamp(-1.0, 1.0);
+    // Gentle, daylight-referenced gains.
+    let gains = [
+        (1.0 + 0.30 * warm + 0.05 * tint).max(0.05) * exposure,
+        (1.0 - 0.12 * tint).max(0.05) * exposure,
+        (1.0 - 0.30 * warm + 0.05 * tint).max(0.05) * exposure,
+    ];
     let contrast = 1.0 + adj.contrast.clamp(-1.0, 1.0);
     let shadows = adj.shadows.clamp(0.0, 1.0);
     let highlights = adj.highlights.clamp(0.0, 1.0);
-    let mut lut = [0u8; 256];
-    for (i, slot) in lut.iter_mut().enumerate() {
-        let v0 = i as f32 / 255.0;
-        // Exposure is a multiplication in linear light.
-        let mut v = linear_to_srgb(srgb_to_linear(v0) * gain);
-        // Shadow lift: zero at black, zero at white, strongest in the darks.
-        v += shadows * (1.0 - v) * v;
-        // Highlight compression: zero at black, strongest in the brights.
-        v -= highlights * v * v;
-        // Contrast pivots around mid-grey.
-        v = (v - 0.5) * contrast + 0.5;
-        *slot = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut luts = [[0u8; 256]; 3];
+    for (channel, lut) in luts.iter_mut().enumerate() {
+        for (i, slot) in lut.iter_mut().enumerate() {
+            let v0 = i as f32 / 255.0;
+            let mut v = linear_to_srgb(srgb_to_linear(v0) * gains[channel]);
+            // Shadow lift: zero at black, zero at white, strongest in the darks.
+            v += shadows * (1.0 - v) * v;
+            // Highlight compression: zero at black, strongest in the brights.
+            v -= highlights * v * v;
+            // Contrast pivots around mid-grey.
+            v = (v - 0.5) * contrast + 0.5;
+            *slot = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
     }
-    lut
+    luts
+}
+
+/// Local mid-tone contrast: add the luma difference from a 3×3 mean back into
+/// each channel. Negative values soften. No large buffers, so it is cheap.
+fn clarity(rgb: &Array3<u8>, amount: f32) -> Array3<u8> {
+    let (h, w, _) = rgb.dim();
+    if h < 3 || w < 3 {
+        return rgb.clone();
+    }
+    let a = amount.clamp(-1.0, 1.0) * 1.5;
+    let luma = |y: usize, x: usize| -> f32 {
+        0.2126 * rgb[[y, x, 0]] as f32
+            + 0.7152 * rgb[[y, x, 1]] as f32
+            + 0.0722 * rgb[[y, x, 2]] as f32
+    };
+    let mut out = rgb.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let centre = luma(y, x);
+            let mut sum = 0.0f32;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let yy = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                    let xx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                    sum += luma(yy, xx);
+                }
+            }
+            let delta = (centre - sum / 9.0) * a;
+            for k in 0..3 {
+                out[[y, x, k]] = (rgb[[y, x, k]] as f32 + delta).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Vibrance (protects already-saturated colours) plus uniform saturation.
+fn vibrance_saturation(rgb: &Array3<u8>, vibrance: f32, saturation: f32) -> Array3<u8> {
+    let vib = vibrance.clamp(-1.0, 1.0);
+    let sat = saturation.clamp(-1.0, 1.0);
+    if vib.abs() < 1e-4 && sat.abs() < 1e-4 {
+        return rgb.clone();
+    }
+    let mut out = rgb.clone();
+    let (h, w, _) = out.dim();
+    for y in 0..h {
+        for x in 0..w {
+            let r = out[[y, x, 0]] as f32;
+            let g = out[[y, x, 1]] as f32;
+            let b = out[[y, x, 2]] as f32;
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            if max <= 1.0 {
+                continue;
+            }
+            let current = (max - min) / max;
+            // Vibrance adds more where the colour is muted.
+            let factor = (1.0 + sat + vib * (1.0 - current)).clamp(0.0, 4.0);
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            for (channel, value) in [(0usize, r), (1, g), (2, b)] {
+                out[[y, x, channel]] =
+                    (luma + (value - luma) * factor).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// 3×3 edge-preserving (bilateral) denoise with a range LUT — no `exp` per pixel.
@@ -264,6 +371,108 @@ mod tests {
     }
 
     #[test]
+    fn temperature_warms_and_cools() {
+        let grey = flat(128, 1, 1);
+        let warm = apply(
+            &grey,
+            &Adjustments {
+                temperature: 1.0,
+                ..Default::default()
+            },
+        );
+        assert!(warm[[0, 0, 0]] > warm[[0, 0, 2]], "warm: {warm:?}");
+        let cool = apply(
+            &grey,
+            &Adjustments {
+                temperature: -1.0,
+                ..Default::default()
+            },
+        );
+        assert!(cool[[0, 0, 2]] > cool[[0, 0, 0]], "cool: {cool:?}");
+    }
+
+    #[test]
+    fn tint_moves_green_and_magenta() {
+        let grey = flat(128, 1, 1);
+        let magenta = apply(
+            &grey,
+            &Adjustments {
+                tint: 1.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            magenta[[0, 0, 1]] < magenta[[0, 0, 0]] && magenta[[0, 0, 1]] < magenta[[0, 0, 2]],
+            "magenta: {magenta:?}"
+        );
+    }
+
+    #[test]
+    fn vibrance_expands_a_muted_colour_and_keeps_grey() {
+        let mut img = flat(128, 2, 1);
+        img[[0, 0, 0]] = 130;
+        img[[0, 0, 1]] = 120;
+        img[[0, 0, 2]] = 110;
+        let out = apply(
+            &img,
+            &Adjustments {
+                vibrance: 1.0,
+                ..Default::default()
+            },
+        );
+        let before = 130 - 110;
+        let after = out[[0, 0, 0]] as i32 - out[[0, 0, 2]] as i32;
+        assert!(after > before, "before {before}, after {after}");
+        // A neutral pixel stays neutral.
+        let grey = apply(
+            &flat(128, 1, 1),
+            &Adjustments {
+                vibrance: 1.0,
+                saturation: 1.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(grey[[0, 0, 0]], grey[[0, 0, 1]]);
+        assert_eq!(grey[[0, 0, 1]], grey[[0, 0, 2]]);
+    }
+
+    #[test]
+    fn clarity_adds_local_contrast() {
+        let img = Array3::from_shape_fn(
+            (16, 16, 3),
+            |(y, x, _)| {
+                if (x + y) % 2 == 0 {
+                    100u8
+                } else {
+                    118u8
+                }
+            },
+        );
+        let soft = apply(
+            &img,
+            &Adjustments {
+                clarity: -1.0,
+                ..Default::default()
+            },
+        );
+        let crisp = apply(
+            &img,
+            &Adjustments {
+                clarity: 1.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            horizontal_energy(&crisp) > horizontal_energy(&img),
+            "clarity should add edge contrast"
+        );
+        assert!(
+            horizontal_energy(&soft) < horizontal_energy(&img),
+            "negative clarity should soften"
+        );
+    }
+
+    #[test]
     fn denoise_smooths_noise_and_keeps_the_size() {
         // Low-amplitude alternating "noise" (a high-contrast checkerboard is an
         // edge, which the bilateral filter is meant to preserve).
@@ -299,6 +508,9 @@ mod tests {
             &Adjustments {
                 exposure: 1.0,
                 denoise: 0.5,
+                temperature: 0.3,
+                vibrance: 0.4,
+                clarity: 0.3,
                 ..Default::default()
             },
             90,
@@ -319,6 +531,11 @@ mod tests {
             shadows: 1.0,
             highlights: 1.0,
             denoise: 0.5,
+            temperature: 1.0,
+            tint: 1.0,
+            vibrance: 1.0,
+            saturation: 1.0,
+            clarity: 1.0,
         };
         let out = apply(&img, &adj);
         assert_eq!(out.dim(), img.dim());

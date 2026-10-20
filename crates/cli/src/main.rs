@@ -67,6 +67,11 @@ Commands:
       --shadows <v>             Lift shadows (0..1)
       --highlights <v>          Compress highlights (0..1)
       --denoise <v>             Edge-preserving denoise (0..1)
+      --temperature <v>         White balance: -1 cool … +1 warm
+      --tint <v>                White balance tint: -1 green … +1 magenta
+      --vibrance <v>            Vibrance (-1..1)
+      --saturation <v>          Saturation (-1..1)
+      --clarity <v>             Local contrast (-1..1)
   probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
@@ -169,6 +174,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         shadows: flag("--shadows"),
         highlights: flag("--highlights"),
         denoise: flag("--denoise"),
+        temperature: flag("--temperature"),
+        tint: flag("--tint"),
+        vibrance: flag("--vibrance"),
+        saturation: flag("--saturation"),
+        clarity: flag("--clarity"),
     };
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).

@@ -182,6 +182,13 @@ export interface Adjustments {
   shadows: number;
   highlights: number;
   denoise: number;
+  /** White balance: -1 cool … +1 warm. */
+  temperature: number;
+  /** White balance tint: -1 green … +1 magenta. */
+  tint: number;
+  vibrance: number;
+  saturation: number;
+  clarity: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -190,6 +197,11 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   shadows: 0,
   highlights: 0,
   denoise: 0,
+  temperature: 0,
+  tint: 0,
+  vibrance: 0,
+  saturation: 0,
+  clarity: 0,
 };
 
 /** Preview with adjustments applied on top of the cached base render. */
