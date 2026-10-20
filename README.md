@@ -11,8 +11,8 @@ groups bursts, and (optionally) identifies species.
 with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
 providers — no CUDA install, no driver hunting, and models download on demand.
 
-See [`plan.md`](./plan.md) for the full architecture, performance budgets, test
-plan and roadmap.
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the system design and performance
+budgets, and [`implemented.md`](./implemented.md) for what has shipped.
 
 ## Status
 
@@ -295,5 +295,5 @@ denoise — and no LightCraft code was copied.
 
 ## Licence
 
-Provisional: AGPL-3.0-or-later (see the licence discussion in `plan.md` — the
-choice is coupled to the object-detection model we ship).
+Provisional: AGPL-3.0-or-later (the choice is coupled to the object-detection
+model we ship).

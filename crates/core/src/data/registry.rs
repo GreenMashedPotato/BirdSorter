@@ -28,7 +28,7 @@ const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 const DOWNLOAD_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
-/// Feature tier a model unlocks (see `plan.md` §3.3).
+/// Feature tier a model unlocks (see the runtime tiers in `ARCHITECTURE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {

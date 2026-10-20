@@ -25,7 +25,7 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 - **Stock Ultralytics YOLO11n**, COCO-pretrained (`nc=80`, `coco.yaml`, 600 epochs,
   saved by ultralytics 8.2.100). Not fine-tuned.
 - Upstream weights: <https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt>
-  (AGPL-3.0 — see the licence note in `plan.md`).
+  (AGPL-3.0 — see the licence note in `README.md`).
 - Re-exported locally to ONNX at **opset 12, imgsz 640, `dynamic=True`, no NMS head**
   (the app does letterboxing, decoding, NMS and de-duplication itself). Only COCO
   class 14 (`bird`) is kept.

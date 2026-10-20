@@ -17,7 +17,7 @@ raw-sorter-app/
   scripts/           Build/release/version scripts (bash + PowerShell wrappers)
   models/            Small development/bundled detector artifacts
   dist-models/       Large distribution-only model artifacts; not committed
-  plan.md            Architecture and product plan
+  implemented.md     Shipped features, change log and measurements
   ARCHITECTURE.md    System/pipeline diagrams, module map, IPC, storage
   CONTRIBUTING.md    How to add code (deps, gates, recipes, invariants)
   TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
@@ -225,7 +225,7 @@ Required controls:
 
 For every task:
 
-1. Read `plan.md`, `progress.md`, `rule.md`, and relevant module docs.
+1. Read `ARCHITECTURE.md`, `progress.md`, `rule.md`, and relevant module docs.
 2. Search before editing; do not assume names or paths.
 3. Inspect existing changes with `git status`.
 4. State the intended files and invariants.
