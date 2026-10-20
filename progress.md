@@ -10,7 +10,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **269 unit tests** (+50 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **279 unit tests** (+50 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -154,6 +154,25 @@ detection → sharpness verdict → species ID → grid/review UI).
 
 ## Done (continued)
 
+- **Motion-blur / burst-softness fixes** (from a real report on `_5260483`):
+  motion directionality is now computed on the **subject crop** (the full-frame
+  value hid small subjects) and the penalty is gated on the frame being below the
+  sharp threshold, because sharp striped plumage/branches also score directional.
+  Added a **burst-relative** pass: a `sharp` frame below **75%** of its burst's
+  best score becomes `uncertain` with `soft_vs_burst`. On the reported burst,
+  `_5260483` (0.496 vs the keeper's 0.683) is now `uncertain`, while the genuinely
+  directional frames get `motion_blur`. Saved settings whose motion
+  threshold/penalty is `1.0` (a no-op that silently disabled the rule) are
+  repaired on load, and the UI sliders can no longer select those values.
+- **Sticky header / gallery-only scrolling**: `.main` is now height-constrained
+  (`min-height: 0`, `overflow: hidden`) and the header bars are `flex: 0 0 auto`,
+  so the photo grid is the only scroll container and the toolbar/filters stay put.
+- **Preview adjustments** (inspired by LightCraft, MIT/Apache-2.0; independent
+  implementation): core `io::adjust` does exposure (linear light), contrast,
+  shadow lift, highlight compression and edge-preserving denoise on the cached
+  preview; a `preview_adjusted` command backs a review **Adjust** panel, and the
+  CLI exposes `preview --exposure/--contrast/--shadows/--highlights/--denoise`.
+  Non-destructive: scores, labels, sidecars, exports and originals are untouched.
 - **JPEG/TIFF and wider RAW coverage**: the scanner now accepts every format
   `rawler` decodes (Canon, Nikon, Sony, OM System, Fujifilm, Panasonic, Pentax,
   DNG, plus X3F/SRW/KDC/ERF/IIQ/MEF/MOS/MRW/NKD/TFR/ARI) and JPEG/TIFF.

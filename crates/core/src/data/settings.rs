@@ -87,9 +87,40 @@ impl ScoreSettings {
     /// unreadable (never fails the app on a bad settings file).
     pub fn load(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
-        match std::fs::read_to_string(path) {
+        let mut settings: Self = match std::fs::read_to_string(path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        settings.repair_ineffective_checks();
+        settings
+    }
+
+    /// Repair values that make an enabled check mathematically ineffective.
+    ///
+    /// A directionality threshold of `1.0` can never be exceeded (the metric is
+    /// bounded by 1) and a penalty of `1.0` multiplies by one, so either value
+    /// silently disables the motion-blur rule. Treat that as a stale/mis-set
+    /// configuration and fall back to the default — the "Enabled (0 / 1)" control
+    /// is the proper way to turn the check off.
+    fn repair_ineffective_checks(&mut self) {
+        let defaults = Self::default();
+        if self.motion_blur_enabled >= 0.5 {
+            if self.motion_directionality_threshold >= 1.0 {
+                tracing::warn!(
+                    old = self.motion_directionality_threshold,
+                    new = defaults.motion_directionality_threshold,
+                    "motion-blur threshold was a no-op; restored the default"
+                );
+                self.motion_directionality_threshold = defaults.motion_directionality_threshold;
+            }
+            if self.motion_blur_penalty >= 1.0 {
+                tracing::warn!(
+                    old = self.motion_blur_penalty,
+                    new = defaults.motion_blur_penalty,
+                    "motion-blur penalty was a no-op; restored the default"
+                );
+                self.motion_blur_penalty = defaults.motion_blur_penalty;
+            }
         }
     }
 
@@ -278,6 +309,30 @@ mod tests {
         assert_eq!(partial.slice_mode, "fallback");
         assert_eq!(partial.threads, 0);
         assert!(partial.species);
+    }
+
+    #[test]
+    fn ineffective_motion_settings_are_repaired() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.json");
+        std::fs::write(
+            &p,
+            r#"{"motion_blur_enabled":1.0,"motion_directionality_threshold":1.0,"motion_blur_penalty":1.0}"#,
+        )
+        .unwrap();
+        let s = ScoreSettings::load(&p);
+        assert_eq!(s.motion_directionality_threshold, 0.45);
+        assert_eq!(s.motion_blur_penalty, 0.50);
+
+        // Deliberately disabling the check keeps the user's values.
+        std::fs::write(
+            &p,
+            r#"{"motion_blur_enabled":0.0,"motion_directionality_threshold":1.0,"motion_blur_penalty":1.0}"#,
+        )
+        .unwrap();
+        let s = ScoreSettings::load(&p);
+        assert_eq!(s.motion_directionality_threshold, 1.0);
+        assert_eq!(s.motion_blur_penalty, 1.0);
     }
 
     #[test]

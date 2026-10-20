@@ -88,6 +88,23 @@ After changing detection/scoring, **Analyze** offers to recompute; or use
 (keeps your labels). Replacing a RAW's bytes and rescanning marks it pending
 automatically (analysis is tied to the file's content hash).
 
+## Verdicts and preview adjustments
+
+- **`soft_vs_burst`** — a frame the per-image score calls `sharp` is downgraded to
+  `uncertain` when it is **below 75%** of the sharpest frame's score in the same
+  burst. This catches mild subject movement / missed focus that single-image
+  metrics cannot see. The review's **Why?** explains the score; the miss-focus
+  badge shows `soft_vs_burst`.
+- **Motion blur needs both signals**: a directional subject *and* a soft subject.
+  Directionality alone also matches sharp striped plumage or a branch, so it is
+  only applied when the frame is below the sharp threshold. A saved settings file
+  with `motion_directionality_threshold` or `motion_blur_penalty` at `1.0` (both
+  are no-ops) is reset to the default on load.
+- **Adjust** in the review bar (exposure, contrast, shadows, highlights, denoise)
+  is **preview-only**: it does not change stored scores, labels, sidecars, the
+  original file or an export. The CLI can render one: `preview <raw> out.jpg
+  --exposure 0.5 --shadows 0.6 --denoise 0.4`.
+
 ## Scan / analysis seems stuck
 
 Scanning hashes every file (e.g. ~3537 photos / 76 GB ≈ 3 min at ~410 MB/s) and

@@ -1,5 +1,6 @@
 //! File and image IO: content hashing, caches, RAW decoding, EXIF.
 
+pub mod adjust;
 pub mod cache;
 pub mod decoder;
 pub mod develop;

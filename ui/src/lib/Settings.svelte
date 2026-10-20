@@ -118,12 +118,15 @@
         { key: "motion_blur_enabled", label: "Enabled (0 / 1)", min: 0, max: 1, step: 1 },
         {
           key: "motion_directionality_threshold",
+          // 1.0 can never be exceeded (the metric is bounded by 1), which would
+          // silently disable the rule. Turning the check off is the 0/1 toggle.
           label: "Directionality above",
           min: 0,
-          max: 1,
+          max: 0.9,
           step: 0.01,
         },
-        { key: "motion_blur_penalty", label: "Penalty", min: 0, max: 1, step: 0.05 },
+        // A penalty of 1.0 multiplies by one (a no-op), so cap it below 1.
+        { key: "motion_blur_penalty", label: "Penalty", min: 0, max: 0.9, step: 0.05 },
       ],
     },
     {

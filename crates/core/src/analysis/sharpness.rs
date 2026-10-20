@@ -649,6 +649,7 @@ struct SubjectMetrics {
     fft: f32,
     lc: f32,
     bren: f32,
+    dir: f32,
     grid: [[f32; 3]; 3],
     eye: f32,
 }
@@ -661,6 +662,7 @@ fn subject_metrics(subj_gray: &Array2<f32>) -> SubjectMetrics {
         fft: fft_high_freq_ratio(&norm),
         lc: local_contrast(&norm, LOCAL_CONTRAST_PATCH),
         bren: brenner_gradient(&norm),
+        dir: gradient_directionality(&norm),
         // The grid and eye search use the un-normalised crop, matching the
         // prototype (they normalise internally where needed).
         grid: grid_3x3(subj_gray),
@@ -833,7 +835,7 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
         center_edge_ratio: center_edge_r,
         brenner_full: full.bren,
         brenner_subject: subj.bren,
-        motion_directionality: full.dir,
+        motion_directionality: subj.dir,
         subject_edge_distance: edge_dist,
     }
 }

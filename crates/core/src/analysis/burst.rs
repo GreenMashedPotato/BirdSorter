@@ -4,7 +4,7 @@
 //! whose capture times are no more than `gap_seconds` apart. This is what lets
 //! a flight sequence collapse to its sharpest frame.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -12,6 +12,15 @@ use crate::Result;
 
 /// Default maximum gap between frames of the same burst.
 pub const DEFAULT_GAP_SECONDS: i64 = 2;
+
+/// Miss-focus reason stored when a frame is clearly softer than its burst's best.
+pub const MISS_FOCUS_SOFT_BURST: &str = "soft_vs_burst";
+
+/// A "sharp" frame must reach this fraction of its burst's best score; below it,
+/// it is downgraded to "uncertain". Measured on a real burst: the keeper scored
+/// 0.68 and the soft frame 0.50 (0.73×), which the per-image metrics still rated
+/// "sharp".
+pub const SOFT_BURST_RATIO: f32 = 0.75;
 
 /// The minimum a frame needs to contribute to burst analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,6 +159,52 @@ pub fn folder_bursts(conn: &Connection, folder_id: i64, gap_seconds: i64) -> Res
         });
     }
     Ok(find_bursts(&frames, gap_seconds))
+}
+
+/// Downgrade frames that are "sharp" but clearly softer than their burst's best.
+///
+/// Per-image metrics cannot see subject movement that is mild in absolute terms:
+/// a frame can clear the sharp threshold while being visibly softer than the
+/// keeper next to it (0.50 vs 0.68 in the same burst). Within a burst the sharpest
+/// frame is the reference, so anything below `ratio` of it is marked `uncertain`
+/// with the [`MISS_FOCUS_SOFT_BURST`] reason. Already-uncertain/blurry frames and
+/// the burst winner are left alone. Returns the number of rows updated.
+pub fn mark_soft_members(conn: &Connection, folder_id: i64, ratio: f32) -> Result<usize> {
+    let bursts = folder_bursts(conn, folder_id, DEFAULT_GAP_SECONDS)?;
+    let mut updated = 0usize;
+    for burst in bursts.iter().filter(|b| b.size > 1) {
+        let best: Option<f32> = conn
+            .query_row(
+                "SELECT sharpness_score FROM analysis WHERE file_id = ?1",
+                [burst.best],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(best) = best.filter(|&s| s > 0.0) else {
+            continue;
+        };
+        for &id in burst.frames.iter().filter(|&&id| id != burst.best) {
+            let row: Option<(f32, String)> = conn
+                .query_row(
+                    "SELECT sharpness_score, predicted_label FROM analysis WHERE file_id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((score, label)) = row else {
+                continue;
+            };
+            if label == "sharp" && score < ratio * best {
+                conn.execute(
+                    "UPDATE analysis SET predicted_label = 'uncertain', miss_focus_reason = ?2 \
+                      WHERE file_id = ?1",
+                    rusqlite::params![id, MISS_FOCUS_SOFT_BURST],
+                )?;
+                updated += 1;
+            }
+        }
+    }
+    Ok(updated)
 }
 
 /// Mark `file_id` as its burst's winner, or clear the manual choice.
@@ -317,5 +372,65 @@ mod tests {
         assert_eq!(bursts[0].best, 2);
         assert_eq!(bursts[0].size, 2);
         assert_eq!(bursts[1].best, 4);
+    }
+
+    #[test]
+    fn soft_burst_members_are_downgraded() {
+        use crate::data::db::{connect_in_memory, init_schema};
+        use crate::data::library::{add_folder, scan_folder};
+
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.cr3", "b.cr3", "c.cr3"] {
+            std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
+        }
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        conn.execute_batch(
+            "UPDATE files SET captured_at = '2026-01-01T10:00:00'
+              WHERE filename IN ('a.cr3', 'b.cr3');
+             UPDATE files SET captured_at = '2026-01-01T10:00:01' WHERE filename = 'c.cr3';
+             INSERT INTO analysis (file_id, features_json, sharpness_score, predicted_label,
+                                   analyzed_at, model_version)
+                 SELECT id, '{}', 0.68, 'sharp', 'now', 'rules-v1'
+                   FROM files WHERE filename = 'a.cr3';
+             INSERT INTO analysis (file_id, features_json, sharpness_score, predicted_label,
+                                   analyzed_at, model_version)
+                 SELECT id, '{}', 0.50, 'sharp', 'now', 'rules-v1'
+                   FROM files WHERE filename = 'b.cr3';
+             INSERT INTO analysis (file_id, features_json, sharpness_score, predicted_label,
+                                   analyzed_at, model_version)
+                 SELECT id, '{}', 0.30, 'blurry', 'now', 'rules-v1'
+                   FROM files WHERE filename = 'c.cr3';",
+        )
+        .unwrap();
+
+        assert_eq!(mark_soft_members(&conn, fid, SOFT_BURST_RATIO).unwrap(), 1);
+
+        let (label, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT a.predicted_label, a.miss_focus_reason
+                   FROM analysis a JOIN files f ON f.id = a.file_id
+                  WHERE f.filename = 'b.cr3'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, "uncertain");
+        assert_eq!(reason.as_deref(), Some(MISS_FOCUS_SOFT_BURST));
+
+        // The keeper stays sharp; the already-blurry frame is untouched.
+        for (name, expected) in [("a.cr3", "sharp"), ("c.cr3", "blurry")] {
+            let label: String = conn
+                .query_row(
+                    "SELECT a.predicted_label FROM analysis a JOIN files f ON f.id = a.file_id
+                      WHERE f.filename = ?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(label, expected, "{name}");
+        }
     }
 }
