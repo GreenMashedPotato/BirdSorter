@@ -62,6 +62,11 @@ Commands:
   thumb <photo> <out.jpg> [max] Extract a JPEG thumbnail (RAW preview or JPEG/TIFF)
   preview <photo> <out.jpg> [max] Render an analysis-resolution preview (RAW or JPEG)
       --develop                 Full RAW development (add --max-quality = VNG + RL)
+      --exposure <stops>        Preview exposure (-2..2)
+      --contrast <v>            Preview contrast (-1..1)
+      --shadows <v>             Lift shadows (0..1)
+      --highlights <v>          Compress highlights (0..1)
+      --denoise <v>             Edge-preserving denoise (0..1)
   probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
@@ -151,6 +156,20 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
+    let flag = |name: &str| -> f32 {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0)
+    };
+    let adjustments = birdsorter_core::io::adjust::Adjustments {
+        exposure: flag("--exposure"),
+        contrast: flag("--contrast"),
+        shadows: flag("--shadows"),
+        highlights: flag("--highlights"),
+        denoise: flag("--denoise"),
+    };
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).
         // `--max-quality` = the strongest available: VNG demosaic + RL deconvolution.
@@ -191,6 +210,7 @@ fn cmd_preview(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        let rgb = birdsorter_core::io::adjust::apply(&rgb, &adjustments);
         let (h, w, _) = rgb.dim();
         return match birdsorter_core::io::thumb::encode_rgb_jpeg(&rgb, 95) {
             Ok(bytes) => match std::fs::write(out, &bytes) {
@@ -215,8 +235,9 @@ fn cmd_preview(args: &[String]) -> ExitCode {
     ]);
     match decoder.decode(Path::new(src)) {
         Ok(img) => {
-            let (w, h) = img.dimensions();
-            match birdsorter_core::io::thumb::encode_rgb_jpeg(&img.rgb, 85) {
+            let rgb = birdsorter_core::io::adjust::apply(&img.rgb, &adjustments);
+            let (w, h) = (rgb.dim().1, rgb.dim().0);
+            match birdsorter_core::io::thumb::encode_rgb_jpeg(&rgb, 85) {
                 Ok(bytes) => match std::fs::write(out, &bytes) {
                     Ok(()) => {
                         println!("wrote {out} ({w}x{h}, {} KB)", bytes.len() / 1024);
@@ -1265,6 +1286,15 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             let _ = std::io::stdout().flush();
         }
     })?;
+
+    // Within each burst, downgrade frames that are clearly softer than the keeper.
+    if let Err(e) = birdsorter_core::analysis::burst::mark_soft_members(
+        &conn,
+        folder_id,
+        birdsorter_core::analysis::burst::SOFT_BURST_RATIO,
+    ) {
+        eprintln!("warning: burst softness pass failed: {e}");
+    }
 
     println!();
     let secs = started.elapsed().as_secs_f64();

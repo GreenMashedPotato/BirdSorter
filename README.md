@@ -228,6 +228,19 @@ Two detector/preview knobs live outside the scoring panel:
   Bayer sensors only — X-Trans/Fuji files report a clear message; the camera
   preview is used for those.
 
+### Preview adjustments
+
+The review bar's **Adjust** button opens a preview-only panel: exposure,
+contrast, shadow lift, highlight compression and edge-preserving denoise. It runs
+on the cached preview, so drags are responsive, and it is **non-destructive** —
+stored scores, labels, XMP sidecars, exports and the original file are untouched.
+The same pipeline is available headless:
+
+```bash
+birdsorter preview shot.CR3 out.jpg 1600 --exposure 0.5 --shadows 0.6 \
+    --highlights 0.3 --contrast 0.2 --denoise 0.4
+```
+
 ### Low-end machines
 
 Settings ▸ **Performance** has the two levers that matter on small laptops:
@@ -270,6 +283,14 @@ override it for the CLI. Note: the classifier must use ops that the bundled
 ONNX Runtime supports — a ViT works, an EfficientNet export did not (its logits
 collapsed to a constant in the `ort` runtime while being correct under
 `onnxruntime` 1.23.2).
+
+## Credits
+
+The review's preview-adjustment panel was inspired by
+[LightCraft](https://github.com/storytold/lightcraft) (MIT/Apache-2.0, pure Rust
+non-destructive photo editor). BirdSorter's implementation is independent —
+exposure in linear light, shadow/highlight masks and a small edge-preserving
+denoise — and no LightCraft code was copied.
 
 ## Licence
 

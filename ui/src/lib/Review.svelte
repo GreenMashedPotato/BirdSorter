@@ -5,6 +5,7 @@
     analysisDetail,
     addEyePoint,
     clearEyePoints,
+    DEFAULT_ADJUSTMENTS,
     exportFile,
     eyeLabelStats,
     getEyePoints,
@@ -12,12 +13,14 @@
     inTauri,
     labelFiles,
     previewImage,
+    previewAdjusted,
     removeSubject,
     setBurstWinner,
     setSpecies,
     setSubjectBox,
     speciesLabels,
     trashFiles,
+    type Adjustments,
     type AnalysisDetail,
     type EyePoint,
     type UserLabel,
@@ -80,6 +83,12 @@
   /// Preview render mode: fast (analysis res) or full (native camera preview).
   let previewMode = $state<"fast" | "full">("fast");
   let reviewRequest = 0;
+  /// Preview-only adjustments (non-destructive; reset when navigating).
+  let adjustOpen = $state(false);
+  let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
+  let adjustTimer: ReturnType<typeof setTimeout> | undefined;
+  /// Guards against out-of-order adjusted-preview responses.
+  let previewRender = 0;
 
   // --- zoom / pan state ----------------------------------------------------
   let stageEl = $state<HTMLDivElement | undefined>(undefined);
@@ -654,6 +663,8 @@
     const request = ++reviewRequest;
     detail = null;
     previewUrl = "";
+    // Adjustments are per-photo; start fresh when navigating.
+    adjustments = { ...DEFAULT_ADJUSTMENTS };
     selectedBox = 0;
     speciesInput = "";
     speciesOpen = false;
@@ -694,20 +705,64 @@
     void refreshDetail();
   });
 
+  const adjusted = $derived(
+    adjustments.exposure !== 0 ||
+      adjustments.contrast !== 0 ||
+      adjustments.shadows !== 0 ||
+      adjustments.highlights !== 0 ||
+      adjustments.denoise !== 0,
+  );
+
+  const ADJUST_CONTROLS: {
+    key: keyof Adjustments;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+  }[] = [
+    { key: "exposure", label: "Exposure", min: -2, max: 2, step: 0.05 },
+    { key: "contrast", label: "Contrast", min: -1, max: 1, step: 0.05 },
+    { key: "shadows", label: "Shadows", min: 0, max: 1, step: 0.05 },
+    { key: "highlights", label: "Highlights", min: 0, max: 1, step: 0.05 },
+    { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
+  ];
+
+  function setAdjustment(key: keyof Adjustments, value: number) {
+    adjustments = { ...adjustments, [key]: value };
+    if (adjustTimer) clearTimeout(adjustTimer);
+    // Coalesce slider drags into one render.
+    adjustTimer = setTimeout(() => {
+      adjustTimer = undefined;
+      void renderPreview();
+    }, 120);
+  }
+
+  function resetAdjustments() {
+    adjustments = { ...DEFAULT_ADJUSTMENTS };
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    void renderPreview();
+  }
+
   /// (Re)render the preview for the current file at the current resolution mode.
   async function renderPreview(request = reviewRequest) {
     const id = fileId;
+    const render = ++previewRender;
     previewLoading = true;
     try {
-      const nextPreview = await previewImage(id, previewMode);
-      if (request !== reviewRequest || fileId !== id) return;
+      const nextPreview = adjusted
+        ? await previewAdjusted(id, previewMode, adjustments)
+        : await previewImage(id, previewMode);
+      if (request !== reviewRequest || fileId !== id || render !== previewRender) return;
       previewUrl = nextPreview;
     } catch (e) {
       if (request !== reviewRequest) return;
       status = `error: ${e}`;
     } finally {
-      // A newer navigation owns the spinner; don't clear it from a stale load.
-      if (request === reviewRequest) previewLoading = false;
+      // A newer navigation/render owns the spinner; don't clear it from a stale load.
+      if (request === reviewRequest && render === previewRender) previewLoading = false;
     }
     if (request === reviewRequest && compareOn && compareId !== null) await renderCompare();
   }
@@ -872,7 +927,10 @@
       }
     };
     window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
+    return () => {
+      window.removeEventListener("keydown", onKeydown);
+      if (adjustTimer) clearTimeout(adjustTimer);
+    };
   });
 </script>
 
@@ -940,6 +998,13 @@
       <option value="fast">Fast</option>
       <option value="full">High-res</option>
     </select>
+    <button
+      class:active={adjustOpen}
+      onclick={() => (adjustOpen = !adjustOpen)}
+      title="Preview-only exposure, contrast, shadows, highlights and denoise"
+    >
+      Adjust
+    </button>
     <button onclick={() => nav(-1)}>‹ K</button>
     <button onclick={() => nav(1)}>J ›</button>
     <button
@@ -1008,6 +1073,30 @@
 
   <div class="review-body">
     <div class="preview" class:compare={compareOn && !!compareUrl}>
+      {#if adjustOpen}
+        <div class="adjust">
+          <div class="adjust-head">
+            <strong>Adjust</strong>
+            <button class="mini" onclick={resetAdjustments}>Reset</button>
+          </div>
+          {#each ADJUST_CONTROLS as c (c.key)}
+            <div class="row">
+              <label for={`adj-${c.key}`}>{c.label}</label>
+              <input
+                id={`adj-${c.key}`}
+                type="range"
+                min={c.min}
+                max={c.max}
+                step={c.step}
+                value={adjustments[c.key]}
+                oninput={(e) => setAdjustment(c.key, Number(e.currentTarget.value))}
+              />
+              <span class="val">{adjustments[c.key].toFixed(2)}</span>
+            </div>
+          {/each}
+          <p class="status">Preview only — originals and sidecars are untouched.</p>
+        </div>
+      {/if}
       {#if showHistogram}
         <canvas
           class="histogram"

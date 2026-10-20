@@ -9,6 +9,7 @@ use base64::Engine as _;
 use tauri::State;
 
 use birdsorter_core::data::library;
+use birdsorter_core::io::adjust;
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
@@ -51,19 +52,19 @@ fn thumbnail_impl(
     Ok(data_url(bytes))
 }
 
-/// Preview for the review view. Modes:
+/// The cached base render (JPEG bytes) for `file`/`mode`. Modes:
 /// - `"fast"` (default): analysis resolution (2400 px) — boxes align 1:1.
 /// - `"full"`: the largest embedded preview at native resolution (fast, ~1.4 s).
 /// - `"develop"`: full RAW demosaic (slow, ~2.5 s) — maximum real detail.
 ///
 /// Each mode is cached separately.
-fn preview_impl(
+fn base_preview(
     cache_root: &Path,
     db_path: &Path,
     gates: &RenderGates,
     file: i64,
     mode: &str,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
@@ -106,7 +107,32 @@ fn preview_impl(
         ),
     };
 
-    let bytes = cached_coalesced(&cache, gates, &key, render).map_err(err)?;
+    cached_coalesced(&cache, gates, &key, render).map_err(err)
+}
+
+fn preview_impl(
+    cache_root: &Path,
+    db_path: &Path,
+    gates: &RenderGates,
+    file: i64,
+    mode: &str,
+) -> Result<String, String> {
+    Ok(data_url(base_preview(
+        cache_root, db_path, gates, file, mode,
+    )?))
+}
+
+/// Apply preview-only adjustments to the cached base render.
+fn preview_adjusted_impl(
+    cache_root: &Path,
+    db_path: &Path,
+    gates: &RenderGates,
+    file: i64,
+    mode: &str,
+    adjustments: &adjust::Adjustments,
+) -> Result<String, String> {
+    let base = base_preview(cache_root, db_path, gates, file, mode)?;
+    let bytes = adjust::apply_encoded(&base, adjustments, 90).map_err(err)?;
     Ok(data_url(bytes))
 }
 
@@ -131,4 +157,24 @@ pub(crate) async fn preview_image(
     let gates = state.render_gates.clone();
     let mode = mode.unwrap_or_else(|| "fast".to_string());
     blocking(move || preview_impl(&cache_root, &db_path, &gates, file, &mode)).await
+}
+
+/// Review preview with non-destructive adjustments (exposure, contrast, shadows,
+/// highlights, denoise). The base render stays on disk; only the in-memory
+/// adjustment pass runs per slider change.
+#[tauri::command]
+pub(crate) async fn preview_adjusted(
+    state: State<'_, AppState>,
+    file: i64,
+    mode: Option<String>,
+    adjustments: adjust::Adjustments,
+) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    let gates = state.render_gates.clone();
+    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    blocking(move || {
+        preview_adjusted_impl(&cache_root, &db_path, &gates, file, &mode, &adjustments)
+    })
+    .await
 }

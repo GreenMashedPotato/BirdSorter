@@ -175,6 +175,32 @@ export async function previewImage(file: number, mode = "fast"): Promise<string>
   return invoke("preview_image", { file, mode });
 }
 
+/** Non-destructive preview adjustments (mirrors `birdsorter_core::io::adjust`). */
+export interface Adjustments {
+  exposure: number;
+  contrast: number;
+  shadows: number;
+  highlights: number;
+  denoise: number;
+}
+
+export const DEFAULT_ADJUSTMENTS: Adjustments = {
+  exposure: 0,
+  contrast: 0,
+  shadows: 0,
+  highlights: 0,
+  denoise: 0,
+};
+
+/** Preview with adjustments applied on top of the cached base render. */
+export async function previewAdjusted(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+): Promise<string> {
+  return invoke("preview_adjusted", { file, mode, adjustments });
+}
+
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {
   return invoke("analysis_detail", { file });
 }

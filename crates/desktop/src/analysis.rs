@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use birdsorter_core::analysis::burst;
 use birdsorter_core::analysis::detector::{BBox, SubjectDetector};
 use birdsorter_core::analysis::eye::EyeDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
@@ -292,6 +293,11 @@ fn run_analysis(
         );
     })
     .map_err(err)?;
+    // A frame can clear the sharp threshold while being visibly softer than the
+    // keeper next to it; within a burst, downgrade those.
+    if let Err(e) = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO) {
+        tracing::warn!(error = %e, "burst softness pass failed");
+    }
     Ok(())
 }
 
@@ -320,6 +326,10 @@ fn reevaluate(
         exclude,
     )
     .map_err(err)?;
+    // A manual box can change the frame's score (and the burst's keeper).
+    if let Err(e) = burst::mark_soft_members(&conn, lf.file.folder_id, burst::SOFT_BURST_RATIO) {
+        tracing::warn!(error = %e, "burst softness pass failed");
+    }
     drop(conn);
     analysis_detail_impl(db_path, file)
 }
@@ -530,7 +540,12 @@ pub(crate) async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<u
     blocking(move || {
         let conn = open(&db_path)?;
         let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
-        rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)
+        let n = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+        // Verdicts changed, so re-apply the burst-relative softness pass.
+        if let Err(e) = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO) {
+            tracing::warn!(error = %e, "burst softness pass failed");
+        }
+        Ok(n)
     })
     .await
 }
@@ -554,6 +569,7 @@ pub(crate) async fn train(
         if let Some(folder) = folder {
             let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
             let _ = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+            let _ = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO);
         }
         Ok(TrainResultDto {
             version: result.version,

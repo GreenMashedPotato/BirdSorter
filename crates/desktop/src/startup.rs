@@ -177,6 +177,7 @@ pub(crate) fn run() {
             library::query_files,
             preview::thumbnail,
             preview::preview_image,
+            preview::preview_adjusted,
             analysis::analysis_detail,
             analysis::score_breakdown,
             analysis::bursts,
