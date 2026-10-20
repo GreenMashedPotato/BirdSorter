@@ -710,7 +710,12 @@
       adjustments.contrast !== 0 ||
       adjustments.shadows !== 0 ||
       adjustments.highlights !== 0 ||
-      adjustments.denoise !== 0,
+      adjustments.denoise !== 0 ||
+      adjustments.temperature !== 0 ||
+      adjustments.tint !== 0 ||
+      adjustments.vibrance !== 0 ||
+      adjustments.saturation !== 0 ||
+      adjustments.clarity !== 0,
   );
 
   const ADJUST_CONTROLS: {
@@ -724,6 +729,11 @@
     { key: "contrast", label: "Contrast", min: -1, max: 1, step: 0.05 },
     { key: "shadows", label: "Shadows", min: 0, max: 1, step: 0.05 },
     { key: "highlights", label: "Highlights", min: 0, max: 1, step: 0.05 },
+    { key: "temperature", label: "Temp", min: -1, max: 1, step: 0.05 },
+    { key: "tint", label: "Tint", min: -1, max: 1, step: 0.05 },
+    { key: "vibrance", label: "Vibrance", min: -1, max: 1, step: 0.05 },
+    { key: "saturation", label: "Saturation", min: -1, max: 1, step: 0.05 },
+    { key: "clarity", label: "Clarity", min: -1, max: 1, step: 0.05 },
     { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
   ];
 

@@ -103,9 +103,10 @@ on a 28-core Windows box.
   of the keeper's score are downgraded to `uncertain` with `soft_vs_burst`, which
   catches mild subject movement the per-image metrics miss. Verified on a real
   burst: the reported frame (0.496 vs the keeper's 0.683) is now `uncertain`.
-- ✅ **Preview adjustments**: exposure, contrast, shadows, highlights and
-  edge-preserving denoise, applied to the cached review preview (never the
-  original). Review panel + CLI flags. Inspired by LightCraft (MIT/Apache-2.0).
+- ✅ **Preview adjustments**: exposure, contrast, shadows, highlights, white
+  balance (temperature/tint), vibrance, saturation, clarity and edge-preserving
+  denoise, applied to the cached review preview (never the original). Review
+  panel + CLI flags. Inspired by LightCraft (MIT/Apache-2.0).
 
 ## Correctness & robustness
 

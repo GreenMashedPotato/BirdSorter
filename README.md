@@ -228,14 +228,15 @@ Two detector/preview knobs live outside the scoring panel:
 ### Preview adjustments
 
 The review bar's **Adjust** button opens a preview-only panel: exposure,
-contrast, shadow lift, highlight compression and edge-preserving denoise. It runs
-on the cached preview, so drags are responsive, and it is **non-destructive** —
-stored scores, labels, XMP sidecars, exports and the original file are untouched.
-The same pipeline is available headless:
+contrast, shadow lift, highlight compression, white balance (temperature/tint),
+vibrance, saturation, clarity and edge-preserving denoise. It runs on the cached
+preview, so drags are responsive, and it is **non-destructive** — stored scores,
+labels, XMP sidecars, exports and the original file are untouched. The same
+pipeline is available headless:
 
 ```bash
-birdsorter preview shot.CR3 out.jpg 1600 --exposure 0.5 --shadows 0.6 \
-    --highlights 0.3 --contrast 0.2 --denoise 0.4
+birdsorter preview shot.CR3 out.jpg 1600 --exposure 0.3 --temperature 0.4 \
+    --vibrance 0.5 --clarity 0.4 --denoise 0.3
 ```
 
 ### Low-end machines

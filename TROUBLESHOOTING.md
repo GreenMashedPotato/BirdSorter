@@ -100,10 +100,11 @@ automatically (analysis is tied to the file's content hash).
   only applied when the frame is below the sharp threshold. A saved settings file
   with `motion_directionality_threshold` or `motion_blur_penalty` at `1.0` (both
   are no-ops) is reset to the default on load.
-- **Adjust** in the review bar (exposure, contrast, shadows, highlights, denoise)
-  is **preview-only**: it does not change stored scores, labels, sidecars, the
-  original file or an export. The CLI can render one: `preview <raw> out.jpg
-  --exposure 0.5 --shadows 0.6 --denoise 0.4`.
+- **Adjust** in the review bar (exposure, contrast, shadows, highlights, white
+  balance, vibrance, saturation, clarity, denoise) is **preview-only**: it does
+  not change stored scores, labels, sidecars, the original file or an export. The
+  CLI can render one: `preview <raw> out.jpg --exposure 0.5 --temperature 0.4
+  --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
 
 ## Scan / analysis seems stuck
 
