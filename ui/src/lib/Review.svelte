@@ -30,6 +30,7 @@
     type UserLabel,
   } from "./api";
   import { lumaHistogram } from "./histogram";
+  import { neighborIds } from "./navigation";
 
   // The open file plus everything the review needs from App. App owns the
   // library-level state (folders, files, bursts, undo, status); the review owns
@@ -97,6 +98,7 @@
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
   /// Guards against out-of-order adjusted-preview responses.
   let previewRender = 0;
+  let prefetching = false;
 
   // --- zoom / pan state ----------------------------------------------------
   let stageEl = $state<HTMLDivElement | undefined>(undefined);
@@ -703,6 +705,7 @@
       }
     }
     await renderPreview(request);
+    void prefetchNeighbors();
   }
 
   $effect(() => {
@@ -716,8 +719,31 @@
     const mode = previewMode;
     if (mode === seenMode) return;
     seenMode = mode;
-    void renderPreview();
+    void renderPreview().then(() => prefetchNeighbors());
   });
+
+  /// Warm the disk cache for the adjacent photos after the current render.
+  /// Best effort and never blocks the visible image.
+  async function prefetchNeighbors() {
+    if (prefetching || !inTauri) return;
+    const around = neighborIds(ids, fileId);
+    if (around.length === 0) return;
+    const current = fileId;
+    const mode = previewMode;
+    prefetching = true;
+    try {
+      for (const id of around) {
+        if (fileId !== current) break;
+        try {
+          await previewImage(id, mode);
+        } catch {
+          /* prefetch is opportunistic */
+        }
+      }
+    } finally {
+      prefetching = false;
+    }
+  }
 
   // Re-read the detail when App changes data the review shows (e.g. undo),
   // without reloading the preview.

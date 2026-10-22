@@ -2,6 +2,11 @@
 
 _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v15)._
 
+> **Status update (same day, later):** the render cache now carries a version
+> salt, prunes to a 4 GiB budget, the review prefetches the previous/next
+> preview, and the grid evicts off-screen thumbnails above 600 entries. The
+> analysis below still describes the rest of the snapshot.
+
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
 bringing over. It is deliberately biased toward things that fit BirdSorter's

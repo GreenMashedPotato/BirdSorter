@@ -120,6 +120,11 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Cache and preview responsiveness**: render keys carry a cache version
+  (`{hash}@v1@{dim}`), so decoder/adjustment changes invalidate old bytes;
+  `clean_cache` prunes the oldest entries to a 4 GiB budget; the review
+  prefetches the previous/next preview; and the grid evicts off-screen
+  thumbnails above 600 entries (the disk cache re-fetches them cheaply).
 - **Docs + preview/edit workflow**: long-form docs moved to `docs/` (root `README.md`
   and `AGENTS.md` are the entry points); a first-run setup chooses Fast or Detailed
   previews (persisted, and the mode is sticky); an opt-in **Preload previews**
