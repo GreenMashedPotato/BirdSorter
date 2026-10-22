@@ -86,7 +86,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       return detail(id);
     }),
     previewImage: vi.fn(async () => "data:image/jpeg;base64,"),
-    getThumbnail: vi.fn(async () => ""),
+    getThumbnail: vi.fn(async () => "data:image/jpeg;base64,thumb"),
     labelFiles: vi.fn(async () => 1),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
     speciesLabels: vi.fn(async () => []),
@@ -102,7 +102,7 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 import App from "./App.svelte";
-import { analysisDetail, labelFiles } from "./lib/api";
+import { analysisDetail, getThumbnail, labelFiles } from "./lib/api";
 
 /** Render App with mock data and open the first tile's review. */
 async function openFirstReview() {
@@ -126,6 +126,12 @@ describe("review view", () => {
   it("shows the capture time from the file", async () => {
     const { getByText } = await openFirstReview();
     expect(getByText("2026-07-14 09:31:22")).toBeTruthy();
+  });
+
+  it("requests a thumbnail stand-in while the preview renders", async () => {
+    vi.mocked(getThumbnail).mockClear();
+    await openFirstReview();
+    expect(getThumbnail).toHaveBeenCalledWith(1);
   });
 
   it("shows the technical EXIF strip", async () => {

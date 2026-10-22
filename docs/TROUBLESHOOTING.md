@@ -106,6 +106,9 @@ automatically (analysis is tied to the file's content hash).
   preview at the current resolution. It never changes stored scores, labels,
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
+- **Grid thumbnails** use the camera's embedded `PRVW` (about 1620×1080 on an
+  R5), not the full-size JPEG, so they are soft at 100%. Use the review's
+  **High-res** mode (or `preview <raw> out.jpg 8000`) for critical focus.
 - **The EXIF strip** reads camera/lens/ISO/shutter/aperture/focal from the RAW
   metadata (JPEG/TIFF from their EXIF). Missing fields are normal — e.g. a lens
   rawler cannot resolve is hidden rather than shown as "unknown".

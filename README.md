@@ -68,6 +68,9 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   **capture time** (burst grouping, `--by date` export), **orientation** and
   technical settings (the review's EXIF strip) are read, so portrait shots
   appear upright and join bursts/date folders.
+- **Grid thumbnails** use the camera's embedded preview. For CR3 the compact
+  `PRVW` JPEG (≈1620×1080, 77 KB on an R5) is read from the first 2 MiB instead
+  of decoding the ≈24 MB full-size JPEG track; analysis still decodes at 2400 px.
 - HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
   ImageIO path).
 
@@ -91,7 +94,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 297 unit tests
+cargo test --workspace          # 299 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -213,6 +216,7 @@ sortable by best score, rating or filename) with filter chips, bulk labelling
   the actual species (or clear it),
 - an **EXIF strip** with camera, lens, ISO, shutter, aperture and focal length
   (missing fields are hidden),
+- the cached grid thumbnail appears instantly while the full preview renders,
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling
