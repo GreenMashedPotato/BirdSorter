@@ -90,7 +90,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 283 unit tests
+cargo test --workspace          # 289 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -238,9 +238,17 @@ Two detector/preview knobs live outside the scoring panel:
 The review bar's **Adjust** button opens a preview-only panel: exposure,
 contrast, shadow lift, highlight compression, white balance (temperature/tint),
 vibrance, saturation, clarity and edge-preserving denoise. It runs on the cached
-preview, so drags are responsive, and it is **non-destructive** — stored scores,
-labels, XMP sidecars, exports and the original file are untouched. The same
-pipeline is available headless:
+preview, so drags are responsive. Edits are **saved per photo** in the library
+and restored when you come back, and **Export JPEG…** writes the adjusted preview
+at the current resolution. Everything stays **non-destructive** — stored scores,
+labels, XMP sidecars and the original file are untouched.
+
+The first-run setup asks whether you want **Fast** (analysis resolution) or
+**Detailed** (native camera preview) previews. The choice is remembered, and the
+review bar's selector updates it for every photo. **Preload previews** in the
+toolbar renders the folder once so stepping through it is instant (cancellable;
+detailed previews take longer). The same adjustment pipeline is available
+headless:
 
 ```bash
 birdsorter preview shot.CR3 out.jpg 1600 --exposure 0.3 --temperature 0.4 \

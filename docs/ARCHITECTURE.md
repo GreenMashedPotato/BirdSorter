@@ -169,13 +169,16 @@ transport is **data URLs returned from a disk cache keyed by content hash**
 (`thumbnail`, `preview_image`) — images never cross IPC per pixel.
 
 - **Commands** (request/response): `list_folders`, `add_folder`, `scan_folder`,
-  `cancel_scan`, `query_files`, `thumbnail`, `preview_image`, `analysis_detail`,
+  `cancel_scan`, `query_files`, `thumbnail`, `preview_image`, `preview_adjusted`,
+  `export_edited`, `analysis_detail`,
   `score_breakdown`, `bursts`, `set_burst_winner`, `set_species`, `label_files`,
   `undo_labels`, `eye_points`, `add_eye_point`, `clear_eye_points`,
   `eye_label_stats`, `trash_files`, `analyze_folder`, `cancel_analysis`,
   `set_subject_box`, `remove_subject`, `identify_subject`, `get_settings`,
   `set_settings`, `get_detection_settings`, `set_detection_settings`,
-  `species_labels`, `rate_files`, `auto_rate`, `reset_ratings`, `app_info`,
+  `get_preview_settings`, `set_preview_settings`, `get_edits`, `save_edits`,
+  `clear_edits`, `species_labels`, `rate_files`, `auto_rate`, `reset_ratings`,
+  `app_info`,
   `clean_cache`, `save_diagnostics`, `take_open_request`, `rescore`,
   `export_keepers`, `export_file`, `train`, `models_status`, `download_model`,
   `import_model`, `remove_model`.
@@ -195,6 +198,8 @@ Paths come from the platform user directories (`directories` crate), under a
 |---|---|
 | Library DB | `%APPDATA%\BirdSorter\data\library.db` (SQLite, WAL) |
 | Settings | `%APPDATA%\BirdSorter\config\*.json` |
+| Preview settings | `%APPDATA%\BirdSorter\config\preview_settings.json` (mode, preload, first-run) |
+| Saved preview edits | `library.db`, `edits` table (per file; survives re-analysis) |
 | Models | `%APPDATA%\BirdSorter\data\models\` (`BIRDSORTER_MODEL_DIR` overrides) |
 | Thumbnail/preview cache | `%LOCALAPPDATA%\BirdSorter\cache\thumbs\` |
 | Panic log | `%APPDATA%\BirdSorter\data\crash.log` |

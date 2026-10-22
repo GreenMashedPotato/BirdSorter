@@ -13,6 +13,7 @@
     cancelAnalysis,
     queryFiles,
     getThumbnail,
+    previewImage,
     takeOpenRequest,
     onOpenFile,
     labelFiles,
@@ -25,7 +26,11 @@
     setSettings,
     getDetectionSettings,
     setDetectionSettings,
+    getPreviewSettings,
+    setPreviewSettings,
+    DEFAULT_PREVIEW_SETTINGS,
     type DetectionSettings,
+    type PreviewSettings,
     rescoreFolder,
     exportKeepers,
     train,
@@ -48,6 +53,7 @@
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
   import About from "./lib/About.svelte";
+  import Onboarding from "./lib/Onboarding.svelte";
   import AppToolbar from "./lib/AppToolbar.svelte";
   import FilterBar from "./lib/FilterBar.svelte";
   import LabelBar from "./lib/LabelBar.svelte";
@@ -213,6 +219,13 @@
   let showSettings = $state(false);
   let showModels = $state(false);
   let showAbout = $state(false);
+  // Preview preferences (persisted; the first-run setup chooses the mode).
+  let previewSettings = $state<PreviewSettings>({ ...DEFAULT_PREVIEW_SETTINGS });
+  let showOnboarding = $state(false);
+  let preloadBusy = $state(false);
+  let preloadDone = $state(0);
+  let preloadTotal = $state(0);
+  let preloadCancel = false;
   let showBreakdown = $state(false);
   let showExport = $state(false);
   let breakdown = $state<Breakdown | null>(null);
@@ -749,6 +762,63 @@
     }
   }
 
+  /// Persist the first-run choice and apply it to the review immediately.
+  async function finishOnboarding(mode: "fast" | "full", preload: boolean) {
+    previewSettings = { mode, preload, onboardingDone: true };
+    showOnboarding = false;
+    try {
+      await setPreviewSettings(previewSettings);
+    } catch {
+      /* settings are a convenience; never block the app on them */
+    }
+  }
+
+  /// The review's mode change is sticky: it is saved and reused for every photo.
+  async function changePreviewMode(mode: "fast" | "full") {
+    previewSettings = { ...previewSettings, mode };
+    try {
+      await setPreviewSettings(previewSettings);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /// Render every preview in the current folder once, so stepping through the
+  /// shoot is instant. Cancellable; detailed previews are slow but cached.
+  async function preloadPreviews() {
+    if (preloadBusy) {
+      preloadCancel = true;
+      return;
+    }
+    const list = [...files];
+    if (list.length === 0) return;
+    preloadBusy = true;
+    preloadCancel = false;
+    preloadDone = 0;
+    preloadTotal = list.length;
+    const mode = previewSettings.mode === "full" ? "full" : "fast";
+    try {
+      for (const f of list) {
+        if (preloadCancel) break;
+        try {
+          await previewImage(f.id, mode);
+        } catch {
+          /* a single unreadable file must not stop the preload */
+        }
+        preloadDone++;
+        if (preloadDone % 10 === 0 || preloadDone === preloadTotal) {
+          status = `preloading previews ${preloadDone}/${preloadTotal}`;
+        }
+      }
+      status = preloadCancel
+        ? `preload stopped at ${preloadDone}/${preloadTotal}`
+        : `preloaded ${preloadDone} preview${preloadDone === 1 ? "" : "s"}`;
+    } finally {
+      preloadBusy = false;
+      preloadCancel = false;
+    }
+  }
+
   onMount(async () => {
     // App-level keyboard shortcut: undo (Ctrl+Z). The review view registers its
     // own shortcuts while it is open.
@@ -798,6 +868,14 @@
 
     await refreshFolders();
     await refreshFiles();
+
+    // Preview preferences: the first-run setup is shown once.
+    try {
+      previewSettings = await getPreviewSettings();
+      showOnboarding = !previewSettings.onboardingDone;
+    } catch {
+      /* settings unavailable (tests/browser) — keep the defaults */
+    }
 
     // Drag a folder onto the window to add and scan it. `getCurrentWebview`
     // throws synchronously outside a real Tauri webview (browser preview/tests).
@@ -851,6 +929,8 @@
         })`;
         await refreshFolders();
         await refreshFiles();
+        // Opt-in: warm the preview cache after a scan.
+        if (previewSettings.preload) void preloadPreviews();
         // Open the file the OS launched us with, now that it is in the library.
         if (pendingOpenFile !== null) {
           const name = pendingOpenFile.toLowerCase();
@@ -947,6 +1027,10 @@
       onRetrain={retrain}
       onExportKeepers={() => (showExport = true)}
       onKeepBurstWinners={keepBurstWinners}
+      onPreload={preloadPreviews}
+      {preloadBusy}
+      {preloadDone}
+      {preloadTotal}
     />
 
     {#if progress}
@@ -1020,6 +1104,8 @@
       ids={visible.map((f) => f.id)}
       {burstGroups}
       rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
+      previewMode={previewSettings.mode === "full" ? "full" : "fast"}
+      onPreviewModeChange={changePreviewMode}
       refreshToken={reviewRefresh}
       {canUndo}
       bind:status
@@ -1053,6 +1139,14 @@
 
   {#if showAbout}
     <About onClose={() => (showAbout = false)} />
+  {/if}
+
+  {#if showOnboarding}
+    <Onboarding
+      initialMode={previewSettings.mode}
+      initialPreload={previewSettings.preload}
+      onDone={finishOnboarding}
+    />
   {/if}
 
   {#if showBreakdown && breakdown}

@@ -19,6 +19,11 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 | `bird_detector` | T1 | **bundled with the app** (no download) | `bird_det_v1.onnx` |
 | `bird_species` | T2 | **iNaturalist 2021 (10k species)**, install from file | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
 
+**Planned, not implemented:** `denoise_srgb`, `denoise_better` and (later)
+`denoise_deblur` — optional downloads that reduce noise on preview/export only.
+They never feed the analysis path. Model shortlist, licences, tiling contract and
+milestones: [`DENOISE_PLAN.md`](./DENOISE_PLAN.md).
+
 ### What ships today (exact provenance)
 
 **Detector — `bird_det_v1.onnx` (10.1 MB)**

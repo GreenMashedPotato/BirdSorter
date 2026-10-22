@@ -26,7 +26,9 @@ agents. Humans should start at [README.md](./README.md).
 | [docs/progress.md](./docs/progress.md) | Living status, milestones, open backlog |
 | [docs/implemented.md](./docs/implemented.md) | Shipped features, change log, measurements |
 | [docs/SUGGESTIONS.md](./docs/SUGGESTIONS.md) | Open/partial improvements only |
+| [docs/improvement-suggestions.md](./docs/improvement-suggestions.md) | Cross-project ideas worth borrowing (LightCraft, PhotoCraft) |
 | [docs/MODELS.md](./docs/MODELS.md) · [docs/EYE_MODEL.md](./docs/EYE_MODEL.md) | Model contracts, provenance, eye-model pipeline |
+| [docs/DENOISE_PLAN.md](./docs/DENOISE_PLAN.md) | Future denoise/export feature: model shortlist, licences, tiling, milestones |
 | [docs/SIGNING.md](./docs/SIGNING.md) · [docs/MACOS_TODO.md](./docs/MACOS_TODO.md) | Release/signing and the macOS validation brief |
 | [docs/rule.md](./docs/rule.md) | Engineering rules |
 

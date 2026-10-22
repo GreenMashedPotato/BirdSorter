@@ -213,6 +213,31 @@ export async function previewAdjusted(
   return invoke("preview_adjusted", { file, mode, adjustments });
 }
 
+/** Saved preview adjustments for a file, or `null` when none are stored. */
+export async function getEdits(file: number): Promise<Adjustments | null> {
+  return invoke("get_edits", { file });
+}
+
+/** Save preview adjustments for a file (survives re-analysis). */
+export async function saveEdits(file: number, adjustments: Adjustments): Promise<void> {
+  return invoke("save_edits", { file, adjustments });
+}
+
+/** Remove the saved adjustments for a file. */
+export async function clearEdits(file: number): Promise<number> {
+  return invoke("clear_edits", { file });
+}
+
+/** Write a JPEG of the cached preview with `adjustments` applied. */
+export async function exportEdited(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+  dest: string,
+): Promise<string> {
+  return invoke("export_edited", { file, mode, adjustments, dest });
+}
+
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {
   return invoke("analysis_detail", { file });
 }
@@ -268,6 +293,30 @@ export async function getDetectionSettings(): Promise<DetectionSettings> {
 
 export async function setDetectionSettings(settings: DetectionSettings): Promise<void> {
   return invoke("set_detection_settings", { settings });
+}
+
+/** Preview/render preferences (first-run setup, review mode, preloading). */
+export interface PreviewSettings {
+  /** `"fast"` (analysis resolution) or `"full"` (native camera preview). */
+  mode: string;
+  /** Preload previews for the folder after a scan. */
+  preload: boolean;
+  /** The first-run setup has been completed. */
+  onboardingDone: boolean;
+}
+
+export const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
+  mode: "fast",
+  preload: false,
+  onboardingDone: false,
+};
+
+export async function getPreviewSettings(): Promise<PreviewSettings> {
+  return invoke("get_preview_settings");
+}
+
+export async function setPreviewSettings(settings: PreviewSettings): Promise<void> {
+  return invoke("set_preview_settings", { settings });
 }
 
 /** Recompute verdicts for a folder from stored features (no re-decode). */

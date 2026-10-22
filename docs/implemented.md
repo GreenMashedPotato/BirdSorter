@@ -120,7 +120,11 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
-
+- **Docs + preview/edit workflow**: long-form docs moved to `docs/` (root `README.md`
+  and `AGENTS.md` are the entry points); a first-run setup chooses Fast or Detailed
+  previews (persisted, and the mode is sticky); an opt-in **Preload previews**
+  renders a folder's previews (cancellable); edits are saved per file (`edits`,
+  schema v15) and restored; and **Export JPEG…** writes an adjusted JPEG.
 - **Motion-blur / burst-softness fixes** (from a real report on `_5260483`):
   motion directionality is now computed on the **subject crop** (the full-frame
   value hid small subjects) and the penalty is gated on the frame being below the

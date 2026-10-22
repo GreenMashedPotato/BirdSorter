@@ -306,6 +306,78 @@ input {
   padding: 14px;
   overflow: auto;
 }
+
+/* First-run setup: one decision, presented as two full-width rows. */
+.onboarding {
+  padding: 26px 28px 22px;
+  gap: 18px;
+}
+.onboarding-head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.onboarding-head .status {
+  margin: 0;
+  max-width: 52ch;
+}
+.choices {
+  display: grid;
+  gap: 10px;
+}
+.choice {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.choice:hover:not(:disabled) {
+  background: #262b36;
+}
+.choice.active {
+  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+.choice-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.choice-body {
+  color: var(--muted);
+  max-width: 58ch;
+}
+.preload {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.preload input {
+  margin-top: 2px;
+}
+.preload .status {
+  display: block;
+  margin-top: 3px;
+  max-width: 58ch;
+}
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.row.end {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
 .sheet-body section {
   margin-bottom: 14px;
 }

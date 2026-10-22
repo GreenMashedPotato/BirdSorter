@@ -1,11 +1,15 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
     analysisDetail,
     addEyePoint,
+    clearEdits,
     clearEyePoints,
     DEFAULT_ADJUSTMENTS,
+    exportEdited,
+    getEdits,
+    saveEdits,
     exportFile,
     eyeLabelStats,
     getEyePoints,
@@ -35,6 +39,8 @@
     ids,
     burstGroups,
     rating,
+    previewMode = "fast",
+    onPreviewModeChange = () => {},
     refreshToken,
     canUndo,
     status = $bindable(),
@@ -53,6 +59,9 @@
     burstGroups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[];
     /** Current file's 0-5 star rating. */
     rating: number;
+    /** Preview resolution, owned (and persisted) by App. */
+    previewMode?: "fast" | "full";
+    onPreviewModeChange?: (mode: "fast" | "full") => void;
     /** Bumped by App to force a detail re-read (e.g. after an undo). */
     refreshToken: number;
     canUndo: boolean;
@@ -80,13 +89,12 @@
   let speciesIndex = $state(0);
   let speciesOpen = $state(false);
   let previewLoading = $state(false);
-  /// Preview render mode: fast (analysis res) or full (native camera preview).
-  let previewMode = $state<"fast" | "full">("fast");
   let reviewRequest = 0;
   /// Preview-only adjustments (non-destructive; reset when navigating).
   let adjustOpen = $state(false);
   let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
+  let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
   /// Guards against out-of-order adjusted-preview responses.
   let previewRender = 0;
 
@@ -679,6 +687,13 @@
     } catch (e) {
       status = `error: ${e}`;
     }
+    // Saved, non-destructive adjustments for this photo.
+    try {
+      const saved = await getEdits(id);
+      if (request === reviewRequest && saved) adjustments = saved;
+    } catch {
+      /* no saved edits */
+    }
     void loadEyePoints();
     // Keep the compare frame within the new file's burst.
     if (compareOn) {
@@ -693,6 +708,15 @@
   $effect(() => {
     const id = fileId;
     untrack(() => void load(id));
+  });
+
+  // Preview mode lives in App (and is persisted); re-render when it changes.
+  let seenMode = untrack(() => previewMode);
+  $effect(() => {
+    const mode = previewMode;
+    if (mode === seenMode) return;
+    seenMode = mode;
+    void renderPreview();
   });
 
   // Re-read the detail when App changes data the review shows (e.g. undo),
@@ -745,6 +769,14 @@
       adjustTimer = undefined;
       void renderPreview();
     }, 120);
+    // Persist the edit state separately (debounced, per photo).
+    if (editSaveTimer) clearTimeout(editSaveTimer);
+    const saveId = fileId;
+    const snapshot = adjustments;
+    editSaveTimer = setTimeout(() => {
+      editSaveTimer = undefined;
+      void saveEdits(saveId, snapshot).catch(() => {});
+    }, 500);
   }
 
   function resetAdjustments() {
@@ -753,7 +785,30 @@
       clearTimeout(adjustTimer);
       adjustTimer = undefined;
     }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+    void clearEdits(fileId).catch(() => {});
     void renderPreview();
+  }
+
+  /// Write a JPEG of the current preview with the adjustments applied. The
+  /// original and its sidecars are never touched.
+  async function exportEditedJpeg() {
+    try {
+      const base = (detail?.filename ?? "edited").replace(/\.[^.]+$/, "");
+      const dest = await saveDialog({
+        title: "Export edited JPEG",
+        defaultPath: `${base}_edited.jpg`,
+        filters: [{ name: "JPEG", extensions: ["jpg", "jpeg"] }],
+      });
+      if (typeof dest !== "string") return;
+      status = "exporting edited JPEG…";
+      status = `exported ${await exportEdited(fileId, previewMode, adjustments, dest)}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
   }
 
   /// (Re)render the preview for the current file at the current resolution mode.
@@ -940,6 +995,7 @@
     return () => {
       window.removeEventListener("keydown", onKeydown);
       if (adjustTimer) clearTimeout(adjustTimer);
+      if (editSaveTimer) clearTimeout(editSaveTimer);
     };
   });
 </script>
@@ -1001,9 +1057,9 @@
     {/if}
     <select
       class="modesel"
-      bind:value={previewMode}
-      onchange={() => renderPreview()}
-      title="Preview resolution"
+      value={previewMode}
+      onchange={(e) => onPreviewModeChange(e.currentTarget.value as "fast" | "full")}
+      title="Preview resolution (saved for every photo)"
     >
       <option value="fast">Fast</option>
       <option value="full">High-res</option>
@@ -1104,7 +1160,10 @@
               <span class="val">{adjustments[c.key].toFixed(2)}</span>
             </div>
           {/each}
-          <p class="status">Preview only — originals and sidecars are untouched.</p>
+          <p class="status">Saved per photo — originals and sidecars are untouched.</p>
+          <div class="row end">
+            <button class="mini" onclick={exportEditedJpeg}>Export JPEG…</button>
+          </div>
         </div>
       {/if}
       {#if showHistogram}

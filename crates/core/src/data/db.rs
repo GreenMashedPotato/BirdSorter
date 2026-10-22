@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -78,6 +78,11 @@ const DDL: &[&str] = &[
         file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
         species_name TEXT NOT NULL,
         confidence REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS edits (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        adjustments_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS eye_labels (
@@ -276,6 +281,16 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         // provenance (detector vs. manual) no longer depends on species output.
         // The table is created by DDL for every version; backfill old rows.
         backfill_subject_boxes(conn)?;
+    }
+    if from < 15 {
+        // v14 -> v15: saved, non-destructive preview adjustments per file.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS edits (
+                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                 adjustments_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );",
+        )?;
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())
@@ -561,5 +576,20 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn migration_from_v14_bumps_version_and_recreates_edits() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Simulate a v14 library (the edits table did not exist yet).
+        conn.execute_batch("DROP TABLE edits; UPDATE schema_version SET version = 14;")
+            .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edits", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 }
