@@ -49,6 +49,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 - ⬜ **Multi-folder view** (e.g. a day split across two cards). Culling already works
   on file ids; the folder-scoped actions (Analyze / Re-score / Keep burst winners /
   Export keepers) need a decision: primary folder or every selected folder.
+- ⬜ **Smart collections** — the search grammar is in place; saved rule sets
+  (all/any/none) and a library-wide view remain.
 
 ## Packaging & distribution
 

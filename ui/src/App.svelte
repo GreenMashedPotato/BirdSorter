@@ -54,6 +54,7 @@
   import { sortFiles, type SortKey } from "./lib/sort";
   import { loadSortKey, saveSortKey } from "./lib/sortPref";
   import { loadFilter, saveFilter } from "./lib/filterPref";
+  import { parseSearch } from "./lib/search";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -78,6 +79,7 @@
   const cleanups: (() => void)[] = [];
   let filter = $state<FilterKey>(loadFilter());
   let sort = $state<SortKey>(loadSortKey());
+  let search = $state("");
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -132,10 +134,13 @@
   let newPath = $state("");
   let model = $state("");
 
+  const searchMatches = $derived(parseSearch(search));
   const visible = $derived(
     sortFiles(
-      files.filter((f) =>
-        filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+      files.filter(
+        (f) =>
+          (filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter)) &&
+          searchMatches(f),
       ),
       sort,
     ),
@@ -823,6 +828,16 @@
     if (gridEl) gridEl.scrollTop = 0;
   }
 
+  // A new search changes the virtualized list; return to the top.
+  let lastSearch = "";
+  $effect(() => {
+    if (search === lastSearch) return;
+    lastSearch = search;
+    focusIndex = -1;
+    gridScrollTop = 0;
+    if (gridEl) gridEl.scrollTop = 0;
+  });
+
   /// Persist the first-run choice and apply it to the review immediately.
   async function finishOnboarding(mode: "fast" | "full", preload: boolean) {
     previewSettings = { mode, preload, onboardingDone: true };
@@ -1120,6 +1135,7 @@
     <FilterBar
       bind:filter
       {sort}
+      bind:search
       onSort={changeSort}
       shown={visible.length}
       selectedCount={selected.size}

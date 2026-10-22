@@ -120,6 +120,10 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Search tokens**: the grid search accepts free text (filename/species) and
+  `rating:>3`, `flag:pick`, `label:sharp`, `verdict:uncertain`, `species:egret`,
+  `name:5260`; unknown `field:value` falls back to plain text. A new query
+  returns the virtualized grid to the top.
 - **Bulk flagging**: the selection bar can Pick / Reject / Unflag every selected
   file in one action.
 - **Pick/reject flags** (schema v16): `P`/`X`/`U` flag or clear the open photo

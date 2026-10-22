@@ -209,7 +209,10 @@ The window provides a folder sidebar, a thumbnail grid (worst-first by default,
 sortable by best score, rating, capture date, species or filename; the sort and
 active filter are remembered) with filter chips (including Rated / 3★+ / Unrated
 and Picked / Rejected / Unflagged), bulk labelling (Sharp / Blurry / Bokeh OK /
-Reject) and bulk flagging (Pick / Reject / Unflag), and live analysis progress. **Double-click a tile** to open the review view:
+Reject) and bulk flagging (Pick / Reject / Unflag), and live analysis progress.
+A search box accepts free text (filename or species) and tokens such as
+`rating:>3`, `flag:pick`, `label:sharp`, `verdict:uncertain`, `species:egret`
+and `name:5260`. **Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,
   so it is sharper than the grid thumbnail),

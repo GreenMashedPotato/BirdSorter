@@ -6,6 +6,7 @@
   let {
     filter = $bindable(),
     sort = "worst",
+    search = $bindable(""),
     onSort = () => {},
     shown,
     selectedCount,
@@ -13,6 +14,7 @@
   }: {
     filter: FilterKey;
     sort?: SortKey;
+    search?: string;
     onSort?: (sort: SortKey) => void;
     shown: number;
     selectedCount: number;
@@ -27,6 +29,13 @@
     </button>
   {/each}
   <div class="spacer"></div>
+  <input
+    class="search"
+    type="search"
+    placeholder="Search name/species, rating:>3, flag:pick…"
+    aria-label="Search photos"
+    bind:value={search}
+  />
   <select
     class="sortsel"
     value={sort}
