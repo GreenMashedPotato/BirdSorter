@@ -46,8 +46,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 ## UX & features
 
-- ⬜ **Smart collections** — the search grammar is in place; saved rule sets
-  (all/any/none) and a library-wide view remain.
+- ⬜ **Smart collections** — saved searches are in place; nested all/any/none
+  rule sets and a library-wide view remain.
 
 ## Packaging & distribution
 

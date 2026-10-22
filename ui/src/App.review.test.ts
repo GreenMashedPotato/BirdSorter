@@ -158,6 +158,23 @@ describe("review view", () => {
     await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
   });
 
+  it("saves and reapplies a search", async () => {
+    const { container, getByLabelText, getByText } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+
+    const input = getByLabelText("Search photos");
+    await fireEvent.input(input, { target: { value: "img2" } });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
+    await fireEvent.click(getByText("Save"));
+
+    await fireEvent.input(input, { target: { value: "" } });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    await fireEvent.change(getByLabelText("Saved searches"), {
+      target: { value: "img2" },
+    });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
+  });
+
   it("opens from a tile and shows the file", async () => {
     vi.mocked(analysisDetail).mockClear();
     await openFirstReview();

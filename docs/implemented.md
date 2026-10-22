@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Saved searches**: the search box can save the current query (persisted,
+  newest first, capped at 12) and reapply it from the Saved searches menu;
+  Forget removes it.
 - **Multi-folder view**: Ctrl/Cmd-click folders to show them together; the last
   clicked is the primary action target (sidebar badge + "Actions target" note +
   folder-named status text). Queries merge folders into one global worst-first

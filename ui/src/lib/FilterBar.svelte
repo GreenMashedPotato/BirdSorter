@@ -7,7 +7,11 @@
     filter = $bindable(),
     sort = "worst",
     search = $bindable(""),
+    savedSearches = [],
     onSort = () => {},
+    onSaveSearch = () => {},
+    onApplySearch = () => {},
+    onDeleteSearch = () => {},
     shown,
     selectedCount,
     onSelectAll,
@@ -15,11 +19,20 @@
     filter: FilterKey;
     sort?: SortKey;
     search?: string;
+    savedSearches?: string[];
     onSort?: (sort: SortKey) => void;
+    onSaveSearch?: (query: string) => void;
+    onApplySearch?: (query: string) => void;
+    onDeleteSearch?: (query: string) => void;
     shown: number;
     selectedCount: number;
     onSelectAll: () => void;
   } = $props();
+
+  let chosen = $state("");
+  $effect(() => {
+    if (chosen && !savedSearches.includes(chosen)) chosen = "";
+  });
 </script>
 
 <div class="chips">
@@ -36,6 +49,41 @@
     aria-label="Search photos"
     bind:value={search}
   />
+  <button
+    class="mini"
+    onclick={() => onSaveSearch(search)}
+    disabled={!search.trim()}
+    title="Save this search"
+  >
+    Save
+  </button>
+  {#if savedSearches.length > 0}
+    <select
+      class="sortsel"
+      aria-label="Saved searches"
+      bind:value={chosen}
+      onchange={(e) => {
+        const query = e.currentTarget.value;
+        if (query) onApplySearch(query);
+      }}
+    >
+      <option value="">Saved searches…</option>
+      {#each savedSearches as saved (saved)}
+        <option value={saved}>{saved}</option>
+      {/each}
+    </select>
+    <button
+      class="mini"
+      disabled={!chosen}
+      onclick={() => {
+        onDeleteSearch(chosen);
+        chosen = "";
+      }}
+      title="Remove the selected saved search"
+    >
+      Forget
+    </button>
+  {/if}
   <select
     class="sortsel"
     value={sort}
