@@ -782,6 +782,7 @@
       adjustments.contrast !== 0 ||
       adjustments.shadows !== 0 ||
       adjustments.highlights !== 0 ||
+      adjustments.dehaze !== 0 ||
       adjustments.denoise !== 0 ||
       adjustments.temperature !== 0 ||
       adjustments.tint !== 0 ||
@@ -801,6 +802,7 @@
     { key: "contrast", label: "Contrast", min: -1, max: 1, step: 0.05 },
     { key: "shadows", label: "Shadows", min: 0, max: 1, step: 0.05 },
     { key: "highlights", label: "Highlights", min: 0, max: 1, step: 0.05 },
+    { key: "dehaze", label: "Dehaze", min: -1, max: 1, step: 0.05 },
     { key: "temperature", label: "Temp", min: -1, max: 1, step: 0.05 },
     { key: "tint", label: "Tint", min: -1, max: 1, step: 0.05 },
     { key: "vibrance", label: "Vibrance", min: -1, max: 1, step: 0.05 },
@@ -1122,7 +1124,7 @@
     <button
       class:active={adjustOpen}
       onclick={() => (adjustOpen = !adjustOpen)}
-      title="Preview-only exposure, contrast, shadows, highlights and denoise"
+      title="Preview-only exposure, contrast, shadows, highlights, dehaze and denoise"
     >
       Adjust
     </button>

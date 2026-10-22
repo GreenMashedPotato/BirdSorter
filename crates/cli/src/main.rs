@@ -67,6 +67,7 @@ Commands:
       --contrast <v>            Preview contrast (-1..1)
       --shadows <v>             Lift shadows (0..1)
       --highlights <v>          Compress highlights (0..1)
+      --dehaze <v>              Remove haze (-1 adds atmosphere, 1 clears)
       --denoise <v>             Edge-preserving denoise (0..1)
       --temperature <v>         White balance: -1 cool … +1 warm
       --tint <v>                White balance tint: -1 green … +1 magenta
@@ -174,6 +175,7 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         contrast: flag("--contrast"),
         shadows: flag("--shadows"),
         highlights: flag("--highlights"),
+        dehaze: flag("--dehaze"),
         denoise: flag("--denoise"),
         temperature: flag("--temperature"),
         tint: flag("--tint"),

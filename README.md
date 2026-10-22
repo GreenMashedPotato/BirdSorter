@@ -94,7 +94,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 299 unit tests
+cargo test --workspace          # 301 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -245,7 +245,7 @@ Two detector/preview knobs live outside the scoring panel:
 
 The review bar's **Adjust** button opens a preview-only panel: exposure,
 contrast, shadow lift, highlight compression, white balance (temperature/tint),
-vibrance, saturation, clarity and edge-preserving denoise. It runs on the cached
+vibrance, saturation, clarity, dehaze and edge-preserving denoise. It runs on the cached
 preview, so drags are responsive. Edits are **saved per photo** in the library
 and restored when you come back, and **Export JPEG…** writes the adjusted preview
 at the current resolution. Everything stays **non-destructive** — stored scores,

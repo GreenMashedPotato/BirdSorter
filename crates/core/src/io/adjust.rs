@@ -1,8 +1,8 @@
 //! Non-destructive preview adjustments.
 //!
 //! A compact sRGB pipeline for the review preview: exposure, contrast, shadow
-//! lift, highlight compression, white balance, vibrance/saturation, clarity and
-//! an edge-preserving denoise. It runs on the already-decoded preview, so
+//! lift, highlight compression, dehaze, white balance, vibrance/saturation,
+//! clarity and an edge-preserving denoise. It runs on the already-decoded preview, so
 //! sliders stay responsive and originals are never touched.
 //!
 //! The tone mapping follows the usual scene-referred idea (exposure in linear
@@ -25,6 +25,8 @@ pub struct Adjustments {
     pub shadows: f32,
     /// Compress bright tones, `0..=1`.
     pub highlights: f32,
+    /// Haze removal: `0` neutral, `+1` clears haze, `-1` adds atmosphere.
+    pub dehaze: f32,
     /// Edge-preserving denoise strength, `0..=1`.
     pub denoise: f32,
     /// White balance: `-1` cool/blue … `+1` warm/amber.
@@ -46,6 +48,7 @@ impl Adjustments {
             && self.contrast.abs() < 1e-4
             && self.shadows.abs() < 1e-4
             && self.highlights.abs() < 1e-4
+            && self.dehaze.abs() < 1e-4
             && self.denoise.abs() < 1e-4
             && self.temperature.abs() < 1e-4
             && self.tint.abs() < 1e-4
@@ -86,6 +89,9 @@ pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
     } else {
         rgb.clone()
     };
+    if adj.dehaze.abs() > 1e-4 {
+        out = dehaze(&out, adj.dehaze);
+    }
     if !adj.tone_is_identity() {
         let luts = channel_luts(adj);
         let (h, w, c) = out.dim();
@@ -283,6 +289,141 @@ fn denoise(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
         }
     }
     out
+}
+
+/// Dark-channel dehaze. A coarse dark channel (min RGB per block) estimates the
+/// atmospheric light; a blurred transmission map recovers the scene. Negative
+/// values blend toward the atmospheric light to add atmosphere.
+fn dehaze(rgb: &Array3<u8>, amount: f32) -> Array3<u8> {
+    let amount = amount.clamp(-1.0, 1.0);
+    let (h, w, _) = rgb.dim();
+    if amount.abs() < 1e-4 || h < 2 || w < 2 {
+        return rgb.clone();
+    }
+
+    // Work on a ~480 px map; the transmission is low-frequency, so this is
+    // enough and keeps the pass cheap on a 2400 px preview.
+    let scale = ((h.max(w) as f32 / 480.0).ceil() as usize).max(1);
+    let sw = w.div_ceil(scale);
+    let sh = h.div_ceil(scale);
+    let mut dark = vec![1.0f32; sw * sh];
+    let mut mean = vec![[0.0f32; 3]; sw * sh];
+    let mut counts = vec![0u32; sw * sh];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y / scale) * sw + (x / scale);
+            let p = [
+                rgb[[y, x, 0]] as f32 / 255.0,
+                rgb[[y, x, 1]] as f32 / 255.0,
+                rgb[[y, x, 2]] as f32 / 255.0,
+            ];
+            dark[i] = dark[i].min(p[0].min(p[1]).min(p[2]));
+            for (k, value) in p.iter().enumerate() {
+                mean[i][k] += value;
+            }
+            counts[i] += 1;
+        }
+    }
+    for i in 0..sw * sh {
+        let n = counts[i].max(1) as f32;
+        for value in mean[i].iter_mut() {
+            *value /= n;
+        }
+    }
+
+    // Atmospheric light: the average colour of the haziest 0.1% of cells.
+    let mut order: Vec<usize> = (0..dark.len()).collect();
+    order.sort_by(|&a, &b| dark[b].total_cmp(&dark[a]));
+    let take = (order.len() / 1000).max(1);
+    let mut air = [0.0f32; 3];
+    for &i in order.iter().take(take) {
+        for (k, value) in mean[i].iter().enumerate() {
+            air[k] += value;
+        }
+    }
+    for value in air.iter_mut() {
+        *value = (*value / take as f32).clamp(0.05, 1.0);
+    }
+    let air_max = air[0].max(air[1]).max(air[2]).max(0.05);
+
+    let mut out = rgb.clone();
+    if amount > 0.0 {
+        let omega = 0.95 * amount;
+        let mut transmission: Vec<f32> = dark
+            .iter()
+            .map(|dark| (1.0 - omega * (dark / air_max)).clamp(0.25, 1.0))
+            .collect();
+        transmission = box_blur(&transmission, sw, sh, 2);
+        for y in 0..h {
+            for x in 0..w {
+                let t = sample_bilinear(&transmission, sw, sh, x, y, scale).max(0.25);
+                for k in 0..3 {
+                    let i = rgb[[y, x, k]] as f32 / 255.0;
+                    let recovered = (i - air[k]) / t + air[k];
+                    out[[y, x, k]] = (recovered * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    } else {
+        let mix = (-amount) * 0.5;
+        for y in 0..h {
+            for x in 0..w {
+                for k in 0..3 {
+                    let i = rgb[[y, x, k]] as f32 / 255.0;
+                    let hazy = i + (air[k] - i) * mix;
+                    out[[y, x, k]] = (hazy * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Separable box blur with clamped edges.
+fn box_blur(src: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
+    let r = radius as isize;
+    let mut tmp = vec![0.0f32; src.len()];
+    let mut out = vec![0.0f32; src.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0f32;
+            let mut n = 0.0f32;
+            for dx in -r..=r {
+                let xx = (x as isize + dx).clamp(0, w as isize - 1) as usize;
+                sum += src[y * w + xx];
+                n += 1.0;
+            }
+            tmp[y * w + x] = sum / n;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0f32;
+            let mut n = 0.0f32;
+            for dy in -r..=r {
+                let yy = (y as isize + dy).clamp(0, h as isize - 1) as usize;
+                sum += tmp[yy * w + x];
+                n += 1.0;
+            }
+            out[y * w + x] = sum / n;
+        }
+    }
+    out
+}
+
+/// Bilinear sample from the reduced-resolution transmission map.
+fn sample_bilinear(map: &[f32], w: usize, h: usize, x: usize, y: usize, scale: usize) -> f32 {
+    let fx = ((x as f32 + 0.5) / scale as f32 - 0.5).clamp(0.0, (w - 1) as f32);
+    let fy = ((y as f32 + 0.5) / scale as f32 - 0.5).clamp(0.0, (h - 1) as f32);
+    let x0 = fx.floor() as usize;
+    let y0 = fy.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+    let top = map[y0 * w + x0] * (1.0 - tx) + map[y0 * w + x1] * tx;
+    let bottom = map[y1 * w + x0] * (1.0 - tx) + map[y1 * w + x1] * tx;
+    top * (1.0 - ty) + bottom * ty
 }
 
 #[cfg(test)]
@@ -500,6 +641,77 @@ mod tests {
         );
     }
 
+    fn hazy_scene() -> Array3<u8> {
+        Array3::from_shape_fn((64, 64, 3), |(y, x, c)| {
+            if (20..44).contains(&y) && (20..44).contains(&x) {
+                60
+            } else {
+                [200u8, 205, 210][c]
+            }
+        })
+    }
+
+    #[test]
+    fn dehaze_expands_contrast_and_negative_adds_haze() {
+        let img = hazy_scene();
+        let before = img[[32, 32, 0]] as i32 - img[[0, 0, 0]] as i32;
+        let clear = apply(
+            &img,
+            &Adjustments {
+                dehaze: 1.0,
+                ..Default::default()
+            },
+        );
+        let after = clear[[32, 32, 0]] as i32 - clear[[0, 0, 0]] as i32;
+        assert!(after < before, "before {before}, after {after}");
+        assert!(clear[[32, 32, 0]] < 60, "object = {}", clear[[32, 32, 0]]);
+        assert!(
+            (clear[[0, 0, 0]] as i32 - 200).abs() <= 8,
+            "haze = {}",
+            clear[[0, 0, 0]]
+        );
+
+        let hazier = apply(
+            &img,
+            &Adjustments {
+                dehaze: -1.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            hazier[[32, 32, 0]] > 60,
+            "negative dehaze should lift the object"
+        );
+        assert!(hazier[[32, 32, 0]] < hazier[[0, 0, 0]]);
+    }
+
+    #[test]
+    fn dehaze_is_a_no_op_on_flat_pixels_and_at_zero() {
+        let flat = flat(128, 8, 8);
+        let out = apply(
+            &flat,
+            &Adjustments {
+                dehaze: 1.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.iter().all(|&v| (v as i32 - 128).abs() <= 1),
+            "flat stays flat"
+        );
+        let img = hazy_scene();
+        assert_eq!(
+            apply(
+                &img,
+                &Adjustments {
+                    dehaze: 0.0,
+                    ..Default::default()
+                }
+            ),
+            img
+        );
+    }
+
     #[test]
     fn encoded_previews_round_trip_with_adjustments() {
         let jpeg = crate::io::thumb::encode_rgb_jpeg(&flat(128, 8, 8), 90).unwrap();
@@ -507,6 +719,7 @@ mod tests {
             &jpeg,
             &Adjustments {
                 exposure: 1.0,
+                dehaze: 0.5,
                 denoise: 0.5,
                 temperature: 0.3,
                 vibrance: 0.4,
@@ -530,6 +743,7 @@ mod tests {
             contrast: 1.0,
             shadows: 1.0,
             highlights: 1.0,
+            dehaze: 1.0,
             denoise: 0.5,
             temperature: 1.0,
             tint: 1.0,
