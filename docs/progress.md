@@ -3,7 +3,7 @@
 Living status doc for BirdSorter. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for
 the design and [`implemented.md`](./implemented.md) for shipped work.
 
-_Last updated: 2026-10-04_
+_Last updated: 2026-10-22_
 
 ## Where we are
 
@@ -11,7 +11,8 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **309 unit tests** (+120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **316 core unit tests** (320 Rust tests including the integration/desktop suites,
+  +120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -91,6 +92,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 
 ## Known issues / notes
 
+- **Guided-filter clarity/dehaze (2026-10-22)**: the clarity base layer is a
+  self-guided filter at a size-scaled radius (4–16 px) instead of a 3×3 mean, and
+  the dehaze transmission map is refined with the downsampled luma as the guide
+  instead of a box blur. Flat fields are unchanged and step edges stay within one
+  pixel (new synthetic tests for both). Validated on a copy of
+  `D:/unsorted data/DCIM/100R5_26/_5268869.CR3` at 2400×1601: neutral, clarity=1
+  and dehaze=1 all render (no halos), with ~144 ms / ~78 ms of adjustment time;
+  the copy was deleted. The cached base render is unchanged, so
+  `RENDER_CACHE_VERSION` stays at 2.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

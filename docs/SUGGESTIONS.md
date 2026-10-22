@@ -28,10 +28,6 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 ## Preview adjustments (next)
 
-- ⬜ **Larger-radius clarity** — the current clarity is a 3×3 luma unsharp mask; a
-  guided filter at a larger radius matches LightCraft's look better.
-- ⬜ **Guided-filter refinement for dehaze** — the current transmission map is a
-  coarse dark channel + box blur; a guided filter would keep edges crisper.
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
 - ⬜ **Named presets with amounts and group sync** — Copy/Paste is in place; a
   preset library, partial groups and an amount slider remain.

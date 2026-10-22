@@ -266,8 +266,9 @@ Two detector/preview knobs live outside the scoring panel:
 
 The review bar's **Adjust** button opens a preview-only panel: exposure,
 contrast, shadow lift, highlight compression, white balance (temperature/tint),
-vibrance, saturation, clarity, dehaze and edge-preserving denoise. It runs on the cached
-preview, so drags are responsive. Edits are **saved per photo** in the library
+vibrance, saturation, guided-filter clarity, guided dehaze and edge-preserving
+denoise. It runs on the cached preview, so drags are responsive (slider moves are
+coalesced into one render). Edits are **saved per photo** in the library
 and restored when you come back, **Copy**/**Paste** carry a look from one photo to
 another (the clipboard survives closing the review), and **Export image…** writes
 the adjusted preview as JPEG or lossless TIFF (by the chosen extension) at the

@@ -18,13 +18,14 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v17**; **309 Rust + 120 UI tests**; clippy clean.
+- SQLite schema **v17**; **320 Rust + 120 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` thumbnails, sharded render cache v2,
   startup-migrated read-only DB path, EXIF strip, filmstrip, multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches, ratings/flags/colours + Ctrl+Z undo,
   auto-advance, preview adjustments (exposure/contrast/shadows/highlights/WB/
   vibrance/saturation/clarity/dehaze/denoise), copy/paste, JPEG/TIFF export.
+- Guided-filter clarity and dehaze shipped 2026-10-22 (see `implemented.md`).
 - The main product decision for multi-folder is settled: the **last-clicked
   folder is primary**; Analyze/Re-score/Keep burst winners/Auto-star/Reset
   stars/Export target it, and the UI says so. Scans include child folders.
@@ -93,10 +94,9 @@ each slice end-to-end.
 
 ## Prioritised queue (adapt as you learn)
 
-1. **Guided-filter clarity/dehaze.** Replace the box-blur transmission with a
-   guided filter (guide = downsampled luma) and consider a larger-radius
-   clarity base. Add synthetic flat-field and step-edge tests. If rendered bytes
-   change, bump `RENDER_CACHE_VERSION`.
+~~1. Guided-filter clarity/dehaze~~ — **shipped 2026-10-22** (clarity base and
+   dehaze transmission refinement; flat-field and step-edge tests; the base
+   render is unchanged, so no cache-version bump).
 2. **Windowed 1:1 rendering.** Design first: fetch/render only the visible
    region at 100% when zoomed, snap to a 256 px grid, reuse the window while
    panning. Needs a region command + cache key; ask if the UX fork is unclear.

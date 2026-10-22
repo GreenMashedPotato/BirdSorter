@@ -167,35 +167,141 @@ fn channel_luts(adj: &Adjustments) -> [[u8; 256]; 3] {
     luts
 }
 
-/// Local mid-tone contrast: add the luma difference from a 3×3 mean back into
-/// each channel. Negative values soften. No large buffers, so it is cheap.
+/// Local mid-tone contrast. The base layer is a self-guided filter at a much
+/// larger radius than a 3×3 blur; because it keeps strong contours in the base,
+/// boosting texture does not halo along high-contrast edges. Negative values
+/// soften. The radius scales with the preview so the look is size-independent.
 fn clarity(rgb: &Array3<u8>, amount: f32) -> Array3<u8> {
     let (h, w, _) = rgb.dim();
     if h < 3 || w < 3 {
         return rgb.clone();
     }
     let a = amount.clamp(-1.0, 1.0) * 1.5;
-    let luma = |y: usize, x: usize| -> f32 {
-        0.2126 * rgb[[y, x, 0]] as f32
-            + 0.7152 * rgb[[y, x, 1]] as f32
-            + 0.0722 * rgb[[y, x, 2]] as f32
-    };
+    let mut luma = vec![0.0f32; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            luma[y * w + x] = 0.2126 * rgb[[y, x, 0]] as f32
+                + 0.7152 * rgb[[y, x, 1]] as f32
+                + 0.0722 * rgb[[y, x, 2]] as f32;
+        }
+    }
+    let short = h.min(w);
+    let radius = (short / 100).clamp(4, 16).min((short - 1) / 2).max(1);
+    // Variance below (8 levels)² is treated as texture; larger edges stay in the
+    // base layer, which is what prevents halos. Luma here is in 0..=255.
+    let eps = 8.0f32 * 8.0;
+    let base = self_guided_filter(&luma, w, h, radius, eps);
     let mut out = rgb.clone();
     for y in 0..h {
         for x in 0..w {
-            let centre = luma(y, x);
-            let mut sum = 0.0f32;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let yy = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                    let xx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                    sum += luma(yy, xx);
-                }
-            }
-            let delta = (centre - sum / 9.0) * a;
+            let delta = (luma[y * w + x] - base[y * w + x]) * a;
             for k in 0..3 {
                 out[[y, x, k]] = (rgb[[y, x, k]] as f32 + delta).round().clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+    out
+}
+
+/// Self-guided base layer (`guide == input`). The two cross-moment means are the
+/// same as the plain means, so this halves the work of [`guided_filter`].
+fn self_guided_filter(values: &[f32], w: usize, h: usize, radius: usize, eps: f32) -> Vec<f32> {
+    let n = w * h;
+    if n == 0 || values.len() != n {
+        return values.to_vec();
+    }
+    let mean = box_mean(values, w, h, radius);
+    let squares: Vec<f32> = values.iter().map(|v| *v * *v).collect();
+    let mean_squares = box_mean(&squares, w, h, radius);
+
+    let mut a = vec![0.0f32; n];
+    let mut b = vec![0.0f32; n];
+    for j in 0..n {
+        let var = (mean_squares[j] - mean[j] * mean[j]).max(0.0);
+        let aj = var / (var + eps);
+        a[j] = aj;
+        b[j] = mean[j] * (1.0 - aj);
+    }
+    let mean_a = box_mean(&a, w, h, radius);
+    let mean_b = box_mean(&b, w, h, radius);
+    (0..n).map(|j| mean_a[j] * values[j] + mean_b[j]).collect()
+}
+
+/// Edge-preserving guided filter (He et al., 2010) over one channel.
+///
+/// `guide` and `input` are row-major slices of `w * h` values. `eps` is in
+/// squared guide units: windows whose variance is well above it keep their edge
+/// in the output, while flatter windows are averaged out.
+fn guided_filter(
+    guide: &[f32],
+    input: &[f32],
+    w: usize,
+    h: usize,
+    radius: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let n = w * h;
+    if n == 0 || guide.len() != n || input.len() != n {
+        return input.to_vec();
+    }
+    let mean_i = box_mean(guide, w, h, radius);
+    let mean_p = box_mean(input, w, h, radius);
+
+    let mut scratch: Vec<f32> = guide.iter().map(|v| *v * *v).collect();
+    let mean_ii = box_mean(&scratch, w, h, radius);
+    for (slot, (i, p)) in scratch.iter_mut().zip(guide.iter().zip(input)) {
+        *slot = *i * *p;
+    }
+    let mean_ip = box_mean(&scratch, w, h, radius);
+
+    let mut a = vec![0.0f32; n];
+    let mut b = vec![0.0f32; n];
+    for j in 0..n {
+        let var = (mean_ii[j] - mean_i[j] * mean_i[j]).max(0.0);
+        let cov = mean_ip[j] - mean_i[j] * mean_p[j];
+        let aj = cov / (var + eps);
+        a[j] = aj;
+        b[j] = mean_p[j] - aj * mean_i[j];
+    }
+    let mean_a = box_mean(&a, w, h, radius);
+    let mean_b = box_mean(&b, w, h, radius);
+    (0..n).map(|j| mean_a[j] * guide[j] + mean_b[j]).collect()
+}
+
+/// Separable box mean with replicated (clamped) edges, O(1) per pixel.
+fn box_mean(src: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
+    if radius == 0 || w == 0 || h == 0 || src.len() != w * h {
+        return src.to_vec();
+    }
+    let r = radius as isize;
+    let norm = 1.0 / (2 * radius + 1) as f32;
+    let mut tmp = vec![0.0f32; src.len()];
+    for y in 0..h {
+        let row = &src[y * w..(y + 1) * w];
+        let mut sum: f32 = (-r..=r)
+            .map(|dx| row[dx.clamp(0, w as isize - 1) as usize])
+            .sum();
+        for x in 0..w {
+            if x > 0 {
+                let xi = x as isize;
+                sum += row[(xi + r).clamp(0, w as isize - 1) as usize]
+                    - row[(xi - r - 1).clamp(0, w as isize - 1) as usize];
+            }
+            tmp[y * w + x] = sum * norm;
+        }
+    }
+    let mut out = vec![0.0f32; src.len()];
+    for x in 0..w {
+        let mut sum: f32 = (-r..=r)
+            .map(|dy| tmp[dy.clamp(0, h as isize - 1) as usize * w + x])
+            .sum();
+        for y in 0..h {
+            if y > 0 {
+                let yi = y as isize;
+                sum += tmp[(yi + r).clamp(0, h as isize - 1) as usize * w + x]
+                    - tmp[(yi - r - 1).clamp(0, h as isize - 1) as usize * w + x];
+            }
+            out[y * w + x] = sum * norm;
         }
     }
     out
@@ -355,11 +461,19 @@ fn dehaze(rgb: &Array3<u8>, amount: f32) -> Array3<u8> {
     let mut out = rgb.clone();
     if amount > 0.0 {
         let omega = 0.95 * amount;
-        let mut transmission: Vec<f32> = dark
+        let transmission: Vec<f32> = dark
             .iter()
             .map(|dark| (1.0 - omega * (dark / air_max)).clamp(0.25, 1.0))
             .collect();
-        transmission = box_blur(&transmission, sw, sh, 2);
+        // Refine the coarse transmission with a guided filter using the
+        // downsampled luma as the guide: the map then follows scene edges
+        // instead of being smeared by a box blur, so horizon and subject
+        // boundaries stay crisp.
+        let guide: Vec<f32> = mean
+            .iter()
+            .map(|mean| 0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2])
+            .collect();
+        let transmission = guided_filter(&guide, &transmission, sw, sh, 4, 1e-3);
         for y in 0..h {
             for x in 0..w {
                 let t = sample_bilinear(&transmission, sw, sh, x, y, scale).max(0.25);
@@ -380,38 +494,6 @@ fn dehaze(rgb: &Array3<u8>, amount: f32) -> Array3<u8> {
                     out[[y, x, k]] = (hazy * 255.0).round().clamp(0.0, 255.0) as u8;
                 }
             }
-        }
-    }
-    out
-}
-
-/// Separable box blur with clamped edges.
-fn box_blur(src: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
-    let r = radius as isize;
-    let mut tmp = vec![0.0f32; src.len()];
-    let mut out = vec![0.0f32; src.len()];
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = 0.0f32;
-            let mut n = 0.0f32;
-            for dx in -r..=r {
-                let xx = (x as isize + dx).clamp(0, w as isize - 1) as usize;
-                sum += src[y * w + xx];
-                n += 1.0;
-            }
-            tmp[y * w + x] = sum / n;
-        }
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = 0.0f32;
-            let mut n = 0.0f32;
-            for dy in -r..=r {
-                let yy = (y as isize + dy).clamp(0, h as isize - 1) as usize;
-                sum += tmp[yy * w + x];
-                n += 1.0;
-            }
-            out[y * w + x] = sum / n;
         }
     }
     out
@@ -584,14 +666,104 @@ mod tests {
     }
 
     #[test]
-    fn clarity_adds_local_contrast() {
+    fn box_mean_handles_constants_edges_and_radius_zero() {
+        let src = vec![1.0f32; 35];
+        let mean = box_mean(&src, 7, 5, 3);
+        assert!(mean.iter().all(|v| (v - 1.0).abs() < 1e-6));
+
+        let ramp: Vec<f32> = (0..35).map(|i| (i % 7) as f32).collect();
+        assert_eq!(box_mean(&ramp, 7, 5, 0), ramp);
+    }
+
+    #[test]
+    fn guided_filter_keeps_a_flat_field_flat() {
+        let field = vec![0.4f32; 17 * 13];
+        let out = guided_filter(&field, &field, 17, 13, 5, 1e-3);
+        assert!(
+            out.iter().all(|v| (v - 0.4).abs() < 1e-5),
+            "flat field must be unchanged"
+        );
+    }
+
+    #[test]
+    fn guided_filter_preserves_a_step_edge() {
+        let (w, h, radius) = (64usize, 16usize, 4usize);
+        let mut edge = vec![0.2f32; w * h];
+        for y in 0..h {
+            for x in 32..w {
+                edge[y * w + x] = 0.8;
+            }
+        }
+        let eps = (8.0f32 / 255.0).powi(2);
+        let out = guided_filter(&edge, &edge, w, h, radius, eps);
+        let row = 8 * w;
+        assert!(
+            (out[row + 10] - 0.2).abs() < 1e-3,
+            "left = {}",
+            out[row + 10]
+        );
+        assert!(
+            (out[row + 54] - 0.8).abs() < 1e-3,
+            "right = {}",
+            out[row + 54]
+        );
+        // The transition is one pixel wide instead of a `radius`-wide blur.
+        assert!(
+            (out[row + 31] - 0.2).abs() < 0.02,
+            "left edge = {}",
+            out[row + 31]
+        );
+        assert!(
+            (out[row + 32] - 0.8).abs() < 0.02,
+            "right edge = {}",
+            out[row + 32]
+        );
+    }
+
+    #[test]
+    fn self_guided_filter_matches_the_generic_one_on_equal_inputs() {
+        // A mix of steps and fine texture, so both branches of `a` are exercised.
+        let img: Vec<f32> = (0..64 * 16)
+            .map(|i| ((i * 37) % 251) as f32 / 255.0)
+            .collect();
+        let generic = guided_filter(&img, &img, 64, 16, 4, 0.001);
+        let self_guided = self_guided_filter(&img, 64, 16, 4, 0.001);
+        for (a, b) in generic.iter().zip(&self_guided) {
+            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn guided_filter_smooths_texture_the_guide_cannot_see() {
+        let (w, h) = (32usize, 16usize);
+        let guide = vec![0.5f32; w * h];
+        let input: Vec<f32> = (0..w * h)
+            .map(|i| if i % 2 == 0 { 0.4 } else { 0.6 })
+            .collect();
+        let out = guided_filter(&guide, &input, w, h, 4, 1e-3);
+        // Skip the replicated border, which biases an alternating pattern.
+        let interior: Vec<f32> = (5..h - 5)
+            .flat_map(|y| (5..w - 5).map(move |x| (y, x)))
+            .map(|(y, x)| out[y * w + x])
+            .collect();
+        let mean = interior.iter().sum::<f32>() / interior.len() as f32;
+        let lo = interior.iter().cloned().fold(f32::MAX, f32::min);
+        let hi = interior.iter().cloned().fold(f32::MIN, f32::max);
+        assert!((mean - 0.5).abs() < 0.01, "mean = {mean}");
+        assert!(hi - lo < 0.05, "texture spread = {}", hi - lo);
+    }
+
+    #[test]
+    fn clarity_boosts_texture_and_softens_negatively() {
+        // Fine, low-amplitude detail (plumage-like) is what clarity enhances; a
+        // hard checkerboard is an edge and is left for the sharpener.
         let img = Array3::from_shape_fn(
             (16, 16, 3),
             |(y, x, _)| {
                 if (x + y) % 2 == 0 {
                     100u8
                 } else {
-                    118u8
+                    105u8
                 }
             },
         );
@@ -611,12 +783,52 @@ mod tests {
         );
         assert!(
             horizontal_energy(&crisp) > horizontal_energy(&img),
-            "clarity should add edge contrast"
+            "clarity should add local contrast"
         );
         assert!(
             horizontal_energy(&soft) < horizontal_energy(&img),
             "negative clarity should soften"
         );
+    }
+
+    #[test]
+    fn clarity_keeps_flat_fields_flat_and_a_step_edge_in_place() {
+        let flat_field = flat(128, 24, 24);
+        let out = apply(
+            &flat_field,
+            &Adjustments {
+                clarity: 1.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.iter().all(|&v| (v as i32 - 128).abs() <= 1),
+            "a flat field must not gain texture"
+        );
+
+        let step =
+            Array3::from_shape_fn((48, 48, 3), |(_, x, _)| if x < 24 { 80u8 } else { 180u8 });
+        let out = apply(
+            &step,
+            &Adjustments {
+                clarity: 1.0,
+                ..Default::default()
+            },
+        );
+        for y in 0..48 {
+            assert!(
+                (out[[y, 4, 0]] as i32 - 80).abs() <= 1,
+                "left field moved to {}",
+                out[[y, 4, 0]]
+            );
+            assert!(
+                (out[[y, 43, 0]] as i32 - 180).abs() <= 1,
+                "right field moved to {}",
+                out[[y, 43, 0]]
+            );
+            // No halo: the two sides stay on their own side of the edge.
+            assert!(out[[y, 23, 0]] < 90 && out[[y, 24, 0]] > 170);
+        }
     }
 
     #[test]
@@ -689,6 +901,52 @@ mod tests {
             "negative dehaze should lift the object"
         );
         assert!(hazier[[32, 32, 0]] < hazier[[0, 0, 0]]);
+    }
+
+    fn hazy_horizon() -> Array3<u8> {
+        Array3::from_shape_fn((64, 64, 3), |(y, _, c)| {
+            if y < 24 {
+                [60u8, 65, 70][c]
+            } else {
+                [200, 205, 210][c]
+            }
+        })
+    }
+
+    #[test]
+    fn dehaze_keeps_a_horizon_sharp() {
+        let clear = apply(
+            &hazy_horizon(),
+            &Adjustments {
+                dehaze: 1.0,
+                ..Default::default()
+            },
+        );
+        let dark_side = clear[[12, 32, 0]] as i32;
+        let bright_side = clear[[40, 32, 0]] as i32;
+        assert!(dark_side < 40, "dark side = {dark_side}");
+        assert!((bright_side - 200).abs() <= 8, "haze = {bright_side}");
+        // The refined transmission map follows the edge, so the flat regions
+        // stay uniform right up to the boundary instead of being smeared over
+        // the guided-filter radius (4 cells here).
+        for y in 10..20 {
+            assert!(
+                (clear[[y, 32, 0]] as i32 - dark_side).abs() <= 4,
+                "row {y} = {}",
+                clear[[y, 32, 0]]
+            );
+        }
+        for y in 30..40 {
+            assert!(
+                (clear[[y, 32, 0]] as i32 - bright_side).abs() <= 4,
+                "row {y} = {}",
+                clear[[y, 32, 0]]
+            );
+        }
+        assert!(
+            clear[[24, 32, 0]] as i32 - clear[[23, 32, 0]] as i32 > 80,
+            "horizon softened"
+        );
     }
 
     #[test]

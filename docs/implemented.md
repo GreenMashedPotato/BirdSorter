@@ -583,4 +583,13 @@ on a 28-core Windows box.
   edge-preserving denoise, applied to the cached review preview (never the
   original). Review
   panel + CLI flags. Inspired by LightCraft (MIT/Apache-2.0).
+- ✅ **Guided-filter clarity and dehaze (2026-10-22)**: clarity's base layer is
+  now a self-guided filter (He et al.) at a size-scaled radius (4–16 px) instead
+  of a 3×3 mean, so it boosts plumage-scale texture without haloing strong
+  contours; the dehaze transmission map is refined by a guided filter using the
+  downsampled luma as the guide instead of a box blur, which keeps horizons and
+  subject boundaries crisp. Separable O(1)-per-pixel box means keep both cheap.
+  The cached base render is unchanged, so `RENDER_CACHE_VERSION` stays at 2.
+  Measured on a 2400×1601 CR3 preview: clarity ≈ 144 ms and dehaze ≈ 78 ms of
+  adjustment time (6 runs, min-of-3 after a warm-up).
 

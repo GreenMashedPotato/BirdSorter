@@ -8,8 +8,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17
 > bar has a sort selector (worst/best/rating/filename), the review shows an EXIF
 > strip (camera/lens/ISO/shutter/aperture/focal), CR3 thumbnails read the compact
 > `PRVW` JPEG, the review shows a cached thumbnail while the preview renders, a
-> filmstrip of nearby frames sits under the loupe, the Adjust panel has a
-> dark-channel dehaze slider, Copy/Paste carries a look between photos, edited
+> filmstrip of nearby frames sits under the loupe, the Adjust panel has
+> guided-filter clarity and a dark-channel + guided-filter dehaze slider,
+> Copy/Paste carries a look between photos, edited
 > exports can be JPEG or lossless TIFF, the grid sorts by capture date with the
 > choice remembered, Auto-advance moves through a shoot after each label or
 > rating, `1`–`5` rate, `S`/`B`/`R`/`O` label, `P`/`X`/`U` flag (single and
@@ -555,11 +556,22 @@ on log-luminance (`pipeline/src/local.rs`):
 Result: recovered highlights/shadows without the grey halos a naive mask
 produces. This is a direct quality upgrade for backlit birds.
 
+**Status (2026-10-22):** the primitive now exists in `core::io::adjust`
+(`box_mean`, `guided_filter`, `self_guided_filter`, O(1) per pixel). Clarity
+uses it as a self-guided base and dehaze uses it to refine the transmission
+map; the local tone mapping above can reuse it. The tone curve and masks remain
+open.
+
 ### 6.2 Dehaze
 
 Dark-channel prior with guided refinement (`local.rs: dark_of`, airlight
 sampling, applied scene-linear). Allow negative values to add atmosphere.
 Particularly effective on hazy mornings, a common birding condition.
+
+**Shipped (2026-10-22):** `core::io::adjust::dehaze` uses the dark-channel prior
+and airlight sampling, and now refines the transmission map with a guided filter
+guided by the downsampled luma instead of a box blur. Synthetic horizon and
+flat-field tests cover it.
 
 ### 6.3 Tone curve
 
