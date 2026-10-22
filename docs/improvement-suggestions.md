@@ -7,8 +7,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v15
 > preview, the grid evicts off-screen thumbnails above 600 entries, the filter
 > bar has a sort selector (worst/best/rating/filename), the review shows an EXIF
 > strip (camera/lens/ISO/shutter/aperture/focal), CR3 thumbnails read the compact
-> `PRVW` JPEG, and the review shows a cached thumbnail while the preview renders.
-> The analysis below still describes the rest of the snapshot.
+> `PRVW` JPEG, the review shows a cached thumbnail while the preview renders, and
+> a filmstrip of nearby frames sits under the loupe. The analysis below still
+> describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth

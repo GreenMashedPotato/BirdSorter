@@ -536,6 +536,42 @@ input {
   grid-template-columns: 1fr 340px;
   min-height: 0;
 }
+.filmstrip {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  overflow-x: auto;
+  flex: 0 0 auto;
+  scrollbar-width: thin;
+}
+.frame {
+  flex: 0 0 auto;
+  width: 96px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #000;
+  overflow: hidden;
+}
+.frame.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.frame .placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--panel-2);
+}
 .preview {
   position: relative;
   min-height: 0;
