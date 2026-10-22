@@ -29,6 +29,17 @@ autonomously, ship complete vertical slices, and keep the gates green.
   folder is primary**; Analyze/Re-score/Keep burst winners/Auto-star/Reset
   stars/Export target it, and the UI says so. Scans include child folders.
 
+## Goals
+
+- **Ship value:** complete the highest-priority open features as tested,
+  end-to-end slices.
+- **Protect the user's data:** originals untouched; test copies only; isolated
+  DB/data dir for real-corpus runs.
+- **Protect quality:** every behaviour has a test; every slice passes the gates;
+  decode/preview/scoring changes carry real-corpus evidence.
+- **Keep the repo legible:** update the docs and the AI entry points as you go.
+- **Report honestly:** state what shipped, what was measured, and what remains.
+
 ## Mission
 
 Work through [`SUGGESTIONS.md`](./SUGGESTIONS.md) and the priority list in
