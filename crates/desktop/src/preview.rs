@@ -159,6 +159,30 @@ pub(crate) async fn preview_image(
     blocking(move || preview_impl(&cache_root, &db_path, &gates, file, &mode)).await
 }
 
+/// Write a JPEG of the cached preview with `adjustments` applied. The original
+/// file is never touched; `mode` chooses the resolution (fast = 2400 px,
+/// full = the camera's native preview).
+#[tauri::command]
+pub(crate) async fn export_edited(
+    state: State<'_, AppState>,
+    file: i64,
+    mode: Option<String>,
+    adjustments: adjust::Adjustments,
+    dest: String,
+) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    let gates = state.render_gates.clone();
+    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    blocking(move || {
+        let base = base_preview(&cache_root, &db_path, &gates, file, &mode)?;
+        let bytes = adjust::apply_encoded(&base, &adjustments, 92).map_err(err)?;
+        std::fs::write(&dest, &bytes).map_err(err)?;
+        Ok(dest)
+    })
+    .await
+}
+
 /// Review preview with non-destructive adjustments (exposure, contrast, shadows,
 /// highlights, denoise). The base render stays on disk; only the in-memory
 /// adjustment pass runs per slider change.

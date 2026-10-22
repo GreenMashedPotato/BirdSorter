@@ -26,8 +26,10 @@ raw-sorter-app/
     progress.md      Living implementation status
     implemented.md   Shipped features, change log and measurements
     SUGGESTIONS.md   Open/partial improvements only
+    improvement-suggestions.md  Cross-project ideas worth borrowing
     MODELS.md        Model contracts and licenses
     EYE_MODEL.md     Eye model data/training/runtime contract
+    DENOISE_PLAN.md  Future denoise feature: models, licences, tiling plan
     MACOS_TODO.md    Mac-specific validation brief
     SIGNING.md       Signing and notarization instructions
     rule.md          Engineering rules (this file)

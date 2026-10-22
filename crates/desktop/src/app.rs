@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::State;
 
-use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
-use birdsorter_core::data::{db, diagnostics, library, registry};
+use birdsorter_core::data::settings::{DetectionSettings, PreviewSettings, ScoreSettings};
+use birdsorter_core::data::{db, diagnostics, edits, library, registry};
+use birdsorter_core::io::adjust::Adjustments;
 use birdsorter_core::io::cache::ThumbCache;
 
 use crate::state::AppState;
@@ -47,6 +48,59 @@ pub(crate) fn get_detection_settings() -> DetectionSettings {
 #[tauri::command]
 pub(crate) async fn set_detection_settings(settings: DetectionSettings) -> Result<(), String> {
     blocking(move || settings.save_default().map_err(err)).await
+}
+
+/// Preview/render preferences (first-run setup, review mode, preloading).
+#[tauri::command]
+pub(crate) fn get_preview_settings() -> PreviewSettings {
+    PreviewSettings::load_default()
+}
+
+/// Persist preview preferences. The review mode takes effect immediately; a
+/// preload preference applies to the next scan.
+#[tauri::command]
+pub(crate) async fn set_preview_settings(settings: PreviewSettings) -> Result<(), String> {
+    blocking(move || settings.save_default().map_err(err)).await
+}
+
+/// Saved, non-destructive preview adjustments for one file.
+#[tauri::command]
+pub(crate) async fn get_edits(
+    state: State<'_, AppState>,
+    file: i64,
+) -> Result<Option<Adjustments>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        edits::get(&conn, file).map_err(err)
+    })
+    .await
+}
+
+/// Save the preview adjustments for one file (survives re-analysis).
+#[tauri::command]
+pub(crate) async fn save_edits(
+    state: State<'_, AppState>,
+    file: i64,
+    adjustments: Adjustments,
+) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        edits::save(&conn, file, &adjustments).map_err(err)
+    })
+    .await
+}
+
+/// Drop the saved adjustments for one file.
+#[tauri::command]
+pub(crate) async fn clear_edits(state: State<'_, AppState>, file: i64) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        edits::clear(&conn, file).map_err(err)
+    })
+    .await
 }
 
 /// Every species name the installed model knows (for the autocomplete).

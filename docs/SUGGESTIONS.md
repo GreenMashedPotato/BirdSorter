@@ -2,7 +2,9 @@
 
 Open and partial improvements only. Everything that has shipped — including the
 performance measurements — is archived in [`implemented.md`](./implemented.md);
-current status is in [`progress.md`](./progress.md).
+current status is in [`progress.md`](./progress.md). For cross-project ideas
+(preview transport, culling UX, EXIF, XMP, export), see
+[`improvement-suggestions.md`](./improvement-suggestions.md).
 
 **Legend:** 🟡 partial / blocked · ⬜ open
 
@@ -31,8 +33,8 @@ current status is in [`progress.md`](./progress.md).
 - ⬜ **Dehaze** — dark-channel prior with guided refinement (and negative values to
   add atmosphere).
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
-- ⬜ **Apply adjustments on export** — they are preview-only today; writing an
-  adjusted JPEG/TIFF is the natural next step.
+- ⬜ **TIFF export of edits** — JPEG export is in place; TIFF would need a
+  different encoder path.
 
 ## Correctness & robustness
 

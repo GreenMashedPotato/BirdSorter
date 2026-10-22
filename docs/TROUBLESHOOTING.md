@@ -101,10 +101,16 @@ automatically (analysis is tied to the file's content hash).
   with `motion_directionality_threshold` or `motion_blur_penalty` at `1.0` (both
   are no-ops) is reset to the default on load.
 - **Adjust** in the review bar (exposure, contrast, shadows, highlights, white
-  balance, vibrance, saturation, clarity, denoise) is **preview-only**: it does
-  not change stored scores, labels, sidecars, the original file or an export. The
-  CLI can render one: `preview <raw> out.jpg --exposure 0.5 --temperature 0.4
-  --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
+  balance, vibrance, saturation, clarity, denoise) is saved **per photo** in the
+  library and restored when you reopen it; **Export JPEG…** writes the adjusted
+  preview at the current resolution. It never changes stored scores, labels,
+  sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
+  --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
+- **Preview mode and preloading** live in
+  `%APPDATA%\BirdSorter\config\preview_settings.json` (`mode`, `preload`,
+  `onboardingDone`). The first-run setup writes it and the review bar's selector
+  updates it; the choice is sticky across photos and sessions. **Preload
+  previews** in the toolbar is cancellable — detailed previews are slow to warm.
 
 ## Scan / analysis seems stuck
 

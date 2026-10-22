@@ -15,6 +15,10 @@
     onRetrain,
     onExportKeepers,
     onKeepBurstWinners,
+    onPreload = () => {},
+    preloadBusy = false,
+    preloadDone = 0,
+    preloadTotal = 0,
   }: {
     busy: boolean;
     hasFolder: boolean;
@@ -29,6 +33,10 @@
     onRetrain: () => void;
     onExportKeepers: () => void;
     onKeepBurstWinners: () => void;
+    onPreload?: () => void;
+    preloadBusy?: boolean;
+    preloadDone?: number;
+    preloadTotal?: number;
   } = $props();
 </script>
 
@@ -60,6 +68,15 @@
     title="Label the sharpest frame of each burst as Sharp (skips files you already labelled)"
   >
     Keep burst winners
+  </button>
+  <button
+    onclick={onPreload}
+    disabled={busy || !hasFolder}
+    title={preloadBusy
+      ? "Stop preloading previews"
+      : "Render every preview in this folder once so stepping through is instant"}
+  >
+    {preloadBusy ? `Stop (${preloadDone}/${preloadTotal})` : "Preload previews"}
   </button>
   <div class="spacer"></div>
   <span class="status">{status}</span>

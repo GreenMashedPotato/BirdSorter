@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/svelte";
 import AppToolbar from "./AppToolbar.svelte";
 
-function setup(over: { busy?: boolean; hasFolder?: boolean; model?: string } = {}) {
+function setup(
+  over: {
+    busy?: boolean;
+    hasFolder?: boolean;
+    model?: string;
+    preloadBusy?: boolean;
+    preloadDone?: number;
+    preloadTotal?: number;
+  } = {},
+) {
   const handlers = {
     onRescan: vi.fn(),
     onAnalyze: vi.fn(),
@@ -13,6 +22,7 @@ function setup(over: { busy?: boolean; hasFolder?: boolean; model?: string } = {
     onRetrain: vi.fn(),
     onExportKeepers: vi.fn(),
     onKeepBurstWinners: vi.fn(),
+    onPreload: vi.fn(),
   };
   const utils = render(AppToolbar, {
     props: { busy: false, hasFolder: true, status: "ready", model: "", ...over, ...handlers },
@@ -60,5 +70,16 @@ describe("AppToolbar", () => {
   it("shows the status line", () => {
     const { getByText } = setup();
     expect(getByText("ready")).toBeTruthy();
+  });
+
+  it("starts a preview preload", async () => {
+    const { getByText, onPreload } = setup();
+    await fireEvent.click(getByText("Preload previews"));
+    expect(onPreload).toHaveBeenCalledOnce();
+  });
+
+  it("shows preload progress while running", () => {
+    const { getByText } = setup({ preloadBusy: true, preloadDone: 3, preloadTotal: 10 });
+    expect(getByText("Stop (3/10)")).toBeTruthy();
   });
 });

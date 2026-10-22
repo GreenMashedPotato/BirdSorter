@@ -228,6 +228,74 @@ impl DetectionSettings {
     }
 }
 
+/// Preview/render preferences: the review's preview mode, whether previews are
+/// preloaded after a scan, and whether the first-run setup has been completed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PreviewSettings {
+    /// `"fast"` (analysis resolution, quick) or `"full"` (native camera preview).
+    pub mode: String,
+    /// Preload previews for the folder after a scan.
+    pub preload: bool,
+    /// The first-run setup has been shown and completed.
+    pub onboarding_done: bool,
+}
+
+impl Default for PreviewSettings {
+    fn default() -> Self {
+        Self {
+            mode: "fast".to_string(),
+            preload: false,
+            onboarding_done: false,
+        }
+    }
+}
+
+impl PreviewSettings {
+    /// `"full"` only when explicitly chosen; anything unknown falls back to fast.
+    pub fn resolved_mode(&self) -> &'static str {
+        if self.mode == "full" {
+            "full"
+        } else {
+            "fast"
+        }
+    }
+
+    /// `preview_settings.json` under the config dir (platform, or portable root).
+    pub fn default_path() -> Result<PathBuf> {
+        Ok(crate::data::paths::config_dir()?.join("preview_settings.json"))
+    }
+
+    pub fn load_default() -> Self {
+        match Self::default_path() {
+            Ok(path) => Self::load(path),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        self.save(Self::default_path()?)
+    }
+
+    /// Load from `path`; a missing or unreadable file yields defaults.
+    pub fn load(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+        }
+        let text = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, text).map_err(|e| CoreError::io(path, e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +401,38 @@ mod tests {
         let s = ScoreSettings::load(&p);
         assert_eq!(s.motion_directionality_threshold, 1.0);
         assert_eq!(s.motion_blur_penalty, 1.0);
+    }
+
+    #[test]
+    fn preview_settings_round_trip_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("preview_settings.json");
+        let s = PreviewSettings {
+            mode: "full".into(),
+            preload: true,
+            onboarding_done: true,
+        };
+        s.save(&p).unwrap();
+        assert_eq!(PreviewSettings::load(&p), s);
+        assert_eq!(
+            PreviewSettings::load(dir.path().join("missing.json")),
+            PreviewSettings::default()
+        );
+
+        // Unknown modes resolve to fast; "full" is explicit.
+        assert_eq!(s.resolved_mode(), "full");
+        let odd = PreviewSettings {
+            mode: "something".into(),
+            ..Default::default()
+        };
+        assert_eq!(odd.resolved_mode(), "fast");
+
+        // Older/partial files fill the missing fields with defaults.
+        std::fs::write(&p, r#"{"mode":"full"}"#).unwrap();
+        let partial = PreviewSettings::load(&p);
+        assert_eq!(partial.mode, "full");
+        assert!(!partial.preload);
+        assert!(!partial.onboarding_done);
     }
 
     #[test]
