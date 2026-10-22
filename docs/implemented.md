@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Sharded preview cache**: entries live in two-character hash shards
+  (`{hash}@v2@{dim}.thumb`); retain/clear/size/budget walk the shards. The
+  version bump invalidates old flat renders; the next cache clean removes them.
 - **Saved searches**: the search box can save the current query (persisted,
   newest first, capped at 12) and reapply it from the Saved searches menu;
   Forget removes it.
@@ -171,7 +174,7 @@ state and open work, see [progress.md](./progress.md) and
   culling order), best-first, top-rated, or by filename (numeric). Changing the
   sort returns the virtualized grid to the top.
 - **Cache and preview responsiveness**: render keys carry a cache version
-  (`{hash}@v1@{dim}`), so decoder/adjustment changes invalidate old bytes;
+  (`{hash}@v2@{dim}`), so decoder/adjustment changes invalidate old bytes;
   `clean_cache` prunes the oldest entries to a 4 GiB budget; the review
   prefetches the previous/next preview; and the grid evicts off-screen
   thumbnails above 600 entries (the disk cache re-fetches them cheaply).

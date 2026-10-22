@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **306 unit tests** (+114 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **307 unit tests** (+114 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -228,8 +228,9 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   so `RUST_LOG=info birdsorter probe …` shows the chosen provider. The CLI's
   user-facing output is unchanged (`println!`); a malformed model is now a
   leveled `warn` instead of raw stderr.
-- **`cleancache --cache <dir>`**: the thumbnail cache is one shared directory
-  keyed by content hash, not tied to a database, so `cleancache --db <other>`
+- **`cleancache --cache <dir>`**: the thumbnail cache is shared and sharded by
+  content hash (two-character directories), not tied to a database, so
+  `cleancache --db <other>`
   previously pruned the *default* cache using another library's hashes. It now
   accepts `--cache <dir>` (needed to test/CI against an isolated library) and
   always prints the directory it is pruning. (Found because a smoke test with a

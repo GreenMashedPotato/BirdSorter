@@ -170,8 +170,9 @@ species classifier and eye model; **T3** uses a GPU execution provider
 The UI talks to Rust only through Tauri commands and events. All image
 transport is **data URLs returned from a disk cache keyed by content hash**
 (`thumbnail`, `preview_image`) — images never cross IPC per pixel. Render keys
-carry a cache version (`{hash}@v1@{dim}`), so a decoder or adjustment change
-invalidates old bytes; the cache also prunes the oldest entries to a 4 GiB
+carry a cache version (`{hash}@v2@{dim}`) and are sharded by the first two hash
+characters, so a decoder or adjustment change invalidates old bytes and a large
+cache never sits in one directory. The cache prunes the oldest entries to a 4 GiB
 budget. The review prefetches the previous/next preview, and the grid evicts
 off-screen thumbnails above 600 entries.
 
@@ -211,8 +212,9 @@ Paths come from the platform user directories (`directories` crate), under a
 | Thumbnail/preview cache | `%LOCALAPPDATA%\BirdSorter\cache\thumbs\` |
 | Panic log | `%APPDATA%\BirdSorter\data\crash.log` |
 
-The thumbnail cache is **one shared directory keyed by content hash** — it is
-not tied to a database. See `TROUBLESHOOTING.md` before pruning it.
+The thumbnail cache is **shared and keyed by content hash**, stored in
+two-character shard directories under `thumbs/` — it is not tied to a database.
+See `TROUBLESHOOTING.md` before pruning it.
 
 **Portable mode** (`data::paths`): a `portable.flag` file next to the executable
 redirects all of the above to `<exe dir>/BirdSorterData/` (DB at the root,

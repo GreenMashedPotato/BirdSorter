@@ -94,7 +94,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 306 unit tests
+cargo test --workspace          # 307 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3

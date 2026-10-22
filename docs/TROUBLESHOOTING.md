@@ -132,8 +132,10 @@ is caught and surfaced (and logged to `crash.log`) rather than leaving
 
 ## Thumbnails & cache
 
-- The thumbnail/preview cache is keyed by content hash and lives in one shared
-  directory (see `ARCHITECTURE.md` §6).
+- The thumbnail/preview cache is keyed by content hash and lives in two-character
+  shard directories under `thumbs/` (see `ARCHITECTURE.md` §6). Render keys carry
+  a version (`@v2@`); a version bump invalidates old renders, which the next
+  `cleancache`/`clean cache` removes.
 - `birdsorter cleancache` prunes entries no longer referenced by the **default**
   library. ⚠️ The cache is **not** tied to a database: running it with a
   different `--db` prunes the default cache using that library's hashes. To
