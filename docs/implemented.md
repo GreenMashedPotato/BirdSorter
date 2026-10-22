@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Rating shortcuts and filters**: `1`–`5` rate the open photo (advancing when
+  Auto-advance is on), `Shift`+`1`–`5` force the advance, `Shift`+`0` clears the
+  rating; the grid filters include Rated, 3★+ and Unrated.
 - **Culling workflow**: the file list now carries `rating` and `capturedAt`
   (fixing Top-rated and enabling date sorts); Date (oldest/newest) is available
   and the chosen sort is remembered; **Auto-advance** opens the next photo after

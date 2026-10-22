@@ -1060,6 +1060,24 @@
         if (e.key === "Escape" && target) target.blur();
         return;
       }
+      // 1-5 rate (and advance when enabled); Shift forces the advance.
+      // Shift+0 clears the rating; plain 0 keeps its "reset zoom" meaning.
+      const digit = /^Digit([0-5])$/.exec(e.code);
+      if (digit && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const value = Number(digit[1]);
+        if (e.shiftKey) {
+          e.preventDefault();
+          onRate(fileId, value);
+          if (value > 0) nav(1);
+          return;
+        }
+        if (value > 0) {
+          e.preventDefault();
+          onRate(fileId, value);
+          if (autoAdvance) nav(1);
+          return;
+        }
+      }
       if (e.key === "Escape") closeReview();
       else if (e.key === "j" || e.key === "ArrowRight") nav(1);
       else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
