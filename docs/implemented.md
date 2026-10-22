@@ -120,6 +120,11 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Multi-folder view**: Ctrl/Cmd-click folders to show them together; the last
+  clicked is the primary action target (sidebar badge + "Actions target" note +
+  folder-named status text). Queries merge folders into one global worst-first
+  order, the grid labels each file's folder when several are shown, and scans
+  include child folders (nested-directory regression test).
 - **Search tokens**: the grid search accepts free text (filename/species) and
   `rating:>3`, `flag:pick`, `label:sharp`, `verdict:uncertain`, `species:egret`,
   `name:5260`; unknown `field:value` falls back to plain text. A new query

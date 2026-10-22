@@ -63,6 +63,8 @@ pub(crate) struct FileDto {
     captured_at: Option<String>,
     /// `"pick"`, `"reject"`, or `null` (unflagged).
     flag: Option<String>,
+    /// Owning folder, so a multi-folder view can identify each row.
+    folder_id: i64,
 }
 
 #[derive(Serialize)]
@@ -103,10 +105,36 @@ fn add_folder_impl(db_path: &Path, path: &str) -> Result<i64, String> {
     library::add_folder(&conn, Path::new(path)).map_err(err)
 }
 
-fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String> {
+fn query_files_impl(db_path: &Path, folders: &[i64]) -> Result<Vec<FileDto>, String> {
     let conn = open(db_path)?;
-    // Single join query replaces N+1 per-file lookups.
-    let rows = library::list_files_with_details(&conn, folder, false, true).map_err(err)?;
+    // One join query per folder replaces N+1 per-file lookups.
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for folder in folders {
+        if !seen.insert(*folder) {
+            continue;
+        }
+        rows.extend(library::list_files_with_details(&conn, *folder, false, true).map_err(err)?);
+    }
+    // Each per-folder query is worst-first; merge into one global order so the
+    // multi-folder grid keeps the same default.
+    rows.sort_by(|a, b| {
+        let by_name = a
+            .file
+            .file
+            .filename
+            .cmp(&b.file.file.filename)
+            .then_with(|| a.file.file.folder_id.cmp(&b.file.file.folder_id));
+        match (a.sharpness_score, b.sharpness_score) {
+            (Some(x), Some(y)) => x
+                .partial_cmp(&y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(by_name),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => by_name,
+        }
+    });
     Ok(rows
         .into_iter()
         .map(|r| FileDto {
@@ -124,6 +152,7 @@ fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String>
             rating: r.file.file.rating,
             captured_at: r.file.file.captured_at,
             flag: r.file.file.flag,
+            folder_id: r.file.file.folder_id,
         })
         .collect())
 }
@@ -248,10 +277,10 @@ pub(crate) fn cancel_scan(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) async fn query_files(
     state: State<'_, AppState>,
-    folder: i64,
+    folders: Vec<i64>,
 ) -> Result<Vec<FileDto>, String> {
     let db_path = state.db_path.clone();
-    blocking(move || query_files_impl(&db_path, folder)).await
+    blocking(move || query_files_impl(&db_path, &folders)).await
 }
 
 /// Soft-delete files: move them to the OS recycle bin and mark them trashed.

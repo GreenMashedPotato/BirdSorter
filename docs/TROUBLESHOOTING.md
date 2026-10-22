@@ -107,6 +107,10 @@ automatically (analysis is tied to the file's content hash).
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --dehaze 0.4
   --denoise 0.4`.
+- **Several folders**: Ctrl/Cmd-click sidebar folders to show them together. The
+  last clicked is the primary and the sidebar says "Actions target: …"; Analyze,
+  Re-score, Keep burst winners, Auto-star, Reset stars and Export use it. Scanning
+  a folder includes its child folders.
 - **Grid thumbnails** use the camera's embedded `PRVW` (about 1620×1080 on an
   R5), not the full-size JPEG, so they are soft at 100%. Use the review's
   **High-res** mode (or `preview <raw> out.jpg 8000`) for critical focus.

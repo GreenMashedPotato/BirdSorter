@@ -76,11 +76,35 @@ input {
   margin: 0 0 12px;
 }
 .folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 7px 9px;
   border-radius: 6px;
   cursor: pointer;
   margin-bottom: 4px;
   word-break: break-all;
+}
+.folder .path {
+  flex: 1;
+}
+.folder.selected {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.folder.primary {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.folder .badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  padding: 0 5px;
+  text-transform: none;
+}
+.folder-name {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .folder:hover {
   background: var(--panel-2);

@@ -94,7 +94,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 305 unit tests
+cargo test --workspace          # 306 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -212,7 +212,15 @@ and Picked / Rejected / Unflagged), bulk labelling (Sharp / Blurry / Bokeh OK /
 Reject) and bulk flagging (Pick / Reject / Unflag), and live analysis progress.
 A search box accepts free text (filename or species) and tokens such as
 `rating:>3`, `flag:pick`, `label:sharp`, `verdict:uncertain`, `species:egret`
-and `name:5260`. **Double-click a tile** to open the review view:
+and `name:5260`.
+
+**Ctrl/Cmd-click folders** in the sidebar to view several at once. The last one
+clicked is the **primary**: Analyze, Re-score, Keep burst winners, Auto-star,
+Reset stars and Export keepers target it, and the sidebar shows
+"Actions target: …". Labels, ratings and flags act on the selected files across
+folders. Scanning a folder includes all of its child folders.
+
+**Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,
   so it is sharper than the grid thumbnail),
