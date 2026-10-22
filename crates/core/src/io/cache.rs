@@ -1,12 +1,16 @@
 //! Disk thumbnail cache.
 //!
 //! Thumbnails are keyed by content hash (not path), so a renamed or moved RAW
-//! keeps its cached preview. The cache stores opaque encoded bytes — encoding
-//! is the caller's job — which keeps this module free of image-codec
-//! dependencies and trivially testable.
+//! keeps its cached preview. Entries live in two-character shard directories
+//! (`thumbs/<first two hash chars>/<key>.thumb`) so a library with tens of
+//! thousands of renders stays fast to enumerate, prune and browse. The cache
+//! stores opaque encoded bytes — encoding is the caller's job — which keeps this
+//! module free of image-codec dependencies and trivially testable.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use walkdir::WalkDir;
 
 use crate::{CoreError, Result};
 
@@ -15,7 +19,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Bump when a decoder/renderer/adjustment change makes cached bytes stale.
 /// The version is part of every render key and [`ThumbCache::retain`] drops
 /// entries from older versions.
-pub const RENDER_CACHE_VERSION: u32 = 1;
+pub const RENDER_CACHE_VERSION: u32 = 2;
 
 /// Default on-disk render cache budget (4 GiB). The cache is regenerable, so
 /// [`ThumbCache::prune_to_budget`] evicts the oldest entries first.
@@ -97,9 +101,24 @@ impl ThumbCache {
         &self.root
     }
 
-    /// Deterministic path for a content hash.
-    pub fn path_for(&self, hash: &str) -> PathBuf {
-        self.root.join(format!("{hash}.thumb"))
+    /// Deterministic path for a cache key, sharded by its first two characters.
+    pub fn path_for(&self, key: &str) -> PathBuf {
+        let shard = if key.is_empty() {
+            "_"
+        } else {
+            &key[..key.len().min(2)]
+        };
+        self.root.join(shard).join(format!("{key}.thumb"))
+    }
+
+    /// Every file below the shard directories (best effort; empty when absent).
+    fn files(&self) -> Vec<PathBuf> {
+        WalkDir::new(&self.root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .collect()
     }
 
     /// Read cached bytes, or `None` when absent. A missing/corrupt entry is not
@@ -110,8 +129,10 @@ impl ThumbCache {
 
     /// Store encoded bytes atomically (write to a temp file, then rename).
     pub fn put(&self, hash: &str, bytes: &[u8]) -> Result<()> {
-        std::fs::create_dir_all(&self.root).map_err(|e| CoreError::io(&self.root, e))?;
         let final_path = self.path_for(hash);
+        if let Some(parent) = final_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+        }
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let tmp =
             final_path.with_extension(format!("thumb.tmp.{}.{}", std::process::id(), sequence));
@@ -122,12 +143,17 @@ impl ThumbCache {
     /// Remove every cached thumbnail. Returns how many files were deleted.
     pub fn clear(&self) -> Result<usize> {
         let mut removed = 0;
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return Ok(0);
-        };
-        for entry in entries.flatten() {
-            if entry.path().is_file() && std::fs::remove_file(entry.path()).is_ok() {
+        for path in self.files() {
+            if std::fs::remove_file(&path).is_ok() {
                 removed += 1;
+            }
+        }
+        // Drop shard directories that are now empty; leave unrelated entries alone.
+        if let Ok(entries) = std::fs::read_dir(&self.root) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                    let _ = std::fs::remove_dir(entry.path());
+                }
             }
         }
         Ok(removed)
@@ -141,14 +167,7 @@ impl ThumbCache {
     /// would treat every sized render as an orphan and wipe the cache.
     pub fn retain(&self, live: &std::collections::HashSet<String>) -> Result<usize> {
         let mut removed = 0;
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return Ok(0);
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
+        for path in self.files() {
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
@@ -166,16 +185,10 @@ impl ThumbCache {
     /// many files were removed. Stale temps and render entries are eligible;
     /// unrelated files are left alone.
     pub fn prune_to_budget(&self, max_bytes: u64) -> Result<usize> {
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return Ok(0);
-        };
-        let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if !path.is_file() {
-                    return None;
-                }
+        let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = self
+            .files()
+            .into_iter()
+            .filter_map(|path| {
                 let name = path.file_name()?.to_str()?;
                 if !is_stale_temp(name) && content_hash_of(name).is_none() {
                     return None;
@@ -205,14 +218,10 @@ impl ThumbCache {
 
     /// Total size of the cache in bytes (best effort; 0 when unreadable).
     pub fn size_bytes(&self) -> u64 {
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return 0;
-        };
-        entries
-            .flatten()
-            .filter_map(|e| e.metadata().ok())
-            .filter(|m| m.is_file())
-            .map(|m| m.len())
+        self.files()
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
             .sum()
     }
 }
@@ -251,8 +260,11 @@ mod tests {
         cache.put("h", b"first").unwrap();
         cache.put("h", b"second").unwrap();
         assert_eq!(cache.get("h").unwrap(), b"second");
-        let count = std::fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(count, 1, "temp file should have been renamed away");
+        assert_eq!(
+            cache.files().len(),
+            1,
+            "temp file should have been renamed away"
+        );
     }
 
     #[test]
@@ -276,8 +288,20 @@ mod tests {
         let cache = ThumbCache::new("/tmp/x");
         assert_eq!(
             cache.path_for("deadbeef"),
-            Path::new("/tmp/x/deadbeef.thumb")
+            Path::new("/tmp/x/de/deadbeef.thumb")
         );
+    }
+
+    #[test]
+    fn entries_live_in_hash_shards() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path());
+        cache.put(&key("abcdef", 512), b"x").unwrap();
+        let shard = dir.path().join("ab");
+        assert!(shard
+            .join(format!("abcdef@v{RENDER_CACHE_VERSION}@512.thumb"))
+            .exists());
+        assert_eq!(cache.get(&key("abcdef", 512)).unwrap(), b"x");
     }
 
     #[test]
@@ -367,11 +391,7 @@ mod tests {
 
         assert_eq!(cache.prune_to_budget(15).unwrap(), 2);
         assert!(cache.size_bytes() <= 15);
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "one entry remains"
-        );
+        assert_eq!(cache.files().len(), 1, "one entry remains");
     }
 
     #[test]
