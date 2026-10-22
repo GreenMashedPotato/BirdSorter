@@ -1,4 +1,11 @@
-export type SortKey = "worst" | "best" | "rated" | "filename" | "date" | "date_new";
+export type SortKey =
+  | "worst"
+  | "best"
+  | "rated"
+  | "filename"
+  | "date"
+  | "date_new"
+  | "species";
 
 export const SORTS: { key: SortKey; label: string }[] = [
   { key: "worst", label: "Worst first" },
@@ -6,6 +13,7 @@ export const SORTS: { key: SortKey; label: string }[] = [
   { key: "rated", label: "Top rated" },
   { key: "date", label: "Date (oldest)" },
   { key: "date_new", label: "Date (newest)" },
+  { key: "species", label: "Species" },
   { key: "filename", label: "Filename" },
 ];
 
@@ -14,6 +22,7 @@ interface Sortable {
   score: number | null;
   rating: number;
   capturedAt: string | null;
+  species: string | null;
 }
 
 /**
@@ -34,6 +43,16 @@ export function sortFiles<T extends Sortable>(files: readonly T[], sort: SortKey
     const order = a.capturedAt.localeCompare(b.capturedAt);
     return (newestFirst ? -order : order) || byName(a, b);
   };
+  const bySpecies = (a: T, b: T) => {
+    const left = a.species?.trim() || null;
+    const right = b.species?.trim() || null;
+    if (!left && !right) return byName(a, b);
+    if (!left) return 1; // unidentified photos go last
+    if (!right) return -1;
+    return (
+      left.localeCompare(right, undefined, { sensitivity: "base" }) || byName(a, b)
+    );
+  };
   const copy = [...files];
   switch (sort) {
     case "best":
@@ -51,6 +70,9 @@ export function sortFiles<T extends Sortable>(files: readonly T[], sort: SortKey
       break;
     case "date_new":
       copy.sort((a, b) => byDate(a, b, true));
+      break;
+    case "species":
+      copy.sort(bySpecies);
       break;
     case "filename":
       copy.sort(byName);
