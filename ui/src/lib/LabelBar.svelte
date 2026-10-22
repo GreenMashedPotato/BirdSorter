@@ -7,6 +7,7 @@
     busy,
     hasFolder,
     onLabel,
+    onFlag = () => {},
     onTrash,
     onRate,
     onAutoStar,
@@ -16,6 +17,7 @@
     busy: boolean;
     hasFolder: boolean;
     onLabel: (label: UserLabel) => void;
+    onFlag?: (flag: string | null) => void;
     onTrash: () => void;
     onRate: (rating: number) => void;
     onAutoStar: () => void;
@@ -29,6 +31,27 @@
   <button onclick={() => onLabel("blurry")} disabled={selectedCount === 0}>Blurry</button>
   <button onclick={() => onLabel("bokeh_ok")} disabled={selectedCount === 0}>Bokeh OK</button>
   <button onclick={() => onLabel("reject")} disabled={selectedCount === 0}>Reject</button>
+  <button
+    onclick={() => onFlag("pick")}
+    disabled={selectedCount === 0}
+    title="Flag the selection as picked"
+  >
+    Flag pick
+  </button>
+  <button
+    onclick={() => onFlag("reject")}
+    disabled={selectedCount === 0}
+    title="Flag the selection as rejected"
+  >
+    Flag reject
+  </button>
+  <button
+    onclick={() => onFlag(null)}
+    disabled={selectedCount === 0}
+    title="Clear the flags on the selection"
+  >
+    Unflag
+  </button>
   <button onclick={onTrash} disabled={selectedCount === 0} title="Move to the OS trash">Delete</button>
   <span class="stars" title="Rate the selection">
     {#each [1, 2, 3, 4, 5] as v (v)}
