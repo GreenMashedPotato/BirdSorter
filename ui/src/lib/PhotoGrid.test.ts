@@ -19,6 +19,7 @@ function file(id: number, over: Partial<FileEntry> = {}): FileEntry {
     rating: 0,
     capturedAt: null,
     flag: null,
+    color: null,
     folderId: 1,
     ...over,
   };
@@ -51,6 +52,11 @@ function setup(slice: FileEntry[]) {
 }
 
 describe("PhotoGrid", () => {
+  it("shows a colour dot", () => {
+    const { container } = setup([file(1, { color: "red" })]);
+    expect(container.querySelector(".color-dot.red")).toBeTruthy();
+  });
+
   it("shows pick and reject badges", () => {
     const { container } = setup([
       file(1, { flag: "pick" }),

@@ -63,6 +63,8 @@ pub(crate) struct FileDto {
     captured_at: Option<String>,
     /// `"pick"`, `"reject"`, or `null` (unflagged).
     flag: Option<String>,
+    /// `"red"`, `"yellow"`, `"green"`, `"blue"`, or `null`.
+    color: Option<String>,
     /// Owning folder, so a multi-folder view can identify each row.
     folder_id: i64,
 }
@@ -152,6 +154,7 @@ fn query_files_impl(db_path: &Path, folders: &[i64]) -> Result<Vec<FileDto>, Str
             rating: r.file.file.rating,
             captured_at: r.file.file.captured_at,
             flag: r.file.file.flag,
+            color: r.file.file.color,
             folder_id: r.file.file.folder_id,
         })
         .collect())
@@ -359,6 +362,21 @@ pub(crate) async fn set_flag(
     blocking(move || {
         let conn = open(&db_path)?;
         library::set_flag(&conn, &files, flag.as_deref()).map_err(err)
+    })
+    .await
+}
+
+/// Set or clear the colour label on files.
+#[tauri::command]
+pub(crate) async fn set_color(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    color: Option<String>,
+) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        library::set_color(&conn, &files, color.as_deref()).map_err(err)
     })
     .await
 }

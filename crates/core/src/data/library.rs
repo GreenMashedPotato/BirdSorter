@@ -45,7 +45,7 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
 /// table cannot silently change what the library reads (Phase 1.4).
 const FILE_COLUMNS: &str = "f.id, f.folder_id, f.relative_path, f.filename, \
      f.content_hash, f.filesize, f.mtime, f.format, f.imported_at, \
-     f.trashed_at, f.captured_at, f.rating, f.flag";
+     f.trashed_at, f.captured_at, f.rating, f.flag, f.color";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRow {
@@ -73,6 +73,8 @@ pub struct FileRow {
     pub rating: i64,
     /// `"pick"`, `"reject"`, or `None` (unflagged).
     pub flag: Option<String>,
+    /// `"red"`, `"yellow"`, `"green"`, `"blue"`, or `None`.
+    pub color: Option<String>,
 }
 
 /// A file row paired with its absolute path on disk.
@@ -139,6 +141,7 @@ fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
         captured_at: r.get("captured_at")?,
         rating: r.get("rating")?,
         flag: r.get("flag")?,
+        color: r.get("color")?,
     })
 }
 
@@ -631,7 +634,7 @@ pub fn list_files_with_details(
                 f.captured_at,
                 fo.path AS folder_path,
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
-                a.species_name, a.subject_class, f.rating, f.flag,
+                a.species_name, a.subject_class, f.rating, f.flag, f.color,
                 (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
            FROM files f
@@ -657,6 +660,7 @@ pub fn list_files_with_details(
             captured_at: r.get("captured_at")?,
             rating: r.get("rating")?,
             flag: r.get("flag")?,
+            color: r.get("color")?,
         };
         let predicted: Option<String> = r.get("predicted_label")?;
         let score: Option<f32> = r.get("sharpness_score")?;
@@ -762,6 +766,27 @@ pub fn set_flag(conn: &Connection, file_ids: &[i64], flag: Option<&str>) -> Resu
         let mut n = 0;
         for id in file_ids {
             n += stmt.execute(rusqlite::params![flag, id])?;
+        }
+        Ok(n)
+    })
+}
+
+/// Set or clear a colour label. `color` must be `red`, `yellow`, `green`,
+/// `blue`, or `None`. Returns rows changed.
+pub fn set_color(conn: &Connection, file_ids: &[i64], color: Option<&str>) -> Result<usize> {
+    match color {
+        Some("red") | Some("yellow") | Some("green") | Some("blue") | None => {}
+        Some(other) => {
+            return Err(CoreError::invalid_input(format!(
+                "unknown colour {other:?} (expected red, yellow, green, blue or none)"
+            )))
+        }
+    }
+    with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET color = ?1 WHERE id = ?2")?;
+        let mut n = 0;
+        for id in file_ids {
+            n += stmt.execute(rusqlite::params![color, id])?;
         }
         Ok(n)
     })
@@ -891,6 +916,33 @@ mod tests {
         assert_eq!(set_flag(&conn, &[id], None).unwrap(), 1);
         assert!(get_file(&conn, id).unwrap().unwrap().file.flag.is_none());
         assert!(set_flag(&conn, &[id], Some("maybe")).is_err());
+    }
+
+    #[test]
+    fn set_color_marks_and_clears_files() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM files WHERE filename = 'a.cr3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(set_color(&conn, &[id], Some("red")).unwrap(), 1);
+        assert_eq!(
+            get_file(&conn, id).unwrap().unwrap().file.color.as_deref(),
+            Some("red")
+        );
+        assert_eq!(set_color(&conn, &[id], Some("blue")).unwrap(), 1);
+        assert_eq!(
+            get_file(&conn, id).unwrap().unwrap().file.color.as_deref(),
+            Some("blue")
+        );
+        assert_eq!(set_color(&conn, &[id], None).unwrap(), 1);
+        assert!(get_file(&conn, id).unwrap().unwrap().file.color.is_none());
+        assert!(set_color(&conn, &[id], Some("orange")).is_err());
     }
 
     #[test]

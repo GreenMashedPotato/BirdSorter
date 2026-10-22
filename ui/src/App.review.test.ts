@@ -46,7 +46,7 @@ beforeEach(() => localStorage.clear());
 
 vi.mock("./lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/api")>();
-  const file = (id: number, folderId = 1) => ({
+  const file = (id: number, folderId = 1, color: string | null = null) => ({
     id,
     filename: `img${id}.cr3`,
     format: "CR3",
@@ -61,6 +61,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     rating: 0,
     capturedAt: "2026-07-14T09:31:22",
     flag: null,
+    color,
     folderId,
   });
   const detail = (id: number) => ({
@@ -96,7 +97,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       { id: 2, path: "D:\\shoot2", addedAt: "", lastScannedAt: null },
     ]),
     queryFiles: vi.fn(async (folders: number[]) =>
-      [file(1), file(2), file(3), file(4, 2), file(5, 2)].filter((f) =>
+      [file(1), file(2, 1, "red"), file(3), file(4, 2), file(5, 2)].filter((f) =>
         folders.includes(f.folderId),
       ),
     ),
@@ -111,6 +112,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     labelFiles: vi.fn(async () => 1),
     rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
     setFlag: vi.fn(async () => 1),
+    setColor: vi.fn(async () => 1),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
     speciesLabels: vi.fn(async () => []),
     onProgress: () => Promise.resolve(() => {}),
@@ -125,7 +127,14 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 import App from "./App.svelte";
-import { analysisDetail, getThumbnail, labelFiles, rateFiles, setFlag } from "./lib/api";
+import {
+  analysisDetail,
+  getThumbnail,
+  labelFiles,
+  rateFiles,
+  setColor,
+  setFlag,
+} from "./lib/api";
 
 /** Render App with mock data and open the first tile's review. */
 async function openFirstReview() {
@@ -147,6 +156,23 @@ describe("review view", () => {
     await fireEvent.click(getByText("D:\\shoot2"), { ctrlKey: true });
     await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(5));
     expect(container.querySelector(".folder.primary")?.textContent).toContain("shoot2");
+  });
+
+  it("filters the grid by colour", async () => {
+    const { container, getByLabelText } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    await fireEvent.change(getByLabelText("Colour filter"), {
+      target: { value: "red" },
+    });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
+  });
+
+  it("colours the open photo with key 6", async () => {
+    localStorage.clear();
+    vi.mocked(setColor).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "6", code: "Digit6" });
+    await waitFor(() => expect(setColor).toHaveBeenCalledWith([1], "red"));
   });
 
   it("filters the grid with a search query", async () => {

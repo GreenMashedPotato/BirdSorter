@@ -30,6 +30,8 @@ export interface FileEntry {
   capturedAt: string | null;
   /** `"pick"`, `"reject"`, or `null` (unflagged). */
   flag: string | null;
+  /** `"red"`, `"yellow"`, `"green"`, `"blue"`, or `null`. */
+  color: string | null;
   /** Owning folder (for the multi-folder view). */
   folderId: number;
 }
@@ -612,6 +614,11 @@ export async function rateFiles(files: number[], rating: number): Promise<Rating
 /** Set or clear the pick/reject flag (`"pick"`, `"reject"`, or `null`). */
 export async function setFlag(files: number[], flag: string | null): Promise<number> {
   return invoke("set_flag", { files, flag });
+}
+
+/** Set or clear a colour label (`"red"`, `"yellow"`, `"green"`, `"blue"`, or null). */
+export async function setColor(files: number[], color: string | null): Promise<number> {
+  return invoke("set_color", { files, color });
 }
 
 /** Auto-rate a folder from the verdicts: sharp 5, uncertain 3, blurry 1, none 0. */

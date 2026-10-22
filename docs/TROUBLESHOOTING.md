@@ -107,6 +107,8 @@ automatically (analysis is tied to the file's content hash).
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --dehaze 0.4
   --denoise 0.4`.
+- **Colour labels** are applied from the review's Colour row or with `6`–`9`
+  (red/yellow/green/blue); the grid's Colour filter narrows the view.
 - **Several folders**: Ctrl/Cmd-click sidebar folders to show them together. The
   last clicked is the primary and the sidebar says "Actions target: …"; Analyze,
   Re-score, Keep burst winners, Auto-star, Reset stars and Export use it. Scanning

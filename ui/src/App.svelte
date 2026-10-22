@@ -20,6 +20,7 @@
     undoLabels,
     rateFiles,
     setFlag,
+    setColor,
     autoRate,
     resetRatings,
     trashFiles,
@@ -94,6 +95,7 @@
   let filter = $state<FilterKey>(loadFilter());
   let sort = $state<SortKey>(loadSortKey());
   let search = $state("");
+  let colorFilter = $state("");
   let savedSearches = $state<string[]>(loadSavedSearches());
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
@@ -155,6 +157,7 @@
       files.filter(
         (f) =>
           (filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter)) &&
+          (!colorFilter || f.color === colorFilter) &&
           searchMatches(f),
       ),
       sort,
@@ -436,6 +439,24 @@
 
   function flagOne(id: number, flag: string | null) {
     return flagFiles([id], flag);
+  }
+
+  async function colorFiles(ids: number[], color: string | null) {
+    if (ids.length === 0) return;
+    try {
+      const changed = await setColor(ids, color);
+      const selectedIds = new Set(ids);
+      files = files.map((f) => (selectedIds.has(f.id) ? { ...f, color } : f));
+      status = color
+        ? `${color} label on ${changed} file(s)`
+        : `cleared colour on ${changed} file(s)`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  function colorOne(id: number, color: string | null) {
+    return colorFiles([id], color);
   }
 
   function flagSelected(flag: string | null) {
@@ -1014,6 +1035,7 @@
         rating: 0,
         capturedAt: null,
         flag: null,
+        color: null,
         folderId: 1,
       })) as FileEntry[];
       status = "browser preview (not connected to the backend)";
@@ -1227,6 +1249,7 @@
       {sort}
       bind:search
       {savedSearches}
+      bind:colorFilter
       onSort={changeSort}
       onSaveSearch={saveSearch}
       onApplySearch={applySavedSearch}
@@ -1285,6 +1308,8 @@
       rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
       flag={files.find((f) => f.id === reviewFile)?.flag ?? null}
       onFlag={flagOne}
+      color={files.find((f) => f.id === reviewFile)?.color ?? null}
+      onColor={colorOne}
       previewMode={previewSettings.mode === "full" ? "full" : "fast"}
       onPreviewModeChange={changePreviewMode}
       refreshToken={reviewRefresh}

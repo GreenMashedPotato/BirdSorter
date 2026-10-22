@@ -46,6 +46,8 @@
     rating,
     flag = null,
     onFlag = () => {},
+    color = null,
+    onColor = () => {},
     previewMode = "fast",
     onPreviewModeChange = () => {},
     refreshToken,
@@ -69,6 +71,9 @@
     /** Current file's pick/reject flag. */
     flag?: string | null;
     onFlag?: (id: number, flag: string | null) => void;
+    /** Current file's colour label. */
+    color?: string | null;
+    onColor?: (id: number, color: string | null) => void;
     /** Preview resolution, owned (and persisted) by App. */
     previewMode?: "fast" | "full";
     onPreviewModeChange?: (mode: "fast" | "full") => void;
@@ -1083,6 +1088,13 @@
           return;
         }
       }
+      const colorDigit = /^Digit([6-9])$/.exec(e.code);
+      if (colorDigit && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const colors = ["red", "yellow", "green", "blue"];
+        onColor(fileId, colors[Number(colorDigit[1]) - 6]);
+        return;
+      }
       if (e.key === "Escape") closeReview();
       else if (e.key === "j" || e.key === "ArrowRight") nav(1);
       else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
@@ -1589,6 +1601,23 @@
         <button class="mini" onclick={() => onFlag(fileId, null)} title="Clear flag (U)">
           Clear
         </button>
+      </div>
+
+      <h3>Colour</h3>
+      <div class="colors">
+        {#each [["red", "Red"], ["yellow", "Yellow"], ["green", "Green"], ["blue", "Blue"]] as [key, label] (key)}
+          <button
+            class="color-dot {key}"
+            class:on={color === key}
+            onclick={() => onColor(fileId, key)}
+            title={label}
+            aria-label={`${label} colour`}
+          ></button>
+        {/each}
+        <button class="mini" onclick={() => onColor(fileId, null)} title="Clear colour">
+          Clear
+        </button>
+        <span class="status">{color ?? "none"}</span>
       </div>
 
       <h3>Your label</h3>

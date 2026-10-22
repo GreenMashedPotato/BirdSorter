@@ -1,6 +1,6 @@
 # Improvement suggestions: features worth borrowing from the Rust craft apps
 
-_Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v16)._
+_Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17)._
 
 > **Status update (same day, later):** the render cache now carries a version
 > salt, prunes to a 4 GiB budget, the review prefetches the previous/next
@@ -16,9 +16,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v16
 > bulk), the grid filters by rating and flags, sorts by species, remembers the
 > sort/filter, has a token search (`rating:>3`, `flag:pick`, `species:…`) with
 > saved searches, shows several folders together with the last-clicked one as the
-> action target, stores previews in a sharded cache, and opens the already-migrated
-> DB for read-only commands. The analysis below still describes the rest of the
-> snapshot.
+> action target, stores previews in a sharded cache, opens the already-migrated DB
+> for read-only commands, and supports colour labels (`6`–`9`). The analysis below
+> still describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -67,7 +67,7 @@ Verified in the current tree rather than inferred from the docs:
 
 | Area | Current behaviour |
 |---|---|
-| Architecture | Tauri v2 shell, Svelte 5 UI, `birdsorter-core` (headless), `birdsorter` CLI. SQLite schema **v16**. |
+| Architecture | Tauri v2 shell, Svelte 5 UI, `birdsorter-core` (headless), `birdsorter` CLI. SQLite schema **v17**. |
 | Grid | 512 px embedded-preview JPEG thumbnails, cached on disk, virtualized rows, worst-score-first. |
 | Review | Fast (2400 px), Full (native embedded preview), Develop (demosaic, 6000 px). Burst compare. Zoom/pan, focus peaking, histogram, boxes, eye labels, species override, adjustments. |
 | Image transport | Every thumbnail and preview returns a **base64 `data:` URL** from a Tauri command. |
