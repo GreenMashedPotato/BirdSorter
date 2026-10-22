@@ -30,6 +30,13 @@ describe("FilterBar", () => {
     expect(onSelectAll).toHaveBeenCalledOnce();
   });
 
+  it("renders the search field", () => {
+    const { getByLabelText } = render(FilterBar, {
+      props: { filter: "all", shown: 3, selectedCount: 0, onSelectAll: () => {} },
+    });
+    expect(getByLabelText("Search photos")).toBeTruthy();
+  });
+
   it("reports the chosen sort order", async () => {
     const onSort = vi.fn();
     const { getByLabelText } = render(FilterBar, {

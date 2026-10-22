@@ -121,6 +121,15 @@ async function openFirstReview() {
 }
 
 describe("review view", () => {
+  it("filters the grid with a search query", async () => {
+    const { container, getByLabelText } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    await fireEvent.input(getByLabelText("Search photos"), {
+      target: { value: "img2" },
+    });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
+  });
+
   it("opens from a tile and shows the file", async () => {
     vi.mocked(analysisDetail).mockClear();
     await openFirstReview();
