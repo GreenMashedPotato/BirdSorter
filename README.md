@@ -206,8 +206,9 @@ macOS-specific work (CoreML, notarization, `.dmg`, HEIC) is listed as a
 self-contained brief in [`MACOS_TODO.md`](./docs/MACOS_TODO.md).
 
 The window provides a folder sidebar, a thumbnail grid (worst-first by default,
-sortable by best score, rating, capture date or filename; the choice is
-remembered) with filter chips (including Rated / 3★+ / Unrated), bulk labelling
+sortable by best score, rating, capture date, species or filename; the sort and
+active filter are remembered) with filter chips (including Rated / 3★+ / Unrated),
+bulk labelling
 (Sharp / Blurry / Bokeh OK / Reject), and live analysis progress. **Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,

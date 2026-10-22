@@ -52,6 +52,7 @@
   import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
   import { sortFiles, type SortKey } from "./lib/sort";
   import { loadSortKey, saveSortKey } from "./lib/sortPref";
+  import { loadFilter, saveFilter } from "./lib/filterPref";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -74,7 +75,7 @@
   let files = $state<FileEntry[]>([]);
   /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
   const cleanups: (() => void)[] = [];
-  let filter = $state<FilterKey>("all");
+  let filter = $state<FilterKey>(loadFilter());
   let sort = $state<SortKey>(loadSortKey());
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
@@ -138,6 +139,11 @@
       sort,
     ),
   );
+
+  // Remember the active filter across launches.
+  $effect(() => {
+    saveFilter(filter);
+  });
 
   // --- virtualized grid ----------------------------------------------------
   // Only the tiles in (and just around) the viewport are rendered, so a folder

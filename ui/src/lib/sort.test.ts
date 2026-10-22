@@ -6,8 +6,9 @@ function file(
   score: number | null,
   rating = 0,
   capturedAt: string | null = null,
+  species: string | null = null,
 ) {
-  return { filename, score, rating, capturedAt };
+  return { filename, score, rating, capturedAt, species };
 }
 
 describe("sortFiles", () => {
@@ -48,6 +49,21 @@ describe("sortFiles", () => {
     expect(sortFiles(files, "date_new").map((f) => f.filename)).toEqual([
       "b.cr3",
       "c.cr3",
+      "a.cr3",
+    ]);
+  });
+
+  it("sorts by species, unidentified last, then filename", () => {
+    const files = [
+      file("b.cr3", 0.5, 0, null, "Heron"),
+      file("a.cr3", 0.5, 0, null, null),
+      file("c.cr3", 0.5, 0, null, "Egret"),
+      file("d.cr3", 0.5, 0, null, "heron"),
+    ];
+    expect(sortFiles(files, "species").map((f) => f.filename)).toEqual([
+      "c.cr3",
+      "b.cr3",
+      "d.cr3",
       "a.cr3",
     ]);
   });

@@ -120,6 +120,8 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **View preferences**: sort by species (case-insensitive, unidentified last);
+  the active filter is remembered alongside the sort.
 - **Label shortcuts**: `S`/`B`/`R`/`O` label the open photo Sharp / Blurry /
   Reject / Bokeh OK; Auto-advance applies to keyboard labels too.
 - **Rating shortcuts and filters**: `1`–`5` rate the open photo (advancing when
