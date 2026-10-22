@@ -12,7 +12,7 @@ use image::imageops::FilterType;
 use image::ImageOutputFormat;
 use ndarray::Array3;
 
-use super::cache::ThumbCache;
+use super::cache::{ThumbCache, RENDER_CACHE_VERSION};
 use crate::{CoreError, Result};
 
 /// JPEG-encode a thumbnail no larger than `max_dim` on its long side.
@@ -61,9 +61,10 @@ pub fn thumbnail_cached(
 }
 
 /// Cache key for a rendering of `hash` at `max_dim` (thumbnails and previews
-/// share one cache without colliding).
+/// share one cache without colliding). The version segment invalidates old
+/// bytes when the renderer/decoder changes.
 pub fn render_key(hash: &str, max_dim: u32) -> String {
-    format!("{hash}@{max_dim}")
+    format!("{hash}@v{RENDER_CACHE_VERSION}@{max_dim}")
 }
 
 /// Generic "render once, cache by key" helper.
@@ -242,6 +243,14 @@ mod tests {
     #[test]
     fn render_key_distinguishes_sizes() {
         assert_ne!(render_key("abc", 512), render_key("abc", 2400));
+    }
+
+    #[test]
+    fn render_key_carries_the_cache_version() {
+        assert_eq!(
+            render_key("abc", 512),
+            format!("abc@v{RENDER_CACHE_VERSION}@512")
+        );
     }
 
     #[test]

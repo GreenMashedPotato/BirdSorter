@@ -10,7 +10,7 @@ use tauri::State;
 use birdsorter_core::data::settings::{DetectionSettings, PreviewSettings, ScoreSettings};
 use birdsorter_core::data::{db, diagnostics, edits, library, registry};
 use birdsorter_core::io::adjust::Adjustments;
-use birdsorter_core::io::cache::ThumbCache;
+use birdsorter_core::io::cache::{ThumbCache, DEFAULT_CACHE_BUDGET_BYTES};
 
 use crate::state::AppState;
 use crate::util::{blocking, err, open};
@@ -333,7 +333,11 @@ pub(crate) async fn clean_cache(
         } else {
             let conn = open(&db_path)?;
             let live = library::all_content_hashes(&conn).map_err(err)?;
-            cache.retain(&live).map_err(err)?
+            let orphans = cache.retain(&live).map_err(err)?;
+            orphans
+                + cache
+                    .prune_to_budget(DEFAULT_CACHE_BUDGET_BYTES)
+                    .map_err(err)?
         };
         Ok(CacheReportDto {
             removed,

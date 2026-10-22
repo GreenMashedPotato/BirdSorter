@@ -763,9 +763,11 @@ fn cmd_cleancache(args: &[String]) -> ExitCode {
         db::init_schema(&conn)?;
         let live = library::all_content_hashes(&conn)?;
         let n = cache.retain(&live)?;
+        let pruned =
+            cache.prune_to_budget(birdsorter_core::io::cache::DEFAULT_CACHE_BUDGET_BYTES)?;
         let after = cache.size_bytes();
         println!(
-            "removed {n} orphaned thumbnails ({:.1} MB -> {:.1} MB); {} still referenced",
+            "removed {n} orphaned and {pruned} over-budget thumbnails ({:.1} MB -> {:.1} MB); {} still referenced",
             before as f64 / 1e6,
             after as f64 / 1e6,
             live.len()

@@ -49,6 +49,7 @@
     type TrainResult,
     type ScoreBreakdown as Breakdown,
   } from "./lib/api";
+  import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -155,6 +156,21 @@
   const slice = $derived(visible.slice(firstRow * cols, (lastRow + 1) * cols));
   const topPad = $derived(firstRow * ROW_H);
   const bottomPad = $derived(Math.max(0, (rowCount - lastRow - 1) * ROW_H));
+
+  // Bound the in-memory thumbnail record on long scrolls. The disk cache makes
+  // re-fetching a tile cheap; holding every visited 512 px JPEG is not.
+  $effect(() => {
+    if (Object.keys(thumbs).length <= MAX_CACHED_THUMBS) return;
+    const next = pruneThumbs(
+      thumbs,
+      slice.map((f) => f.id),
+    );
+    if (next === thumbs) return;
+    for (const key of Object.keys(thumbs)) {
+      if (!(Number(key) in next)) requested.delete(Number(key));
+    }
+    thumbs = next;
+  });
 
   $effect(() => {
     const el = gridEl;

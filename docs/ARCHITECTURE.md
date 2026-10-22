@@ -166,7 +166,11 @@ species classifier and eye model; **T3** uses a GPU execution provider
 
 The UI talks to Rust only through Tauri commands and events. All image
 transport is **data URLs returned from a disk cache keyed by content hash**
-(`thumbnail`, `preview_image`) — images never cross IPC per pixel.
+(`thumbnail`, `preview_image`) — images never cross IPC per pixel. Render keys
+carry a cache version (`{hash}@v1@{dim}`), so a decoder or adjustment change
+invalidates old bytes; the cache also prunes the oldest entries to a 4 GiB
+budget. The review prefetches the previous/next preview, and the grid evicts
+off-screen thumbnails above 600 entries.
 
 - **Commands** (request/response): `list_folders`, `add_folder`, `scan_folder`,
   `cancel_scan`, `query_files`, `thumbnail`, `preview_image`, `preview_adjusted`,
