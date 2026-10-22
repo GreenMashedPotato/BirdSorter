@@ -89,6 +89,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     previewImage: vi.fn(async () => "data:image/jpeg;base64,"),
     getThumbnail: vi.fn(async () => "data:image/jpeg;base64,thumb"),
     labelFiles: vi.fn(async () => 1),
+    rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
     speciesLabels: vi.fn(async () => []),
     onProgress: () => Promise.resolve(() => {}),
@@ -103,7 +104,7 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 import App from "./App.svelte";
-import { analysisDetail, getThumbnail, labelFiles } from "./lib/api";
+import { analysisDetail, getThumbnail, labelFiles, rateFiles } from "./lib/api";
 
 /** Render App with mock data and open the first tile's review. */
 async function openFirstReview() {
@@ -133,6 +134,29 @@ describe("review view", () => {
     vi.mocked(getThumbnail).mockClear();
     await openFirstReview();
     expect(getThumbnail).toHaveBeenCalledWith(1);
+  });
+
+  it("rates the open photo with keys 1-5", async () => {
+    localStorage.clear();
+    vi.mocked(rateFiles).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "5", code: "Digit5" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
+  });
+
+  it("Shift+5 rates and advances regardless of the toggle", async () => {
+    localStorage.clear();
+    vi.mocked(rateFiles).mockClear();
+    const { container } = await openFirstReview();
+    await fireEvent.keyDown(window, {
+      key: "%",
+      code: "Digit5",
+      shiftKey: true,
+    });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img2.cr3"),
+    );
   });
 
   it("auto-advances after a label when enabled", async () => {

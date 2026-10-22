@@ -34,6 +34,15 @@ describe("matchesFilter", () => {
     expect(matchesFilter(file({ label: "sharp" }), "unlabeled")).toBe(false);
   });
 
+  it("matches rating filters", () => {
+    expect(matchesFilter(file({ rating: 4 }), "rated")).toBe(true);
+    expect(matchesFilter(file({ rating: 0 }), "rated")).toBe(false);
+    expect(matchesFilter(file({ rating: 3 }), "three_star")).toBe(true);
+    expect(matchesFilter(file({ rating: 2 }), "three_star")).toBe(false);
+    expect(matchesFilter(file({ rating: 0 }), "unrated")).toBe(true);
+    expect(matchesFilter(file({ rating: 1 }), "unrated")).toBe(false);
+  });
+
   it("matches unanalyzed, bokeh and the always-true filters", () => {
     expect(matchesFilter(file({ analyzed: false }), "unanalyzed")).toBe(true);
     expect(matchesFilter(file({ analyzed: true }), "unanalyzed")).toBe(false);

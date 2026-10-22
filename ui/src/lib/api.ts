@@ -492,6 +492,9 @@ export const FILTERS = [
   { key: "my_sharp", label: "My keepers" },
   { key: "my_reject", label: "My rejects" },
   { key: "unlabeled", label: "Unlabelled" },
+  { key: "rated", label: "Rated" },
+  { key: "three_star", label: "3★+" },
+  { key: "unrated", label: "Unrated" },
   { key: "burst", label: "Burst winners" },
 ] as const;
 
@@ -513,6 +516,12 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return f.label === "reject";
     case "unlabeled":
       return f.label === null;
+    case "rated":
+      return f.rating > 0;
+    case "three_star":
+      return f.rating >= 3;
+    case "unrated":
+      return f.rating === 0;
     default:
       return f.predicted === key;
   }
