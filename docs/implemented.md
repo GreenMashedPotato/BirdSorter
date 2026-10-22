@@ -120,6 +120,8 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Undo coverage**: Ctrl+Z now reverts the last label, rating, flag or colour
+  change; bulk updates are grouped by their previous value.
 - **Colour labels** (schema v17): red / yellow / green / blue on `6`–`9`, a
   grid colour dot and an All/Red/Yellow/Green/Blue colour filter; validated
   `set_color` command and idempotent migration.
