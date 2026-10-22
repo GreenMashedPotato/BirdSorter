@@ -193,6 +193,8 @@ export interface Adjustments {
   contrast: number;
   shadows: number;
   highlights: number;
+  /** 0 neutral, +1 clears haze, -1 adds atmosphere. */
+  dehaze: number;
   denoise: number;
   /** White balance: -1 cool … +1 warm. */
   temperature: number;
@@ -208,6 +210,7 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   contrast: 0,
   shadows: 0,
   highlights: 0,
+  dehaze: 0,
   denoise: 0,
   temperature: 0,
   tint: 0,

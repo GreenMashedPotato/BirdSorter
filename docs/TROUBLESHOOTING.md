@@ -105,7 +105,8 @@ automatically (analysis is tied to the file's content hash).
   library and restored when you reopen it; **Export JPEG…** writes the adjusted
   preview at the current resolution. It never changes stored scores, labels,
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
-  --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
+  --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --dehaze 0.4
+  --denoise 0.4`.
 - **Grid thumbnails** use the camera's embedded `PRVW` (about 1620×1080 on an
   R5), not the full-size JPEG, so they are soft at 100%. Use the review's
   **High-res** mode (or `preview <raw> out.jpg 8000`) for critical focus.

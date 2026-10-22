@@ -30,8 +30,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 - ⬜ **Larger-radius clarity** — the current clarity is a 3×3 luma unsharp mask; a
   guided filter at a larger radius matches LightCraft's look better.
-- ⬜ **Dehaze** — dark-channel prior with guided refinement (and negative values to
-  add atmosphere).
+- ⬜ **Guided-filter refinement for dehaze** — the current transmission map is a
+  coarse dark channel + box blur; a guided filter would keep edges crisper.
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
 - ⬜ **TIFF export of edits** — JPEG export is in place; TIFF would need a
   different encoder path.

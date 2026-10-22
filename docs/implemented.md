@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Dehaze**: a coarse dark-channel transmission map (480 px, blurred, bilinear
+  upsampled) estimates the atmospheric light; `+1` clears haze and `-1` adds
+  atmosphere. Available in the review slider, saved edits and CLI `--dehaze`.
 - **Filmstrip**: the review shows a windowed strip of nearby frames (±40),
   loaded from the thumbnail cache and scrolled to the current photo on
   navigation; clicking a frame opens it. Only the window is fetched.
@@ -160,7 +163,7 @@ state and open work, see [progress.md](./progress.md) and
 - **Preview adjustments** (inspired by LightCraft, MIT/Apache-2.0; independent
   implementation): core `io::adjust` does exposure (linear light), contrast,
   shadow lift, highlight compression, white balance (temperature/tint), vibrance,
-  saturation, clarity and edge-preserving denoise on the cached preview; a
+  saturation, clarity, dehaze and edge-preserving denoise on the cached preview; a
   `preview_adjusted` command backs a review **Adjust** panel, and the CLI exposes
   the same controls on `preview`. Non-destructive: scores, labels, sidecars,
   exports and originals are untouched.
@@ -531,7 +534,8 @@ on a 28-core Windows box.
   catches mild subject movement the per-image metrics miss. Verified on a real
   burst: the reported frame (0.496 vs the keeper's 0.683) is now `uncertain`.
 - ✅ **Preview adjustments**: exposure, contrast, shadows, highlights, white
-  balance (temperature/tint), vibrance, saturation, clarity and edge-preserving
-  denoise, applied to the cached review preview (never the original). Review
+  balance (temperature/tint), vibrance, saturation, clarity, dehaze and
+  edge-preserving denoise, applied to the cached review preview (never the
+  original). Review
   panel + CLI flags. Inspired by LightCraft (MIT/Apache-2.0).
 

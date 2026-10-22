@@ -134,6 +134,12 @@ describe("review view", () => {
     expect(getThumbnail).toHaveBeenCalledWith(1);
   });
 
+  it("offers the dehaze control in the adjust panel", async () => {
+    const { getByText } = await openFirstReview();
+    await fireEvent.click(getByText("Adjust"));
+    expect(getByText("Dehaze")).toBeTruthy();
+  });
+
   it("shows the technical EXIF strip", async () => {
     const { getByText } = await openFirstReview();
     expect(getByText("Canon EOS R5")).toBeTruthy();
