@@ -353,37 +353,99 @@
   }
 
   // --- undo ----------------------------------------------------------------
-  /// One reversible label action: the ids touched and the label each had before.
-  type UndoEntry = { ids: number[]; prev: (UserLabel | null)[] };
+  /// A reversible action. Labels keep their server-side undo; the others
+  /// snapshot the previous value so a bulk change can be restored.
+  type UndoEntry =
+    | { kind: "labels"; ids: number[]; prev: (UserLabel | null)[] }
+    | { kind: "rating"; values: { id: number; rating: number }[] }
+    | { kind: "flag"; values: { id: number; flag: string | null }[] }
+    | { kind: "color"; values: { id: number; color: string | null }[] };
   let undoStack = $state<UndoEntry[]>([]);
   const canUndo = $derived(undoStack.length > 0);
+
+  function pushUndoEntry(entry: UndoEntry) {
+    undoStack = [...undoStack.slice(-19), entry];
+  }
 
   function pushUndo(ids: number[]) {
     const prev = ids.map(
       (id) => (files.find((f) => f.id === id)?.label ?? null) as UserLabel | null,
     );
-    undoStack = [...undoStack.slice(-19), { ids, prev }];
+    pushUndoEntry({ kind: "labels", ids, prev });
   }
 
-  /// Revert the last label action: restore the previous label, or drop the row
-  /// for files that had none before.
+  function pushRatingUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "rating",
+      values: ids.map((id) => ({
+        id,
+        rating: files.find((f) => f.id === id)?.rating ?? 0,
+      })),
+    });
+  }
+
+  function pushFlagUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "flag",
+      values: ids.map((id) => ({
+        id,
+        flag: files.find((f) => f.id === id)?.flag ?? null,
+      })),
+    });
+  }
+
+  function pushColorUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "color",
+      values: ids.map((id) => ({
+        id,
+        color: files.find((f) => f.id === id)?.color ?? null,
+      })),
+    });
+  }
+
+  /// Revert the last action. Labels use the server-side undo; the other fields
+  /// are grouped by their previous value so one command restores each group.
   async function undoLast() {
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
     undoStack = undoStack.slice(0, -1);
     try {
-      const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
-      const byLabel = new Map<UserLabel, number[]>();
-      entry.ids.forEach((id, i) => {
-        const p = entry.prev[i];
-        if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
-      });
-      if (toClear.length > 0) await undoLabels(toClear);
-      for (const [label, ids] of byLabel) await labelFiles(ids, label);
+      if (entry.kind === "labels") {
+        const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
+        const byLabel = new Map<UserLabel, number[]>();
+        entry.ids.forEach((id, i) => {
+          const p = entry.prev[i];
+          if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
+        });
+        if (toClear.length > 0) await undoLabels(toClear);
+        for (const [label, ids] of byLabel) await labelFiles(ids, label);
+        status = `undid a label change on ${entry.ids.length} file(s)`;
+      } else if (entry.kind === "rating") {
+        const byRating = new Map<number, number[]>();
+        for (const { id, rating } of entry.values) {
+          byRating.set(rating, [...(byRating.get(rating) ?? []), id]);
+        }
+        for (const [rating, ids] of byRating) await rateFiles(ids, rating);
+        status = `undid a rating change on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "flag") {
+        const byFlag = new Map<string | null, number[]>();
+        for (const { id, flag } of entry.values) {
+          byFlag.set(flag, [...(byFlag.get(flag) ?? []), id]);
+        }
+        for (const [flag, ids] of byFlag) await setFlag(ids, flag);
+        status = `undid a flag change on ${entry.values.length} file(s)`;
+      } else {
+        const byColor = new Map<string | null, number[]>();
+        for (const { id, color } of entry.values) {
+          byColor.set(color, [...(byColor.get(color) ?? []), id]);
+        }
+        for (const [color, ids] of byColor) await setColor(ids, color);
+        status = `undid a colour change on ${entry.values.length} file(s)`;
+      }
       await refreshFiles();
-      // Keep an open review's label display in sync.
+      // Keep an open review's labels/colours/flags in sync.
       if (reviewFile !== null) reviewRefresh++;
-      status = `undid a label change on ${entry.ids.length} file(s)`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -412,6 +474,7 @@
   /// Rate one file (0 clears). Updates the grid immediately, then persists.
   async function rateOne(id: number, rating: number) {
     try {
+      pushRatingUndo([id]);
       const r = await rateFiles([id], rating);
       files = files.map((f) => (f.id === id ? { ...f, rating } : f));
       if (r.xmpFailed.length > 0) {
@@ -426,6 +489,7 @@
   async function flagFiles(ids: number[], flag: string | null) {
     if (ids.length === 0) return;
     try {
+      pushFlagUndo(ids);
       const changed = await setFlag(ids, flag);
       const selectedIds = new Set(ids);
       files = files.map((f) => (selectedIds.has(f.id) ? { ...f, flag } : f));
@@ -444,6 +508,7 @@
   async function colorFiles(ids: number[], color: string | null) {
     if (ids.length === 0) return;
     try {
+      pushColorUndo(ids);
       const changed = await setColor(ids, color);
       const selectedIds = new Set(ids);
       files = files.map((f) => (selectedIds.has(f.id) ? { ...f, color } : f));
@@ -468,6 +533,7 @@
     if (selected.size === 0) return;
     const ids = [...selected];
     try {
+      pushRatingUndo(ids);
       const r = await rateFiles(ids, rating);
       files = files.map((f) => (selected.has(f.id) ? { ...f, rating } : f));
       status =

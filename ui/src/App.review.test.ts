@@ -167,6 +167,36 @@ describe("review view", () => {
     await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(1));
   });
 
+  it("undoes a rating with Ctrl+Z", async () => {
+    localStorage.clear();
+    vi.mocked(rateFiles).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "5", code: "Digit5" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
+  });
+
+  it("undoes a flag with Ctrl+Z", async () => {
+    localStorage.clear();
+    vi.mocked(setFlag).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "p", code: "KeyP" });
+    await waitFor(() => expect(setFlag).toHaveBeenCalledWith([1], "pick"));
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(setFlag).toHaveBeenCalledWith([1], null));
+  });
+
+  it("undoes a colour with Ctrl+Z", async () => {
+    localStorage.clear();
+    vi.mocked(setColor).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "6", code: "Digit6" });
+    await waitFor(() => expect(setColor).toHaveBeenCalledWith([1], "red"));
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(setColor).toHaveBeenCalledWith([1], null));
+  });
+
   it("colours the open photo with key 6", async () => {
     localStorage.clear();
     vi.mocked(setColor).mockClear();

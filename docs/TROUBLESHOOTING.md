@@ -107,6 +107,8 @@ automatically (analysis is tied to the file's content hash).
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --dehaze 0.4
   --denoise 0.4`.
+- **Ctrl+Z** (or the review's Undo button) reverts the last label, rating, flag
+  or colour change, including bulk changes.
 - **Colour labels** are applied from the review's Colour row or with `6`–`9`
   (red/yellow/green/blue); the grid's Colour filter narrows the view.
 - **Several folders**: Ctrl/Cmd-click sidebar folders to show them together. The

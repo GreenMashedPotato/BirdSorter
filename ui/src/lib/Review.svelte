@@ -1293,7 +1293,11 @@
       </button>
     {/if}
     <button onclick={exportCurrent} title="Copy this photo to a folder you pick">Export…</button>
-    <button onclick={onUndo} disabled={!canUndo} title="Undo the last label change (Ctrl+Z)">
+    <button
+      onclick={onUndo}
+      disabled={!canUndo}
+      title="Undo the last label, rating, flag or colour change (Ctrl+Z)"
+    >
       Undo
     </button>
     <button onclick={closeReview}>Close (Esc)</button>

@@ -238,7 +238,7 @@ folders. Scanning a folder includes all of its child folders.
   `P`/`X`/`U` pick / reject / clear the flag; `6`–`9` apply red / yellow /
   green / blue colour labels; `1`–`5` rate, `Shift`+`1`–`5` rate and advance,
   `Shift`+`0` clears the rating (`0` still resets zoom), `F` toggles focus
-  peaking,
+  peaking, **Ctrl+Z** undoes the last label, rating, flag or colour change,
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling

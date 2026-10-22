@@ -17,8 +17,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17
 > sort/filter, has a token search (`rating:>3`, `flag:pick`, `species:…`) with
 > saved searches, shows several folders together with the last-clicked one as the
 > action target, stores previews in a sharded cache, opens the already-migrated DB
-> for read-only commands, and supports colour labels (`6`–`9`). The analysis below
-> still describes the rest of the snapshot.
+> for read-only commands, supports colour labels (`6`–`9`), and undoes labels,
+> ratings, flags and colours with Ctrl+Z. The analysis below still describes the
+> rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
