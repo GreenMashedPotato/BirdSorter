@@ -16,6 +16,7 @@ use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, labels, library};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder};
+use birdsorter_core::io::exif;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
@@ -61,6 +62,8 @@ pub(crate) struct AnalysisDetailDto {
     filename: String,
     /// EXIF capture time, as stored at scan (`YYYY-MM-DDTHH:MM:SS`).
     captured_at: Option<String>,
+    /// Camera, lens and exposure settings for the review's EXIF strip.
+    meta: exif::PhotoMeta,
     label: Option<String>,
     predicted: Option<String>,
     score: Option<f32>,
@@ -117,12 +120,14 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         .map_err(err)?
         .map(|l| l.as_str().to_string());
     let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+    let meta = exif::photo_meta(&lf.absolute_path);
 
     let Some(a) = analysis else {
         return Ok(AnalysisDetailDto {
             file_id: file,
             filename: lf.file.filename,
             captured_at: lf.file.captured_at,
+            meta,
             label,
             predicted: None,
             score: None,
@@ -168,6 +173,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         file_id: file,
         filename: lf.file.filename,
         captured_at: lf.file.captured_at,
+        meta,
         label,
         predicted: Some(a.predicted_label.clone()),
         score: Some(a.sharpness_score),

@@ -62,11 +62,23 @@ export interface Box {
   top5: [string, number][];
 }
 
+/** Technical EXIF shown in the review (pre-formatted by the backend). */
+export interface PhotoMeta {
+  camera: string | null;
+  lens: string | null;
+  iso: number | null;
+  exposure: string | null;
+  aperture: string | null;
+  focalLength: string | null;
+}
+
 export interface AnalysisDetail {
   fileId: number;
   filename: string;
   /** EXIF capture time as stored at scan (`YYYY-MM-DDTHH:MM:SS`), if any. */
   capturedAt: string | null;
+  /** Camera/lens/exposure strip; optional for older payloads and mocks. */
+  meta?: PhotoMeta;
   label: string | null;
   predicted: string | null;
   score: number | null;

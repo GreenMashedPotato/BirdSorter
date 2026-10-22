@@ -63,6 +63,14 @@ vi.mock("./lib/api", async (importOriginal) => {
     modelVersion: "v",
     imageWidth: null,
     imageHeight: null,
+    meta: {
+      camera: "Canon EOS R5",
+      lens: "RF100-500mm F4.5-7.1 L IS USM",
+      iso: 1600,
+      exposure: "1/1000 s",
+      aperture: "f/5.6",
+      focalLength: "500 mm",
+    },
   });
   return {
     ...actual,
@@ -118,6 +126,15 @@ describe("review view", () => {
   it("shows the capture time from the file", async () => {
     const { getByText } = await openFirstReview();
     expect(getByText("2026-07-14 09:31:22")).toBeTruthy();
+  });
+
+  it("shows the technical EXIF strip", async () => {
+    const { getByText } = await openFirstReview();
+    expect(getByText("Canon EOS R5")).toBeTruthy();
+    expect(getByText("ISO 1600")).toBeTruthy();
+    expect(getByText("1/1000 s")).toBeTruthy();
+    expect(getByText("f/5.6")).toBeTruthy();
+    expect(getByText("500 mm")).toBeTruthy();
   });
 
   it("navigates to the next frame with the J button", async () => {

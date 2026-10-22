@@ -20,6 +20,7 @@ use birdsorter_core::data::{
     analysis_store, db, diagnostics, eye_labels, library::ScanReport, paths,
 };
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
+use birdsorter_core::io::exif;
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::learning::trainer;
@@ -363,6 +364,22 @@ fn run_probe(
     let img = decoder.decode(Path::new(file))?;
     let (w, h) = img.dimensions();
     println!("decoded: {w}x{h}");
+
+    let meta = exif::photo_meta(Path::new(file));
+    let strip: Vec<String> = [
+        meta.camera,
+        meta.lens,
+        meta.iso.map(|iso| format!("ISO {iso}")),
+        meta.exposure,
+        meta.aperture,
+        meta.focal_length,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !strip.is_empty() {
+        println!("exif: {}", strip.join(" · "));
+    }
 
     let detector: Box<dyn SubjectDetector> = if no_detect {
         Box::new(NullDetector)

@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **EXIF strip**: the review shows camera, lens, ISO, shutter, aperture and focal
+  length from the RAW metadata (JPEG/TIFF from their EXIF); `probe` prints the
+  same line.
 - **Grid sorting**: the filter bar can order files worst-first (the backend's
   culling order), best-first, top-rated, or by filename (numeric). Changing the
   sort returns the virtualized grid to the top.
