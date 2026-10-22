@@ -32,6 +32,7 @@
   } from "./api";
   import { lumaHistogram } from "./histogram";
   import { neighborIds } from "./navigation";
+  import Filmstrip from "./Filmstrip.svelte";
 
   // The open file plus everything the review needs from App. App owns the
   // library-level state (folders, files, bursts, undo, status); the review owns
@@ -1479,4 +1480,6 @@
       </div>
     </aside>
   </div>
+
+  <Filmstrip {ids} current={fileId} onSelect={onNavigate} />
 </div>

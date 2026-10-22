@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Filmstrip**: the review shows a windowed strip of nearby frames (±40),
+  loaded from the thumbnail cache and scrolled to the current photo on
+  navigation; clicking a frame opens it. Only the window is fetched.
 - **RAW previewer**: CR3 `PRVW`/`THMB` extraction reads a 2 MiB prefix instead of
   decoding the ~24 MB full-size JPEG track. A 512 px thumbnail went from
   **17.3 s → 0.9 s** in a debug build (38 ms warm in release; first uncached read
