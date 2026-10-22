@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Read-only DB fast path**: thumbnail/preview/detail/file-query/eye-point/
+  get-edits commands connect to the already-migrated library instead of running
+  the full DDL per request; writes still ensure the schema.
 - **Sharded preview cache**: entries live in two-character hash shards
   (`{hash}@v2@{dim}.thumb`); retain/clear/size/budget walk the shards. The
   version bump invalidates old flat renders; the next cache clean removes them.

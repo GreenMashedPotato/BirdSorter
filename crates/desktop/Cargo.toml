@@ -38,3 +38,6 @@ birdsorter-core = { path = "../core", features = ["gpu-directml"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 birdsorter-core = { path = "../core", features = ["gpu-coreml"] }
+
+[dev-dependencies]
+tempfile.workspace = true

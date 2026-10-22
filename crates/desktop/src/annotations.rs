@@ -7,7 +7,7 @@ use tauri::State;
 use birdsorter_core::data::{analysis_store, eye_labels, labels};
 
 use crate::state::AppState;
-use crate::util::{err, open};
+use crate::util::{err, open, open_ready};
 
 /// Set or clear the species override for a file.
 #[tauri::command]
@@ -56,7 +56,7 @@ pub(crate) struct EyePointDto {
 /// Keypoints stored for a file (eye/head/beak), for the review overlay.
 #[tauri::command]
 pub(crate) fn eye_points(state: State<AppState>, file: i64) -> Result<Vec<EyePointDto>, String> {
-    let conn = open(&state.db_path)?;
+    let conn = open_ready(&state.db_path)?;
     let points = eye_labels::eye_points(&conn, file).map_err(err)?;
     Ok(points
         .into_iter()

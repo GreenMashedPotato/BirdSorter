@@ -194,6 +194,9 @@ off-screen thumbnails above 600 entries.
   `scan-error`, `analysis-progress`, `analysis-done`, `analysis-error`.
 - Anything that touches disk or CPU runs on a blocking worker
   (`spawn_blocking`), never on the IPC thread.
+- Read-only commands (thumbnail, preview, detail, file queries, eye points,
+  saved-edit reads) connect to the startup-migrated database without re-running
+  the DDL; writes still ensure the schema.
 
 ---
 

@@ -28,7 +28,7 @@ use rusqlite::Connection;
 
 use crate::config::{ANALYSIS_LONG_SIDE, MAX_DECODE_THREADS};
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -112,7 +112,7 @@ pub(crate) struct TrainResultDto {
 // ---------------------------------------------------------------------------
 
 fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, String> {
-    let conn = open(db_path)?;
+    let conn = open_ready(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
