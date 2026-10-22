@@ -35,6 +35,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
 - ⬜ **Named presets with amounts and group sync** — Copy/Paste is in place; a
   preset library, partial groups and an amount slider remain.
+- ⬜ **Bulk flagging and colour labels** — flags are single-file today; a
+  selection-wide flag action and colour labels remain.
 
 ## Correctness & robustness
 

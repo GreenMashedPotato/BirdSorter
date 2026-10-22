@@ -45,7 +45,7 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
 /// table cannot silently change what the library reads (Phase 1.4).
 const FILE_COLUMNS: &str = "f.id, f.folder_id, f.relative_path, f.filename, \
      f.content_hash, f.filesize, f.mtime, f.format, f.imported_at, \
-     f.trashed_at, f.captured_at, f.rating";
+     f.trashed_at, f.captured_at, f.rating, f.flag";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRow {
@@ -71,6 +71,8 @@ pub struct FileRow {
     pub captured_at: Option<String>,
     /// 0-5 star rating (0 = none), mirrored into an XMP sidecar.
     pub rating: i64,
+    /// `"pick"`, `"reject"`, or `None` (unflagged).
+    pub flag: Option<String>,
 }
 
 /// A file row paired with its absolute path on disk.
@@ -136,6 +138,7 @@ fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
         trashed_at: r.get("trashed_at")?,
         captured_at: r.get("captured_at")?,
         rating: r.get("rating")?,
+        flag: r.get("flag")?,
     })
 }
 
@@ -628,7 +631,7 @@ pub fn list_files_with_details(
                 f.captured_at,
                 fo.path AS folder_path,
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
-                a.species_name, a.subject_class, f.rating,
+                a.species_name, a.subject_class, f.rating, f.flag,
                 (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
            FROM files f
@@ -653,6 +656,7 @@ pub fn list_files_with_details(
             trashed_at: r.get("trashed_at")?,
             captured_at: r.get("captured_at")?,
             rating: r.get("rating")?,
+            flag: r.get("flag")?,
         };
         let predicted: Option<String> = r.get("predicted_label")?;
         let score: Option<f32> = r.get("sharpness_score")?;
@@ -740,6 +744,27 @@ pub fn reconcile_trashed(conn: &Connection, folder_id: i64) -> Result<usize> {
         Ok(())
     })?;
     Ok(restored)
+}
+
+/// Set or clear the pick/reject flag for a set of files. `flag` must be
+/// `Some("pick")`, `Some("reject")`, or `None` to clear. Returns rows changed.
+pub fn set_flag(conn: &Connection, file_ids: &[i64], flag: Option<&str>) -> Result<usize> {
+    match flag {
+        Some("pick") | Some("reject") | None => {}
+        Some(other) => {
+            return Err(CoreError::invalid_input(format!(
+                "unknown flag {other:?} (expected pick, reject or none)"
+            )))
+        }
+    }
+    with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET flag = ?1 WHERE id = ?2")?;
+        let mut n = 0;
+        for id in file_ids {
+            n += stmt.execute(rusqlite::params![flag, id])?;
+        }
+        Ok(n)
+    })
 }
 
 /// Set the 0-5 rating for a set of files (clamped). Returns rows changed.
@@ -839,6 +864,33 @@ mod tests {
 
         let missing = dir.path().join("nope");
         assert!(add_folder(&conn, &missing).is_err());
+    }
+
+    #[test]
+    fn set_flag_marks_and_clears_files() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM files WHERE filename = 'a.cr3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(set_flag(&conn, &[id], Some("pick")).unwrap(), 1);
+        assert_eq!(
+            get_file(&conn, id).unwrap().unwrap().file.flag.as_deref(),
+            Some("pick")
+        );
+        assert_eq!(set_flag(&conn, &[id], Some("reject")).unwrap(), 1);
+        assert_eq!(
+            get_file(&conn, id).unwrap().unwrap().file.flag.as_deref(),
+            Some("reject")
+        );
+        assert_eq!(set_flag(&conn, &[id], None).unwrap(), 1);
+        assert!(get_file(&conn, id).unwrap().unwrap().file.flag.is_none());
+        assert!(set_flag(&conn, &[id], Some("maybe")).is_err());
     }
 
     #[test]

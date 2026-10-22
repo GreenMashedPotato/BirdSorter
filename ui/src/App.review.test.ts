@@ -47,6 +47,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     subjectClass: "bird",
     rating: 0,
     capturedAt: "2026-07-14T09:31:22",
+    flag: null,
   });
   const detail = (id: number) => ({
     fileId: id,
@@ -90,6 +91,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     getThumbnail: vi.fn(async () => "data:image/jpeg;base64,thumb"),
     labelFiles: vi.fn(async () => 1),
     rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
+    setFlag: vi.fn(async () => 1),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
     speciesLabels: vi.fn(async () => []),
     onProgress: () => Promise.resolve(() => {}),
@@ -104,7 +106,7 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 import App from "./App.svelte";
-import { analysisDetail, getThumbnail, labelFiles, rateFiles } from "./lib/api";
+import { analysisDetail, getThumbnail, labelFiles, rateFiles, setFlag } from "./lib/api";
 
 /** Render App with mock data and open the first tile's review. */
 async function openFirstReview() {
@@ -134,6 +136,14 @@ describe("review view", () => {
     vi.mocked(getThumbnail).mockClear();
     await openFirstReview();
     expect(getThumbnail).toHaveBeenCalledWith(1);
+  });
+
+  it("flags the open photo with the P key", async () => {
+    localStorage.clear();
+    vi.mocked(setFlag).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "p", code: "KeyP" });
+    await waitFor(() => expect(setFlag).toHaveBeenCalledWith([1], "pick"));
   });
 
   it("labels the open photo with the S key", async () => {

@@ -207,6 +207,7 @@ pub(crate) fn run() {
             app::clear_edits,
             app::species_labels,
             library::rate_files,
+            library::set_flag,
             library::auto_rate,
             library::reset_ratings,
             app::app_info,

@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -34,6 +34,7 @@ const DDL: &[&str] = &[
         trashed_at          TEXT,
         captured_at         TEXT,
         rating              INTEGER NOT NULL DEFAULT 0,
+        flag                TEXT,
         burst_winner        INTEGER NOT NULL DEFAULT 0,
         UNIQUE(folder_id, relative_path)
     )",
@@ -291,6 +292,18 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
                  updated_at TEXT NOT NULL
              );",
         )?;
+    }
+    if from < 16 {
+        // v15 -> v16: pick/reject flag on each file. Guard the ALTER so a
+        // partially-migrated database is safe to re-run.
+        let has_flag: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'flag'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_flag == 0 {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN flag TEXT;")?;
+        }
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())
@@ -576,6 +589,27 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn migration_from_v15_adds_the_flag_column() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE files DROP COLUMN flag;
+             UPDATE schema_version SET version = 15;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let has_flag: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'flag'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_flag, 1);
     }
 
     #[test]

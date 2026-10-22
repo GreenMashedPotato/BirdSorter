@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Pick/reject flags** (schema v16): `P`/`X`/`U` flag or clear the open photo
+  (`P`/`X` advance when Auto-advance is on); the grid shows `P`/`X` badges and
+  filters by Picked / Rejected / Unflagged.
 - **View preferences**: sort by species (case-insensitive, unidentified last);
   the active filter is remembered alongside the sort.
 - **Label shortcuts**: `S`/`B`/`R`/`O` label the open photo Sharp / Blurry /
@@ -348,7 +351,7 @@ state and open work, see [progress.md](./progress.md) and
   a **green/red** colour toggle (button or `C`, remembered in `localStorage`)
   covers both flat sky and foliage, where green edges would disappear. The overlay
   lives inside the image wrapper and therefore shares the zoom/pan transform and
-  stays aligned at any zoom. `P` toggles peaking.
+  stays aligned at any zoom. `F` toggles peaking (`P`/`X`/`U` are flags now).
 - **"Keep burst winners" (toolbar)**: labels the highest-scoring frame of every
   multi-frame burst as **Sharp** in one action, so a shoot can be triaged burst by
   burst. It never clobbers a file you already labelled, reports how many were

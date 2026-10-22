@@ -19,6 +19,7 @@
     labelFiles,
     undoLabels,
     rateFiles,
+    setFlag,
     autoRate,
     resetRatings,
     trashFiles,
@@ -388,6 +389,19 @@
       if (r.xmpFailed.length > 0) {
         status = `rated, but the XMP sidecar failed for ${r.xmpFailed.length} file(s)`;
       }
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Set or clear the pick/reject flag for one file.
+  async function flagOne(id: number, flag: string | null) {
+    try {
+      const changed = await setFlag([id], flag);
+      files = files.map((f) => (f.id === id ? { ...f, flag } : f));
+      status = flag
+        ? `${flag === "pick" ? "picked" : "rejected"} ${changed} file(s)`
+        : `cleared flag on ${changed} file(s)`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -900,6 +914,7 @@
         subjectClass: i % 4 === 0 ? null : "bird",
         rating: 0,
         capturedAt: null,
+        flag: null,
       })) as FileEntry[];
       status = "browser preview (not connected to the backend)";
       return;
@@ -1145,6 +1160,8 @@
       ids={visible.map((f) => f.id)}
       {burstGroups}
       rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
+      flag={files.find((f) => f.id === reviewFile)?.flag ?? null}
+      onFlag={flagOne}
       previewMode={previewSettings.mode === "full" ? "full" : "fast"}
       onPreviewModeChange={changePreviewMode}
       refreshToken={reviewRefresh}

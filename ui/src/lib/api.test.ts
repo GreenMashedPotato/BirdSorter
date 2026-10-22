@@ -16,6 +16,7 @@ function file(over: Partial<FileEntry> = {}): FileEntry {
     subjectClass: "bird",
     rating: 0,
     capturedAt: null,
+    flag: null,
     ...over,
   };
 }
@@ -41,6 +42,14 @@ describe("matchesFilter", () => {
     expect(matchesFilter(file({ rating: 2 }), "three_star")).toBe(false);
     expect(matchesFilter(file({ rating: 0 }), "unrated")).toBe(true);
     expect(matchesFilter(file({ rating: 1 }), "unrated")).toBe(false);
+  });
+
+  it("matches flag filters", () => {
+    expect(matchesFilter(file({ flag: "pick" }), "picked")).toBe(true);
+    expect(matchesFilter(file({ flag: null }), "picked")).toBe(false);
+    expect(matchesFilter(file({ flag: "reject" }), "rejected")).toBe(true);
+    expect(matchesFilter(file({ flag: null }), "unflagged")).toBe(true);
+    expect(matchesFilter(file({ flag: "pick" }), "unflagged")).toBe(false);
   });
 
   it("matches unanalyzed, bokeh and the always-true filters", () => {

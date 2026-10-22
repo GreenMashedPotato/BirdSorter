@@ -28,6 +28,8 @@ export interface FileEntry {
   rating: number;
   /** EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting. */
   capturedAt: string | null;
+  /** `"pick"`, `"reject"`, or `null` (unflagged). */
+  flag: string | null;
 }
 
 export interface ScanReport {
@@ -495,6 +497,9 @@ export const FILTERS = [
   { key: "rated", label: "Rated" },
   { key: "three_star", label: "3★+" },
   { key: "unrated", label: "Unrated" },
+  { key: "picked", label: "Picked" },
+  { key: "rejected", label: "Rejected" },
+  { key: "unflagged", label: "Unflagged" },
   { key: "burst", label: "Burst winners" },
 ] as const;
 
@@ -522,6 +527,12 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return f.rating >= 3;
     case "unrated":
       return f.rating === 0;
+    case "picked":
+      return f.flag === "pick";
+    case "rejected":
+      return f.flag === "reject";
+    case "unflagged":
+      return f.flag === null;
     default:
       return f.predicted === key;
   }
@@ -594,6 +605,11 @@ export interface RatingResult {
 /** Set a 0-5 rating (database + XMP sidecar). */
 export async function rateFiles(files: number[], rating: number): Promise<RatingResult> {
   return invoke("rate_files", { files, rating });
+}
+
+/** Set or clear the pick/reject flag (`"pick"`, `"reject"`, or `null`). */
+export async function setFlag(files: number[], flag: string | null): Promise<number> {
+  return invoke("set_flag", { files, flag });
 }
 
 /** Auto-rate a folder from the verdicts: sharp 5, uncertain 3, blurry 1, none 0. */
