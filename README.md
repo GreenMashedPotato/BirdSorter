@@ -11,8 +11,8 @@ groups bursts, and (optionally) identifies species.
 with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
 providers — no CUDA install, no driver hunting, and models download on demand.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the system design and performance
-budgets, and [`implemented.md`](./implemented.md) for what has shipped.
+See [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the system design and performance
+budgets, and [`implemented.md`](./docs/implemented.md) for what has shipped.
 
 ## Status
 
@@ -72,12 +72,17 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
 
 ## Layout
 
+For an agent-oriented map (docs, gates, invariants), see [AGENTS.md](./AGENTS.md).
+
 ```
-crates/core/     birdsorter-core — all logic, zero GUI deps, headless + unit-tested
-crates/cli/      birdsorter — headless CLI (hash / selftest), CI smoke-tester
-ui/              Svelte 5 + TypeScript frontend            (planned)
-crates/desktop/  Tauri v2 shell over core                  (planned)
-tools/           dev-only Python for ONNX export/distillation (planned)
+crates/core/      birdsorter-core — all domain logic, no GUI deps, headless + tested
+crates/desktop/   Tauri v2 shell: commands, events, app state
+crates/cli/       birdsorter — headless CLI (shares core with the app)
+ui/               Svelte 5 + TypeScript frontend
+tools/            Offline model export/training/packaging (Python)
+scripts/          Build/release/version scripts
+models/           The small bundled detector
+docs/             Long-form documentation (architecture, rules, status, models)
 ```
 
 ## Build & test
@@ -85,7 +90,7 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 158 unit tests
+cargo test --workspace          # 283 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -143,7 +148,7 @@ Output goes to `target/release/bundle/`.
 so it combines with the signing config:
 `tauri build --config tauri.signing.json --config tauri.models.conf.json --bundles nsis`.
 The model files live in `dist-models/inat21/` (gitignored) - build them on the
-shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./MODELS.md)).
+shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./docs/MODELS.md)).
 That is why the default config references only the committed detector.
 
 ### Scripts (recommended)
@@ -189,12 +194,12 @@ and x64); those runners do not have the 820 MB model, so they produce the defaul
 `WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD` (base64 `.pfx`) and the
 app exe and installers are signed; without the secrets the build stays unsigned
 so forks keep working. macOS signing/notarization is ready but untested (needs an
-Apple Developer certificate). Full instructions: [`SIGNING.md`](./SIGNING.md).
+Apple Developer certificate). Full instructions: [`SIGNING.md`](./docs/SIGNING.md).
 Until a certificate is configured, macOS Gatekeeper needs right-click → Open and
 Windows may show a SmartScreen warning.
 
 macOS-specific work (CoreML, notarization, `.dmg`, HEIC) is listed as a
-self-contained brief in [`MACOS_TODO.md`](./MACOS_TODO.md).
+self-contained brief in [`MACOS_TODO.md`](./docs/MACOS_TODO.md).
 
 The window provides a folder sidebar, a worst-first thumbnail grid with filter
 chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
