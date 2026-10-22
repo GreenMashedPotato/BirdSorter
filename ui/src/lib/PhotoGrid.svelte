@@ -109,6 +109,9 @@
               >{f.flag === "pick" ? "P" : "X"}</span
             >
           {/if}
+          {#if f.color}
+            <span class="color-dot small {f.color}" title={f.color}></span>
+          {/if}
           {#if f.predicted}
             <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
             <span class="status">{f.score === null ? "" : f.score.toFixed(2)}</span>

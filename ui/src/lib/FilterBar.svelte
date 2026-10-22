@@ -7,6 +7,7 @@
     filter = $bindable(),
     sort = "worst",
     search = $bindable(""),
+    colorFilter = $bindable(""),
     savedSearches = [],
     onSort = () => {},
     onSaveSearch = () => {},
@@ -19,6 +20,7 @@
     filter: FilterKey;
     sort?: SortKey;
     search?: string;
+    colorFilter?: string;
     savedSearches?: string[];
     onSort?: (sort: SortKey) => void;
     onSaveSearch?: (query: string) => void;
@@ -84,6 +86,13 @@
       Forget
     </button>
   {/if}
+  <select class="sortsel" aria-label="Colour filter" bind:value={colorFilter}>
+    <option value="">All colours</option>
+    <option value="red">Red</option>
+    <option value="yellow">Yellow</option>
+    <option value="green">Green</option>
+    <option value="blue">Blue</option>
+  </select>
   <select
     class="sortsel"
     value={sort}

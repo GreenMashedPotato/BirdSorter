@@ -17,6 +17,7 @@ function file(over: Partial<FileEntry> = {}): FileEntry {
     rating: 0,
     capturedAt: null,
     flag: null,
+    color: null,
     folderId: 1,
     ...over,
   };

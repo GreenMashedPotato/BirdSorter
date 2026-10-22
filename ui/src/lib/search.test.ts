@@ -17,6 +17,7 @@ const base: FileEntry = {
   rating: 4,
   capturedAt: "2026-05-01T10:00:00",
   flag: null,
+  color: null,
   folderId: 1,
 };
 

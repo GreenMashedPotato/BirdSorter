@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Colour labels** (schema v17): red / yellow / green / blue on `6`–`9`, a
+  grid colour dot and an All/Red/Yellow/Green/Blue colour filter; validated
+  `set_color` command and idempotent migration.
 - **Read-only DB fast path**: thumbnail/preview/detail/file-query/eye-point/
   get-edits commands connect to the already-migrated library instead of running
   the full DDL per request; writes still ensure the schema.
