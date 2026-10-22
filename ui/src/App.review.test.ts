@@ -153,6 +153,12 @@ describe("review view", () => {
     expect(pasted.value).toBe("0.5");
   });
 
+  it("offers image export in the adjust panel", async () => {
+    const { getByText } = await openFirstReview();
+    await fireEvent.click(getByText("Adjust"));
+    expect(getByText("Export image…")).toBeTruthy();
+  });
+
   it("offers the dehaze control in the adjust panel", async () => {
     const { getByText } = await openFirstReview();
     await fireEvent.click(getByText("Adjust"));

@@ -9,8 +9,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v15
 > strip (camera/lens/ISO/shutter/aperture/focal), CR3 thumbnails read the compact
 > `PRVW` JPEG, the review shows a cached thumbnail while the preview renders, a
 > filmstrip of nearby frames sits under the loupe, the Adjust panel has a
-> dark-channel dehaze slider, and Copy/Paste carries a look between photos. The
-> analysis below still describes the rest of the snapshot.
+> dark-channel dehaze slider, Copy/Paste carries a look between photos, and
+> edited exports can be JPEG or lossless TIFF. The analysis below still describes
+> the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth

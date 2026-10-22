@@ -76,10 +76,16 @@ impl Adjustments {
 /// This is what the desktop's adjusted-preview command uses: the base render is
 /// already cached on disk, so only this in-memory pass runs per slider change.
 pub fn apply_encoded(bytes: &[u8], adj: &Adjustments, quality: u8) -> crate::Result<Vec<u8>> {
+    let rgb = decode_and_apply(bytes, adj)?;
+    crate::io::thumb::encode_rgb_jpeg(&rgb, quality)
+}
+
+/// Decode an encoded preview and apply `adj`, returning the RGB pixels. Used by
+/// the edited export so it can choose a JPEG or lossless TIFF encoder.
+pub fn decode_and_apply(bytes: &[u8], adj: &Adjustments) -> crate::Result<Array3<u8>> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| crate::CoreError::invalid_input(format!("preview decode: {e}")))?;
-    let rgb = crate::io::decoder::dynamic_to_rgb(img, None);
-    crate::io::thumb::encode_rgb_jpeg(&apply(&rgb, adj), quality)
+    Ok(apply(&crate::io::decoder::dynamic_to_rgb(img, None), adj))
 }
 
 /// Apply `adj` to an 8-bit RGB image, returning a new image.

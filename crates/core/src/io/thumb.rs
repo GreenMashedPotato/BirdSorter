@@ -152,6 +152,22 @@ pub fn thumbnail_cached_with(
     })
 }
 
+/// TIFF-encode an already-decoded RGB image (lossless).
+pub fn encode_rgb_tiff(rgb: &Array3<u8>) -> Result<Vec<u8>> {
+    let (h, w, _) = rgb.dim();
+    let raw: Vec<u8> = rgb.iter().copied().collect();
+    let img = image::RgbImage::from_raw(w as u32, h as u32, raw)
+        .ok_or_else(|| CoreError::Other("rgb buffer size mismatch".into()))?;
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, ImageOutputFormat::Tiff)
+            .map_err(|e| CoreError::Other(format!("tiff encode: {e}")))?;
+    }
+    Ok(buf)
+}
+
 /// JPEG-encode an already-decoded RGB image (`H x W x 3`).
 pub fn encode_rgb_jpeg(rgb: &Array3<u8>, quality: u8) -> Result<Vec<u8>> {
     let (h, w, _) = rgb.dim();
@@ -238,6 +254,27 @@ mod tests {
         let bytes = encode_rgb_jpeg(&rgb, 90).unwrap();
         let img = image::load_from_memory(&bytes).unwrap();
         assert_eq!((img.width(), img.height()), (60, 40));
+    }
+
+    #[test]
+    fn tiff_encode_is_lossless() {
+        let rgb = Array3::from_shape_fn((4, 5, 3), |(y, x, c)| {
+            ((x * 13 + y * 7 + c * 29) % 256) as u8
+        });
+        let bytes = encode_rgb_tiff(&rgb).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (5, 4));
+        for y in 0..4 {
+            for x in 0..5 {
+                for c in 0..3 {
+                    assert_eq!(
+                        decoded.get_pixel(x as u32, y as u32).0[c],
+                        rgb[[y, x, c]],
+                        "pixel ({x}, {y}) channel {c}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -102,8 +102,8 @@ automatically (analysis is tied to the file's content hash).
   are no-ops) is reset to the default on load.
 - **Adjust** in the review bar (exposure, contrast, shadows, highlights, white
   balance, vibrance, saturation, clarity, denoise) is saved **per photo** in the
-  library and restored when you reopen it; **Export JPEG…** writes the adjusted
-  preview at the current resolution. It never changes stored scores, labels,
+  library and restored when you reopen it; **Export image…** writes the adjusted
+  preview as JPEG or lossless TIFF (by the chosen extension). It never changes stored scores, labels,
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --dehaze 0.4
   --denoise 0.4`.
