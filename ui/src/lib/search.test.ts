@@ -17,6 +17,7 @@ const base: FileEntry = {
   rating: 4,
   capturedAt: "2026-05-01T10:00:00",
   flag: null,
+  folderId: 1,
 };
 
 function file(over: Partial<FileEntry> = {}): FileEntry {

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 
 // Gates let a test hold one file's `analysisDetail` response so a stale response
@@ -29,11 +29,24 @@ beforeAll(() => {
     disconnect() {}
   }
   vi.stubGlobal("ResizeObserver", RO);
+  // jsdom reports 0 for layout sizes; the grid needs a viewport to render rows.
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get: () => 900,
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get: () => 700,
+  });
 });
+
+// A test that selects a second folder would otherwise make the next test reopen
+// it (the last folder is remembered).
+beforeEach(() => localStorage.clear());
 
 vi.mock("./lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/api")>();
-  const file = (id: number) => ({
+  const file = (id: number, folderId = 1) => ({
     id,
     filename: `img${id}.cr3`,
     format: "CR3",
@@ -48,6 +61,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     rating: 0,
     capturedAt: "2026-07-14T09:31:22",
     flag: null,
+    folderId,
   });
   const detail = (id: number) => ({
     fileId: id,
@@ -79,8 +93,13 @@ vi.mock("./lib/api", async (importOriginal) => {
     inTauri: true,
     listFolders: vi.fn(async () => [
       { id: 1, path: "D:\\shoot", addedAt: "", lastScannedAt: null },
+      { id: 2, path: "D:\\shoot2", addedAt: "", lastScannedAt: null },
     ]),
-    queryFiles: vi.fn(async () => [file(1), file(2), file(3)]),
+    queryFiles: vi.fn(async (folders: number[]) =>
+      [file(1), file(2), file(3), file(4, 2), file(5, 2)].filter((f) =>
+        folders.includes(f.folderId),
+      ),
+    ),
     bursts: vi.fn(async () => []),
     analysisDetail: vi.fn(async (id: number) => {
       const held = gates.wait(id);
@@ -121,6 +140,15 @@ async function openFirstReview() {
 }
 
 describe("review view", () => {
+  it("views several folders and marks the last clicked as primary", async () => {
+    const { container, getByText } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+
+    await fireEvent.click(getByText("D:\\shoot2"), { ctrlKey: true });
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(5));
+    expect(container.querySelector(".folder.primary")?.textContent).toContain("shoot2");
+  });
+
   it("filters the grid with a search query", async () => {
     const { container, getByLabelText } = render(App);
     await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));

@@ -14,6 +14,8 @@
     selected,
     focusIndex,
     burstInfo,
+    showFolder = false,
+    folderNames = {},
     emptyText,
     onFocus,
     onToggle,
@@ -30,6 +32,8 @@
     selected: Set<number>;
     focusIndex: number;
     burstInfo: Record<number, { size: number; best: boolean }>;
+    showFolder?: boolean;
+    folderNames?: Record<number, string>;
     emptyText: string;
     onFocus: (idx: number) => void;
     onToggle: (id: number) => void;
@@ -68,6 +72,11 @@
         </div>
         <div class="meta">
           <span class="name" title={f.filename}>{f.filename}</span>
+          {#if showFolder && folderNames[f.folderId]}
+            <span class="status folder-name" title={folderNames[f.folderId]}
+              >{folderNames[f.folderId]}</span
+            >
+          {/if}
           <span class="stars tile-stars" title="Click a star to rate">
             {#each [1, 2, 3, 4, 5] as v (v)}
               <button

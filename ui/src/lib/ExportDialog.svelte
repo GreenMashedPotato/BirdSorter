@@ -3,9 +3,11 @@
 
   // Choose how keepers are arranged before picking the destination folder.
   let {
+    folderPath = "",
     onExport,
     onClose,
   }: {
+    folderPath?: string;
     onExport: (opts: { layout: ExportLayout; rename: string }) => void;
     onClose: () => void;
   } = $props();
@@ -28,6 +30,9 @@
     </div>
 
     <div class="sheet-body">
+      {#if folderPath}
+        <p class="status">Source (primary folder): {folderPath}</p>
+      {/if}
       <section>
         <h3>Layout</h3>
         <div class="row">

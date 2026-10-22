@@ -74,6 +74,14 @@
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
+  /// Folders currently shown together. The primary (`activeFolder`) is the
+  /// last clicked; folder-scoped actions target it.
+  let selectedFolders = $state<Set<number>>(new Set());
+  const primaryFolder = $derived(folders.find((f) => f.id === activeFolder) ?? null);
+  const primaryLabel = $derived(primaryFolder ? folderLabel(primaryFolder.path) : "");
+  const folderNames = $derived(
+    Object.fromEntries(folders.map((f) => [f.id, folderLabel(f.path)])),
+  );
   let files = $state<FileEntry[]>([]);
   /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
   const cleanups: (() => void)[] = [];
@@ -209,20 +217,25 @@
   let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
 
   async function refreshBursts() {
-    const folder = activeFolder;
-    if (!inTauri || folder === null) {
+    const selected = [...selectedFolders];
+    if (!inTauri || selected.length === 0) {
       burstInfo = {};
       burstGroups = [];
       return;
     }
+    const snapshot = selected.join(",");
     try {
-      const groups = await bursts(folder);
-      if (activeFolder !== folder) return;
+      const groups = (
+        await Promise.all(selected.map((folder) => bursts(folder)))
+      ).flat();
+      if ([...selectedFolders].join(",") !== snapshot) return;
       burstGroups = groups;
       applyBurstInfo(groups);
     } catch {
-      burstInfo = {};
-      burstGroups = [];
+      if ([...selectedFolders].join(",") === snapshot) {
+        burstInfo = {};
+        burstGroups = [];
+      }
     }
   }
 
@@ -302,8 +315,8 @@
       if (activeFolder !== null) {
         const n = await rescoreFolder(activeFolder);
         status = detectionChanged
-          ? `settings saved · re-scored ${n} · distant-bird change applies to the next analysis run`
-          : `settings saved · re-scored ${n} files`;
+          ? `settings saved · re-scored ${n} in ${primaryLabel} · distant-bird change applies to the next analysis run`
+          : `settings saved · re-scored ${n} files in ${primaryLabel}`;
         await refreshFiles();
       } else {
         status = "settings saved";
@@ -486,9 +499,36 @@
     setSelected(next);
   }
 
-  async function selectFolder(id: number) {
-    activeFolder = id;
-    rememberFolder(id);
+  function folderLabel(path: string) {
+    return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  }
+
+  /// Plain click shows one folder; Ctrl/Cmd-click adds or removes a folder.
+  /// The last folder added becomes the primary action target.
+  async function selectFolder(id: number, additive = false) {
+    if (additive) {
+      const next = new Set(selectedFolders);
+      if (next.has(id)) {
+        if (next.size === 1) return;
+        next.delete(id);
+        if (activeFolder === id) {
+          const first = [...next][0];
+          if (first !== undefined) {
+            activeFolder = first;
+            rememberFolder(first);
+          }
+        }
+      } else {
+        next.add(id);
+        activeFolder = id;
+        rememberFolder(id);
+      }
+      selectedFolders = next;
+    } else {
+      selectedFolders = new Set([id]);
+      activeFolder = id;
+      rememberFolder(id);
+    }
     setSelected(new Set());
     resetThumbs();
     await refreshFiles();
@@ -553,21 +593,29 @@
 
   async function refreshFolders() {
     folders = await listFolders();
-    if (activeFolder === null) {
+    const available = new Set(folders.map((f) => f.id));
+    if (activeFolder === null || !available.has(activeFolder)) {
       // Reopen the folder from last session when it is still in the library.
       activeFolder = pickStartupFolder(folders, rememberedFolder());
     }
+    const next = new Set(
+      [...selectedFolders].filter((id) => available.has(id)),
+    );
+    if (activeFolder !== null) next.add(activeFolder);
+    selectedFolders = next;
+    if (activeFolder !== null) rememberFolder(activeFolder);
   }
 
   async function refreshFiles() {
-    const folder = activeFolder;
-    if (folder === null) {
+    const selected = [...selectedFolders];
+    if (selected.length === 0) {
       files = [];
       return;
     }
-    const rows = await queryFiles(folder);
-    // Ignore a stale response if the user switched folders while it loaded.
-    if (activeFolder !== folder) return;
+    const snapshot = selected.join(",");
+    const rows = await queryFiles(selected);
+    // Ignore a stale response if the folder selection changed while it loaded.
+    if ([...selectedFolders].join(",") !== snapshot) return;
     files = rows;
     await refreshBursts();
   }
@@ -579,9 +627,10 @@
     try {
       const id = await addFolder(path);
       activeFolder = id;
+      selectedFolders = new Set([id]);
       rememberFolder(id);
       await refreshFolders();
-      status = "scanning…";
+      status = `scanning ${folderLabel(path)}…`;
       progress = { label: "Scanning", done: 0, total: 0 };
       // Fire-and-forget: progress/completion arrive as events, so the window
       // keeps painting while thousands of files are hashed.
@@ -635,7 +684,7 @@
   async function rescan() {
     if (activeFolder === null || !inTauri) return;
     busy = true;
-    status = "scanning…";
+    status = `scanning ${primaryLabel}…`;
     progress = { label: "Scanning", done: 0, total: 0 };
     try {
       await startScan(activeFolder);
@@ -664,7 +713,7 @@
       force = true;
     }
     busy = true;
-    status = "analysing…";
+    status = `analysing ${primaryLabel}…`;
     progress = { label: "Analysing", done: 0, total: force ? files.length : pending };
     try {
       await analyzeFolder(activeFolder, model.trim() || null, force);
@@ -687,7 +736,7 @@
       return;
     }
     busy = true;
-    status = "analysing…";
+    status = `analysing ${primaryLabel}…`;
     progress = { label: "Analysing", done: 0, total: files.length };
     try {
       await analyzeFolder(activeFolder, model.trim() || null, true);
@@ -748,7 +797,7 @@
         title: "Export keepers to…",
       });
       if (typeof dest !== "string") return;
-      status = "exporting…";
+      status = `exporting keepers from ${primaryLabel}…`;
       let r = await exportKeepers(activeFolder, dest, {
         label: "sharp",
         mode: "copy",
@@ -783,6 +832,7 @@
   /// by burst. Files you have already labelled are left untouched.
   async function keepBurstWinners() {
     if (activeFolder === null || !inTauri) return;
+    status = `finding burst winners in ${primaryLabel}…`;
     let groups: { frames: number[]; best: number }[] = [];
     try {
       groups = await bursts(activeFolder);
@@ -813,7 +863,7 @@
       pushUndo(unlabelled);
       await labelFiles(unlabelled, "sharp");
       await refreshFiles();
-      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp`;
+      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp in ${primaryLabel}`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -940,6 +990,7 @@
         rating: 0,
         capturedAt: null,
         flag: null,
+        folderId: 1,
       })) as FileEntry[];
       status = "browser preview (not connected to the backend)";
       return;
@@ -981,7 +1032,7 @@
     const unlisteners = [
       onProgress((p) => {
         progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
-        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
+        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}${primaryLabel ? ` · ${primaryLabel}` : ""}`;
       }),
       onDone(async () => {
         busy = false;
@@ -997,15 +1048,15 @@
       onScanProgress((p) => {
         progress = { label: "Scanning", done: p.done, total: p.total };
         status = p.total
-          ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
-          : "scanning…";
+          ? `scanning ${p.done}/${p.total} (hashing new and changed files)${primaryLabel ? ` · ${primaryLabel}` : ""}`
+          : `scanning ${primaryLabel}…`;
       }),
       onScanDone(async (r) => {
         busy = false;
         progress = null;
         status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
           r.restored ? `, ${r.restored} restored` : ""
-        })`;
+        })${primaryLabel ? ` · ${primaryLabel}` : ""}`;
         await refreshFolders();
         await refreshFiles();
         // Opt-in: warm the preview cache after a scan.
@@ -1081,14 +1132,29 @@
       <div
         class="folder"
         class:active={folder.id === activeFolder}
+        class:selected={selectedFolders.has(folder.id)}
+        class:primary={folder.id === activeFolder}
         role="button"
         tabindex="0"
-        onclick={() => selectFolder(folder.id)}
+        title="Click to show only this folder · Ctrl/Cmd-click to add it to the view"
+        onclick={(e) => selectFolder(folder.id, e.ctrlKey || e.metaKey)}
         onkeydown={(e) => e.key === "Enter" && selectFolder(folder.id)}
       >
-        {folder.path}
+        <span class="path">{folder.path}</span>
+        {#if folder.id === activeFolder}
+          <span class="badge picked" title="Folder-scoped actions target this folder">primary</span>
+        {/if}
       </div>
     {/each}
+    {#if folders.length > 1}
+      <p class="status">Ctrl/Cmd-click a folder to add it to the view.</p>
+    {/if}
+    {#if primaryFolder}
+      <p class="status" title={primaryFolder.path}>
+        Actions target: <strong>{folderLabel(primaryFolder.path)}</strong>
+        {#if selectedFolders.size > 1}· {selectedFolders.size} folders shown{/if}
+      </p>
+    {/if}
   </aside>
 
   <main class="main">
@@ -1171,6 +1237,8 @@
         {selected}
         {focusIndex}
         {burstInfo}
+        showFolder={selectedFolders.size > 1}
+        {folderNames}
         emptyText={activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
         onFocus={(i) => (focusIndex = i)}
         onToggle={toggle}
@@ -1246,6 +1314,10 @@
   {/if}
 
   {#if showExport}
-    <ExportDialog onClose={() => (showExport = false)} onExport={runExportKeepers} />
+    <ExportDialog
+      folderPath={primaryFolder?.path ?? ""}
+      onClose={() => (showExport = false)}
+      onExport={runExportKeepers}
+    />
   {/if}
 </div>

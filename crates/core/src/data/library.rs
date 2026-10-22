@@ -953,6 +953,23 @@ mod tests {
     }
 
     #[test]
+    fn scan_recurses_into_child_folders() {
+        let (dir, conn) = setup();
+        write(dir.path(), "day1/card/a.cr3", b"a");
+        write(dir.path(), "day2/b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.added, 2);
+        let mut rel: Vec<String> = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.file.relative_path)
+            .collect();
+        rel.sort();
+        assert_eq!(rel, vec!["day1/card/a.cr3", "day2/b.cr3"]);
+    }
+
+    #[test]
     fn rescan_is_untouched_then_detects_changes() {
         let (dir, conn) = setup();
         let p = write(dir.path(), "a.cr3", b"original");

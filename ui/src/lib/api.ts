@@ -30,6 +30,8 @@ export interface FileEntry {
   capturedAt: string | null;
   /** `"pick"`, `"reject"`, or `null` (unflagged). */
   flag: string | null;
+  /** Owning folder (for the multi-folder view). */
+  folderId: number;
 }
 
 export interface ScanReport {
@@ -177,8 +179,8 @@ export async function cancelAnalysis(): Promise<void> {
   return invoke("cancel_analysis");
 }
 
-export async function queryFiles(folder: number): Promise<FileEntry[]> {
-  return invoke("query_files", { folder });
+export async function queryFiles(folders: number[]): Promise<FileEntry[]> {
+  return invoke("query_files", { folders });
 }
 
 export async function getThumbnail(file: number): Promise<string> {
