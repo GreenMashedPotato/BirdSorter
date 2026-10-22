@@ -31,6 +31,7 @@ agents. Humans should start at [README.md](./README.md).
 | [docs/DENOISE_PLAN.md](./docs/DENOISE_PLAN.md) | Future denoise/export feature: model shortlist, licences, tiling, milestones |
 | [docs/SIGNING.md](./docs/SIGNING.md) · [docs/MACOS_TODO.md](./docs/MACOS_TODO.md) | Release/signing and the macOS validation brief |
 | [docs/rule.md](./docs/rule.md) | Engineering rules |
+| [docs/agent-brief.md](./docs/agent-brief.md) | Handoff brief for the next agent: current state, goals, queue, definition of done |
 
 ## Repository map
 
