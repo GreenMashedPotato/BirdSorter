@@ -995,7 +995,11 @@
     return () => {
       window.removeEventListener("keydown", onKeydown);
       if (adjustTimer) clearTimeout(adjustTimer);
-      if (editSaveTimer) clearTimeout(editSaveTimer);
+      if (editSaveTimer) {
+        // Closing within the debounce must not drop the last slider move.
+        clearTimeout(editSaveTimer);
+        void saveEdits(fileId, adjustments).catch(() => {});
+      }
     };
   });
 </script>
