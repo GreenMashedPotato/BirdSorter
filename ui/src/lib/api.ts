@@ -243,7 +243,7 @@ export async function clearEdits(file: number): Promise<number> {
   return invoke("clear_edits", { file });
 }
 
-/** Write a JPEG of the cached preview with `adjustments` applied. */
+/** Write an edited preview as JPEG or lossless TIFF (by destination suffix). */
 export async function exportEdited(
   file: number,
   mode: string,

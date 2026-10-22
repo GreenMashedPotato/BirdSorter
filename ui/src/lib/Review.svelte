@@ -867,18 +867,22 @@
     void renderPreview();
   }
 
-  /// Write a JPEG of the current preview with the adjustments applied. The
-  /// original and its sidecars are never touched.
-  async function exportEditedJpeg() {
+  /// Write an image (JPEG, or lossless TIFF when the name ends in .tif/.tiff)
+  /// of the current preview with the adjustments applied. The original and its
+  /// sidecars are never touched.
+  async function exportEditedImage() {
     try {
       const base = (detail?.filename ?? "edited").replace(/\.[^.]+$/, "");
       const dest = await saveDialog({
-        title: "Export edited JPEG",
+        title: "Export edited image",
         defaultPath: `${base}_edited.jpg`,
-        filters: [{ name: "JPEG", extensions: ["jpg", "jpeg"] }],
+        filters: [
+          { name: "JPEG", extensions: ["jpg", "jpeg"] },
+          { name: "TIFF", extensions: ["tif", "tiff"] },
+        ],
       });
       if (typeof dest !== "string") return;
-      status = "exporting edited JPEG…";
+      status = "exporting edited image…";
       status = `exported ${await exportEdited(fileId, previewMode, adjustments, dest)}`;
     } catch (e) {
       status = `error: ${e}`;
@@ -1254,7 +1258,7 @@
           {/each}
           <p class="status">Saved per photo — originals and sidecars are untouched.</p>
           <div class="row end">
-            <button class="mini" onclick={exportEditedJpeg}>Export JPEG…</button>
+            <button class="mini" onclick={exportEditedImage}>Export image…</button>
           </div>
         </div>
       {/if}

@@ -13,9 +13,11 @@ use birdsorter_core::io::adjust;
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::develop::develop_preview;
+use birdsorter_core::io::export::ImageFormat;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{
-    cached_coalesced, encode_rgb_jpeg, render_key, thumbnail_cached_with, RenderGates,
+    cached_coalesced, encode_rgb_jpeg, encode_rgb_tiff, render_key, thumbnail_cached_with,
+    RenderGates,
 };
 
 use crate::config::{ANALYSIS_LONG_SIDE, DEVELOP_MAX_LONG_SIDE, THUMB_LONG_SIDE};
@@ -159,9 +161,10 @@ pub(crate) async fn preview_image(
     blocking(move || preview_impl(&cache_root, &db_path, &gates, file, &mode)).await
 }
 
-/// Write a JPEG of the cached preview with `adjustments` applied. The original
-/// file is never touched; `mode` chooses the resolution (fast = 2400 px,
-/// full = the camera's native preview).
+/// Write a JPEG or lossless TIFF (chosen by the destination suffix) of the
+/// cached preview with `adjustments` applied. The original file is never
+/// touched; `mode` chooses the resolution (fast = 2400 px, full = the camera's
+/// native preview).
 #[tauri::command]
 pub(crate) async fn export_edited(
     state: State<'_, AppState>,
@@ -176,7 +179,11 @@ pub(crate) async fn export_edited(
     let mode = mode.unwrap_or_else(|| "fast".to_string());
     blocking(move || {
         let base = base_preview(&cache_root, &db_path, &gates, file, &mode)?;
-        let bytes = adjust::apply_encoded(&base, &adjustments, 92).map_err(err)?;
+        let rgb = adjust::decode_and_apply(&base, &adjustments).map_err(err)?;
+        let bytes = match ImageFormat::from_path(Path::new(&dest)) {
+            ImageFormat::Tiff => encode_rgb_tiff(&rgb).map_err(err)?,
+            ImageFormat::Jpeg => encode_rgb_jpeg(&rgb, 92).map_err(err)?,
+        };
         std::fs::write(&dest, &bytes).map_err(err)?;
         Ok(dest)
     })

@@ -29,6 +29,28 @@ impl ExportMode {
     }
 }
 
+/// Encoding for an exported edited preview, chosen by the destination suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    Jpeg,
+    Tiff,
+}
+
+impl ImageFormat {
+    /// `.tif`/`.tiff` (case-insensitive) means TIFF; everything else is JPEG.
+    pub fn from_path(path: &Path) -> Self {
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("tif") | Some("tiff") => Self::Tiff,
+            _ => Self::Jpeg,
+        }
+    }
+}
+
 /// How exported files are arranged under the destination folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExportLayout {
@@ -301,6 +323,23 @@ pub fn export_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_format_follows_the_destination_suffix() {
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.tif")),
+            ImageFormat::Tiff
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.TIFF")),
+            ImageFormat::Tiff
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.jpg")),
+            ImageFormat::Jpeg
+        );
+        assert_eq!(ImageFormat::from_path(Path::new("a")), ImageFormat::Jpeg);
+    }
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
