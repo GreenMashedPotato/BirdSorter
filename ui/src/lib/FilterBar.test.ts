@@ -30,6 +30,22 @@ describe("FilterBar", () => {
     expect(onSelectAll).toHaveBeenCalledOnce();
   });
 
+  it("reports the chosen sort order", async () => {
+    const onSort = vi.fn();
+    const { getByLabelText } = render(FilterBar, {
+      props: {
+        filter: "all",
+        sort: "worst",
+        onSort,
+        shown: 3,
+        selectedCount: 0,
+        onSelectAll: () => {},
+      },
+    });
+    await fireEvent.change(getByLabelText("Sort order"), { target: { value: "best" } });
+    expect(onSort).toHaveBeenCalledWith("best");
+  });
+
   it("disables select-all when nothing is shown", () => {
     const { getByText } = render(FilterBar, {
       props: { filter: "all", shown: 0, selectedCount: 0, onSelectAll: () => {} },
