@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { sortFiles } from "./sort";
+import { isSortKey, sortFiles } from "./sort";
 
-function file(filename: string, score: number | null, rating = 0) {
-  return { filename, score, rating };
+function file(
+  filename: string,
+  score: number | null,
+  rating = 0,
+  capturedAt: string | null = null,
+) {
+  return { filename, score, rating, capturedAt };
 }
 
 describe("sortFiles", () => {
@@ -31,6 +36,26 @@ describe("sortFiles", () => {
       "a.cr3",
       "b.cr3",
     ]);
+  });
+
+  it("sorts by capture date in both directions, undated last", () => {
+    const files = [
+      file("b.cr3", 0.5, 0, "2026-05-02T10:00:00"),
+      file("a.cr3", 0.5, 0, null),
+      file("c.cr3", 0.5, 0, "2026-05-01T10:00:00"),
+    ];
+    expect(sortFiles(files, "date").map((f) => f.filename)).toEqual(["c.cr3", "b.cr3", "a.cr3"]);
+    expect(sortFiles(files, "date_new").map((f) => f.filename)).toEqual([
+      "b.cr3",
+      "c.cr3",
+      "a.cr3",
+    ]);
+  });
+
+  it("recognises valid sort keys only", () => {
+    expect(isSortKey("date_new")).toBe(true);
+    expect(isSortKey("nonsense")).toBe(false);
+    expect(isSortKey(null)).toBe(false);
   });
 
   it("orders filenames numerically", () => {

@@ -206,7 +206,8 @@ macOS-specific work (CoreML, notarization, `.dmg`, HEIC) is listed as a
 self-contained brief in [`MACOS_TODO.md`](./docs/MACOS_TODO.md).
 
 The window provides a folder sidebar, a thumbnail grid (worst-first by default,
-sortable by best score, rating or filename) with filter chips, bulk labelling
+sortable by best score, rating, capture date or filename; the choice is
+remembered) with filter chips, bulk labelling
 (Sharp / Blurry / Bokeh OK / Reject), and live analysis progress. **Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,
@@ -218,6 +219,8 @@ sortable by best score, rating or filename) with filter chips, bulk labelling
   (missing fields are hidden),
 - the cached grid thumbnail appears instantly while the full preview renders,
 - a **filmstrip** of nearby frames under the image — click one to open it,
+- **Auto-advance** (toggle in the review bar) opens the next photo after a label
+  or rating,
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling

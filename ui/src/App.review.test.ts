@@ -46,6 +46,7 @@ vi.mock("./lib/api", async (importOriginal) => {
     species: null,
     subjectClass: "bird",
     rating: 0,
+    capturedAt: "2026-07-14T09:31:22",
   });
   const detail = (id: number) => ({
     fileId: id,
@@ -132,6 +133,19 @@ describe("review view", () => {
     vi.mocked(getThumbnail).mockClear();
     await openFirstReview();
     expect(getThumbnail).toHaveBeenCalledWith(1);
+  });
+
+  it("auto-advances after a label when enabled", async () => {
+    localStorage.clear();
+    const { container, getByText } = await openFirstReview();
+    await fireEvent.click(getByText("Auto-advance"));
+
+    const review = container.querySelector(".review") as HTMLElement;
+    await fireEvent.click(within(review).getByText("Sharp"));
+
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img2.cr3"),
+    );
   });
 
   it("copies adjustments and pastes them onto the next photo", async () => {

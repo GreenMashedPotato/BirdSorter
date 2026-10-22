@@ -57,6 +57,10 @@ pub(crate) struct FileDto {
     has_bokeh: bool,
     species: Option<String>,
     subject_class: Option<String>,
+    /// 0-5 stars, mirrored into an XMP sidecar.
+    rating: i64,
+    /// EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting.
+    captured_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -115,6 +119,8 @@ fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String>
             has_bokeh: r.has_bokeh,
             species: r.species_name,
             subject_class: r.subject_class,
+            rating: r.file.file.rating,
+            captured_at: r.file.file.captured_at,
         })
         .collect())
 }

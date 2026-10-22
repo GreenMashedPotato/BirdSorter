@@ -15,6 +15,7 @@ function file(over: Partial<FileEntry> = {}): FileEntry {
     species: null,
     subjectClass: "bird",
     rating: 0,
+    capturedAt: null,
     ...over,
   };
 }
