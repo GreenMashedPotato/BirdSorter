@@ -22,7 +22,7 @@ use birdsorter_core::io::thumb::{
 
 use crate::config::{ANALYSIS_LONG_SIDE, DEVELOP_MAX_LONG_SIDE, THUMB_LONG_SIDE};
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open_ready};
 
 /// A deferred, cache-miss render: produces encoded JPEG bytes.
 type RenderFn = Box<dyn FnOnce() -> birdsorter_core::Result<Vec<u8>>>;
@@ -38,7 +38,7 @@ fn thumbnail_impl(
     gates: &RenderGates,
     file: i64,
 ) -> Result<String, String> {
-    let conn = open(db_path)?;
+    let conn = open_ready(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
@@ -67,7 +67,7 @@ fn base_preview(
     file: i64,
     mode: &str,
 ) -> Result<Vec<u8>, String> {
-    let conn = open(db_path)?;
+    let conn = open_ready(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;

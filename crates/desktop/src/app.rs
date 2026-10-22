@@ -13,7 +13,7 @@ use birdsorter_core::io::adjust::Adjustments;
 use birdsorter_core::io::cache::{ThumbCache, DEFAULT_CACHE_BUDGET_BYTES};
 
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
 
 /// A file path the app was launched to open (file association / "Open with"),
 /// taken once so the UI opens it a single time. `None` when launched normally.
@@ -71,7 +71,7 @@ pub(crate) async fn get_edits(
 ) -> Result<Option<Adjustments>, String> {
     let db_path = state.db_path.clone();
     blocking(move || {
-        let conn = open(&db_path)?;
+        let conn = open_ready(&db_path)?;
         edits::get(&conn, file).map_err(err)
     })
     .await

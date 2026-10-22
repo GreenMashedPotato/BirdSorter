@@ -14,7 +14,7 @@ use birdsorter_core::io::xmp;
 use birdsorter_core::pipeline::CancelToken;
 
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +106,7 @@ fn add_folder_impl(db_path: &Path, path: &str) -> Result<i64, String> {
 }
 
 fn query_files_impl(db_path: &Path, folders: &[i64]) -> Result<Vec<FileDto>, String> {
-    let conn = open(db_path)?;
+    let conn = open_ready(db_path)?;
     // One join query per folder replaces N+1 per-file lookups.
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
