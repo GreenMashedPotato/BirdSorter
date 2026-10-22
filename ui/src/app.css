@@ -140,6 +140,14 @@ input {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
+.sortsel {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .grid {
   overflow: auto;

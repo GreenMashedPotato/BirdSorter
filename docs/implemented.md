@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Grid sorting**: the filter bar can order files worst-first (the backend's
+  culling order), best-first, top-rated, or by filename (numeric). Changing the
+  sort returns the virtualized grid to the top.
 - **Cache and preview responsiveness**: render keys carry a cache version
   (`{hash}@v1@{dim}`), so decoder/adjustment changes invalidate old bytes;
   `clean_cache` prunes the oldest entries to a 4 GiB budget; the review

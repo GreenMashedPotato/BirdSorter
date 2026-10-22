@@ -50,6 +50,7 @@
     type ScoreBreakdown as Breakdown,
   } from "./lib/api";
   import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
+  import { sortFiles, type SortKey } from "./lib/sort";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -73,6 +74,7 @@
   /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
   const cleanups: (() => void)[] = [];
   let filter = $state<FilterKey>("all");
+  let sort = $state<SortKey>("worst");
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -128,8 +130,11 @@
   let model = $state("");
 
   const visible = $derived(
-    files.filter((f) =>
-      filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+    sortFiles(
+      files.filter((f) =>
+        filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+      ),
+      sort,
     ),
   );
 
@@ -778,6 +783,14 @@
     }
   }
 
+  /// Re-sorting changes what the virtualized grid shows, so return to the top.
+  function changeSort(next: SortKey) {
+    sort = next;
+    focusIndex = -1;
+    gridScrollTop = 0;
+    if (gridEl) gridEl.scrollTop = 0;
+  }
+
   /// Persist the first-run choice and apply it to the review immediately.
   async function finishOnboarding(mode: "fast" | "full", preload: boolean) {
     previewSettings = { mode, preload, onboardingDone: true };
@@ -1071,6 +1084,8 @@
 
     <FilterBar
       bind:filter
+      {sort}
+      onSort={changeSort}
       shown={visible.length}
       selectedCount={selected.size}
       onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
