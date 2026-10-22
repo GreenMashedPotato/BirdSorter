@@ -120,6 +120,8 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Label shortcuts**: `S`/`B`/`R`/`O` label the open photo Sharp / Blurry /
+  Reject / Bokeh OK; Auto-advance applies to keyboard labels too.
 - **Rating shortcuts and filters**: `1`–`5` rate the open photo (advancing when
   Auto-advance is on), `Shift`+`1`–`5` force the advance, `Shift`+`0` clears the
   rating; the grid filters include Rated, 3★+ and Unrated.

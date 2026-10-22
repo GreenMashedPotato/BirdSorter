@@ -136,6 +136,14 @@ describe("review view", () => {
     expect(getThumbnail).toHaveBeenCalledWith(1);
   });
 
+  it("labels the open photo with the S key", async () => {
+    localStorage.clear();
+    vi.mocked(labelFiles).mockClear();
+    await openFirstReview();
+    await fireEvent.keyDown(window, { key: "s", code: "KeyS" });
+    await waitFor(() => expect(labelFiles).toHaveBeenCalledWith([1], "sharp"));
+  });
+
   it("rates the open photo with keys 1-5", async () => {
     localStorage.clear();
     vi.mocked(rateFiles).mockClear();

@@ -1098,6 +1098,18 @@
         void togglePeaking();
       } else if ((e.key === "c" || e.key === "C") && peakingOn) {
         cyclePeakingColor();
+      } else if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        void applyLabelToReview("sharp");
+      } else if (e.key === "b" || e.key === "B") {
+        e.preventDefault();
+        void applyLabelToReview("blurry");
+      } else if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        void applyLabelToReview("reject");
+      } else if (e.key === "o" || e.key === "O") {
+        e.preventDefault();
+        void applyLabelToReview("bokeh_ok");
       }
     };
     window.addEventListener("keydown", onKeydown);
@@ -1536,10 +1548,18 @@
 
       <h3>Your label</h3>
       <div class="picks">
-        <button class="pick" onclick={() => applyLabelToReview("sharp")}>Sharp</button>
-        <button class="pick" onclick={() => applyLabelToReview("blurry")}>Blurry</button>
-        <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")}>Bokeh OK</button>
-        <button class="pick" onclick={() => applyLabelToReview("reject")}>Reject</button>
+        <button class="pick" onclick={() => applyLabelToReview("sharp")} title="Sharp (S)">
+          Sharp
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("blurry")} title="Blurry (B)">
+          Blurry
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")} title="Bokeh OK (O)">
+          Bokeh OK
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("reject")} title="Reject (R)">
+          Reject
+        </button>
       </div>
       {#if detail?.label}<p class="status">current: {detail.label}</p>{/if}
 

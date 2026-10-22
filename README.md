@@ -220,8 +220,9 @@ remembered) with filter chips (including Rated / 3★+ / Unrated), bulk labellin
 - the cached grid thumbnail appears instantly while the full preview renders,
 - a **filmstrip** of nearby frames under the image — click one to open it,
 - **Auto-advance** (toggle in the review bar) opens the next photo after a label
-  or rating; `1`–`5` rate, `Shift`+`1`–`5` rate and advance, `Shift`+`0` clears
-  the rating (`0` still resets zoom),
+  or rating; `S`/`B`/`R`/`O` label Sharp / Blurry / Reject / Bokeh OK; `1`–`5`
+  rate, `Shift`+`1`–`5` rate and advance, `Shift`+`0` clears the rating (`0`
+  still resets zoom),
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling
