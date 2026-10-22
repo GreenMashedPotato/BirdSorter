@@ -120,6 +120,9 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Copy/paste adjustments**: the Adjust panel copies the current look into a
+  persisted clipboard (merged with defaults for older clips) and pastes it onto
+  another photo, saving the edit immediately.
 - **Dehaze**: a coarse dark-channel transmission map (480 px, blurred, bilinear
   upsampled) estimates the atmospheric light; `+1` clears haze and `-1` adds
   atmosphere. Available in the review slider, saved edits and CLI `--dehaze`.
