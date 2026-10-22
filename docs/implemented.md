@@ -120,6 +120,8 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Bulk flagging**: the selection bar can Pick / Reject / Unflag every selected
+  file in one action.
 - **Pick/reject flags** (schema v16): `P`/`X`/`U` flag or clear the open photo
   (`P`/`X` advance when Auto-advance is on); the grid shows `P`/`X` badges and
   filters by Picked / Rejected / Unflagged.

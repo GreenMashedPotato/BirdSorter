@@ -394,17 +394,27 @@
     }
   }
 
-  /// Set or clear the pick/reject flag for one file.
-  async function flagOne(id: number, flag: string | null) {
+  /// Set or clear the pick/reject flag for a set of files.
+  async function flagFiles(ids: number[], flag: string | null) {
+    if (ids.length === 0) return;
     try {
-      const changed = await setFlag([id], flag);
-      files = files.map((f) => (f.id === id ? { ...f, flag } : f));
+      const changed = await setFlag(ids, flag);
+      const selectedIds = new Set(ids);
+      files = files.map((f) => (selectedIds.has(f.id) ? { ...f, flag } : f));
       status = flag
         ? `${flag === "pick" ? "picked" : "rejected"} ${changed} file(s)`
         : `cleared flag on ${changed} file(s)`;
     } catch (e) {
       status = `error: ${e}`;
     }
+  }
+
+  function flagOne(id: number, flag: string | null) {
+    return flagFiles([id], flag);
+  }
+
+  function flagSelected(flag: string | null) {
+    return flagFiles([...selected], flag);
   }
 
   /// Rate every selected file.
@@ -1121,6 +1131,7 @@
       {busy}
       hasFolder={activeFolder !== null}
       onLabel={applyLabel}
+      onFlag={flagSelected}
       onTrash={trashSelected}
       onRate={rateSelected}
       onAutoStar={autoStar}
