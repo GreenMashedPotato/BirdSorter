@@ -17,17 +17,20 @@ raw-sorter-app/
   scripts/           Build/release/version scripts (bash + PowerShell wrappers)
   models/            Small development/bundled detector artifacts
   dist-models/       Large distribution-only model artifacts; not committed
-  implemented.md     Shipped features, change log and measurements
-  ARCHITECTURE.md    System/pipeline diagrams, module map, IPC, storage
-  CONTRIBUTING.md    How to add code (deps, gates, recipes, invariants)
-  TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
-  progress.md        Living implementation status
-  SUGGESTIONS.md     Backlog of improvements, status-tagged
-  README.md          Front page: build, run, package
-  MODELS.md          Model contracts and licenses
-  EYE_MODEL.md       Eye model data/training/runtime contract
-  MACOS_TODO.md      Mac-specific validation brief
-  SIGNING.md         Signing and notarization instructions
+  README.md          Front page: build, run, package, doc index
+  AGENTS.md          Agent entry point: repo map, doc index, gates, invariants
+  docs/              Long-form documentation
+    ARCHITECTURE.md  System/pipeline diagrams, module map, IPC, storage
+    CONTRIBUTING.md  How to add code (deps, gates, recipes, invariants)
+    TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
+    progress.md      Living implementation status
+    implemented.md   Shipped features, change log and measurements
+    SUGGESTIONS.md   Open/partial improvements only
+    MODELS.md        Model contracts and licenses
+    EYE_MODEL.md     Eye model data/training/runtime contract
+    MACOS_TODO.md    Mac-specific validation brief
+    SIGNING.md       Signing and notarization instructions
+    rule.md          Engineering rules (this file)
 ```
 
 ## 2. Dependency direction
