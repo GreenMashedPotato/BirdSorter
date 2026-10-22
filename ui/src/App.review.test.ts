@@ -134,6 +134,25 @@ describe("review view", () => {
     expect(getThumbnail).toHaveBeenCalledWith(1);
   });
 
+  it("copies adjustments and pastes them onto the next photo", async () => {
+    localStorage.clear();
+    const { container, getByText } = await openFirstReview();
+    await fireEvent.click(getByText("Adjust"));
+
+    const exposure = container.querySelector<HTMLInputElement>("#adj-exposure")!;
+    await fireEvent.input(exposure, { target: { value: "0.5" } });
+    await fireEvent.click(getByText("Copy"));
+
+    await fireEvent.click(getByText("J ›"));
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img2.cr3"),
+    );
+    await fireEvent.click(getByText("Paste"));
+
+    const pasted = container.querySelector<HTMLInputElement>("#adj-exposure")!;
+    expect(pasted.value).toBe("0.5");
+  });
+
   it("offers the dehaze control in the adjust panel", async () => {
     const { getByText } = await openFirstReview();
     await fireEvent.click(getByText("Adjust"));

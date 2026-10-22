@@ -32,6 +32,7 @@
   } from "./api";
   import { lumaHistogram } from "./histogram";
   import { neighborIds } from "./navigation";
+  import { loadAdjustmentClipboard, saveAdjustmentClipboard } from "./adjustments";
   import Filmstrip from "./Filmstrip.svelte";
 
   // The open file plus everything the review needs from App. App owns the
@@ -96,6 +97,7 @@
   /// Preview-only adjustments (non-destructive; reset when navigating).
   let adjustOpen = $state(false);
   let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
+  let adjustmentClipboard = $state<Adjustments | null>(loadAdjustmentClipboard());
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
   /// Guards against out-of-order adjusted-preview responses.
@@ -829,6 +831,28 @@
     }, 500);
   }
 
+  function copyAdjustments() {
+    adjustmentClipboard = { ...adjustments };
+    saveAdjustmentClipboard(adjustmentClipboard);
+    status = "adjustments copied";
+  }
+
+  function pasteAdjustments() {
+    if (!adjustmentClipboard) return;
+    adjustments = { ...adjustmentClipboard };
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+    void saveEdits(fileId, adjustments).catch(() => {});
+    void renderPreview();
+    status = "adjustments pasted";
+  }
+
   function resetAdjustments() {
     adjustments = { ...DEFAULT_ADJUSTMENTS };
     if (adjustTimer) {
@@ -1200,6 +1224,17 @@
         <div class="adjust">
           <div class="adjust-head">
             <strong>Adjust</strong>
+            <button class="mini" onclick={copyAdjustments} title="Copy these adjustments">
+              Copy
+            </button>
+            <button
+              class="mini"
+              onclick={pasteAdjustments}
+              disabled={!adjustmentClipboard}
+              title="Paste the copied adjustments onto this photo"
+            >
+              Paste
+            </button>
             <button class="mini" onclick={resetAdjustments}>Reset</button>
           </div>
           {#each ADJUST_CONTROLS as c (c.key)}

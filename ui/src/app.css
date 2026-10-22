@@ -708,6 +708,7 @@ input {
 .adjust-head {
   display: flex;
   align-items: center;
+  gap: 6px;
   justify-content: space-between;
   margin-bottom: 6px;
 }

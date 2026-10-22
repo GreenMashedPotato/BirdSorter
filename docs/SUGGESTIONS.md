@@ -33,6 +33,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 - ⬜ **Guided-filter refinement for dehaze** — the current transmission map is a
   coarse dark channel + box blur; a guided filter would keep edges crisper.
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
+- ⬜ **Named presets with amounts and group sync** — Copy/Paste is in place; a
+  preset library, partial groups and an amount slider remain.
 - ⬜ **TIFF export of edits** — JPEG export is in place; TIFF would need a
   different encoder path.
 
