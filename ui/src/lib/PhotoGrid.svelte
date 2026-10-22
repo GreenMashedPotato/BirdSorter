@@ -93,6 +93,13 @@
               >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
             >
           {/if}
+          {#if f.flag}
+            <span
+              class="badge {f.flag === "pick" ? "picked" : "rejected"}"
+              title={f.flag === "pick" ? "Picked" : "Rejected"}
+              >{f.flag === "pick" ? "P" : "X"}</span
+            >
+          {/if}
           {#if f.predicted}
             <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
             <span class="status">{f.score === null ? "" : f.score.toFixed(2)}</span>

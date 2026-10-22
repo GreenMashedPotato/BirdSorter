@@ -61,6 +61,8 @@ pub(crate) struct FileDto {
     rating: i64,
     /// EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting.
     captured_at: Option<String>,
+    /// `"pick"`, `"reject"`, or `null` (unflagged).
+    flag: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -121,6 +123,7 @@ fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String>
             subject_class: r.subject_class,
             rating: r.file.file.rating,
             captured_at: r.file.file.captured_at,
+            flag: r.file.file.flag,
         })
         .collect())
 }
@@ -312,6 +315,21 @@ pub(crate) async fn rate_files(
             xmp_written: written,
             xmp_failed: failed,
         })
+    })
+    .await
+}
+
+/// Set or clear the pick/reject flag on files.
+#[tauri::command]
+pub(crate) async fn set_flag(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    flag: Option<String>,
+) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        library::set_flag(&conn, &files, flag.as_deref()).map_err(err)
     })
     .await
 }

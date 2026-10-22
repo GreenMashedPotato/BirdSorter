@@ -44,6 +44,8 @@
     ids,
     burstGroups,
     rating,
+    flag = null,
+    onFlag = () => {},
     previewMode = "fast",
     onPreviewModeChange = () => {},
     refreshToken,
@@ -64,6 +66,9 @@
     burstGroups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[];
     /** Current file's 0-5 star rating. */
     rating: number;
+    /** Current file's pick/reject flag. */
+    flag?: string | null;
+    onFlag?: (id: number, flag: string | null) => void;
     /** Preview resolution, owned (and persisted) by App. */
     previewMode?: "fast" | "full";
     onPreviewModeChange?: (mode: "fast" | "full") => void;
@@ -1095,6 +1100,17 @@
         resetZoom();
       } else if (e.key === "p" || e.key === "P") {
         e.preventDefault();
+        onFlag(fileId, "pick");
+        if (autoAdvance) nav(1);
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        onFlag(fileId, "reject");
+        if (autoAdvance) nav(1);
+      } else if (e.key === "u" || e.key === "U") {
+        e.preventDefault();
+        onFlag(fileId, null);
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
         void togglePeaking();
       } else if ((e.key === "c" || e.key === "C") && peakingOn) {
         cyclePeakingColor();
@@ -1152,7 +1168,7 @@
     <button
       class:active={peakingOn}
       onclick={togglePeaking}
-      title="Glow the parts of the photo that are in focus"
+      title="Glow the parts of the photo that are in focus (F)"
     >
       Focus peaking
     </button>
@@ -1544,6 +1560,35 @@
         {#if detail?.species}
           <button class="mini" onclick={() => chooseSpecies(null)}>Clear ID</button>
         {/if}
+      </div>
+
+      <h3>Flag</h3>
+      <div class="picks">
+        <button
+          class="pick"
+          class:active={flag === "pick"}
+          onclick={() => {
+            onFlag(fileId, "pick");
+            if (autoAdvance) nav(1);
+          }}
+          title="Pick (P)"
+        >
+          Pick
+        </button>
+        <button
+          class="pick"
+          class:active={flag === "reject"}
+          onclick={() => {
+            onFlag(fileId, "reject");
+            if (autoAdvance) nav(1);
+          }}
+          title="Reject (X)"
+        >
+          Reject
+        </button>
+        <button class="mini" onclick={() => onFlag(fileId, null)} title="Clear flag (U)">
+          Clear
+        </button>
       </div>
 
       <h3>Your label</h3>

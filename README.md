@@ -94,7 +94,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 303 unit tests
+cargo test --workspace          # 305 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -207,8 +207,8 @@ self-contained brief in [`MACOS_TODO.md`](./docs/MACOS_TODO.md).
 
 The window provides a folder sidebar, a thumbnail grid (worst-first by default,
 sortable by best score, rating, capture date, species or filename; the sort and
-active filter are remembered) with filter chips (including Rated / 3★+ / Unrated),
-bulk labelling
+active filter are remembered) with filter chips (including Rated / 3★+ / Unrated
+and Picked / Rejected / Unflagged), bulk labelling
 (Sharp / Blurry / Bokeh OK / Reject), and live analysis progress. **Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,
@@ -221,9 +221,10 @@ bulk labelling
 - the cached grid thumbnail appears instantly while the full preview renders,
 - a **filmstrip** of nearby frames under the image — click one to open it,
 - **Auto-advance** (toggle in the review bar) opens the next photo after a label
-  or rating; `S`/`B`/`R`/`O` label Sharp / Blurry / Reject / Bokeh OK; `1`–`5`
-  rate, `Shift`+`1`–`5` rate and advance, `Shift`+`0` clears the rating (`0`
-  still resets zoom),
+  or rating; `S`/`B`/`R`/`O` label Sharp / Blurry / Reject / Bokeh OK;
+  `P`/`X`/`U` pick / reject / clear the flag; `1`–`5` rate, `Shift`+`1`–`5` rate
+  and advance, `Shift`+`0` clears the rating (`0` still resets zoom), `F`
+  toggles focus peaking,
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling
