@@ -666,6 +666,20 @@
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
 
+  // Technical strip (camera/lens/exposure), shown only when EXIF has it.
+  const exifChips = $derived(
+    detail
+      ? [
+          detail.meta?.camera,
+          detail.meta?.lens,
+          detail.meta?.iso != null ? `ISO ${detail.meta.iso}` : null,
+          detail.meta?.exposure,
+          detail.meta?.aperture,
+          detail.meta?.focalLength,
+        ].filter((s): s is string => !!s)
+      : [],
+  );
+
   // --- load / navigate -----------------------------------------------------
   /// Load a file's detail and preview. Called on mount and whenever the open
   /// file changes (the effect below), so it takes `id` explicitly.
@@ -1034,6 +1048,9 @@
   <div class="review-bar">
     <strong>{detail?.filename ?? "loading…"}</strong>
     {#if detail?.capturedAt}<span class="status">{detail.capturedAt.replace("T", " ")}</span>{/if}
+    {#each exifChips as chip, i (i)}
+      <span class="status">{chip}</span>
+    {/each}
     {#if detail?.predicted}
       <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
       <span class="status">score {detail.score?.toFixed(3)}</span>

@@ -65,8 +65,9 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   `srw`, Kodak `dcr`/`dcs`/`kdc`, Epson `erf`, Leaf `mos`/`tfr`, Mamiya `mef`,
   Minolta `mrw`, Phase One `iiq` and Arri `ari`.
 - **Ordinary images**: JPEG (`jpg`/`jpeg`) and TIFF (`tif`/`tiff`). Their EXIF
-  **capture time** (burst grouping, `--by date` export) and **orientation** are
-  read, so portrait shots appear upright and join bursts/date folders.
+  **capture time** (burst grouping, `--by date` export), **orientation** and
+  technical settings (the review's EXIF strip) are read, so portrait shots
+  appear upright and join bursts/date folders.
 - HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
   ImageIO path).
 
@@ -90,7 +91,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 294 unit tests
+cargo test --workspace          # 297 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -210,6 +211,8 @@ sortable by best score, rating or filename) with filter chips, bulk labelling
 - **YOLO subject boxes overlaid** on the image — click a box to select a subject,
 - per-subject species with the **top-4 predictions plus a blank field** to set
   the actual species (or clear it),
+- an **EXIF strip** with camera, lens, ISO, shutter, aperture and focal length
+  (missing fields are hidden),
 - J/K to step through files, Esc to close.
 
 The toolbar's **Settings** button opens the scoring panel: one **Culling

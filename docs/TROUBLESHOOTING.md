@@ -106,6 +106,9 @@ automatically (analysis is tied to the file's content hash).
   preview at the current resolution. It never changes stored scores, labels,
   sidecars or the original file. The CLI can render one: `preview <raw> out.jpg
   --exposure 0.5 --temperature 0.4 --vibrance 0.5 --clarity 0.4 --denoise 0.4`.
+- **The EXIF strip** reads camera/lens/ISO/shutter/aperture/focal from the RAW
+  metadata (JPEG/TIFF from their EXIF). Missing fields are normal — e.g. a lens
+  rawler cannot resolve is hidden rather than shown as "unknown".
 - **Preview mode and preloading** live in
   `%APPDATA%\BirdSorter\config\preview_settings.json` (`mode`, `preload`,
   `onboardingDone`). The first-run setup writes it and the review bar's selector
