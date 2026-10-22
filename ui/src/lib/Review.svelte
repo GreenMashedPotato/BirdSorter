@@ -13,6 +13,7 @@
     exportFile,
     eyeLabelStats,
     getEyePoints,
+    getThumbnail,
     identifySubject,
     inTauri,
     labelFiles,
@@ -687,6 +688,12 @@
     const request = ++reviewRequest;
     detail = null;
     previewUrl = "";
+    // Show the cached grid thumbnail immediately; the full render replaces it.
+    void getThumbnail(id)
+      .then((url) => {
+        if (request === reviewRequest && !previewUrl && url) previewUrl = url;
+      })
+      .catch(() => {});
     // Adjustments are per-photo; start fresh when navigating.
     adjustments = { ...DEFAULT_ADJUSTMENTS };
     selectedBox = 0;

@@ -120,6 +120,11 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **RAW previewer**: CR3 `PRVW`/`THMB` extraction reads a 2 MiB prefix instead of
+  decoding the ~24 MB full-size JPEG track. A 512 px thumbnail went from
+  **17.3 s → 0.9 s** in a debug build (38 ms warm in release; first uncached read
+  511 ms). The review also shows the cached grid thumbnail immediately while the
+  full preview renders.
 - **EXIF strip**: the review shows camera, lens, ISO, shutter, aperture and focal
   length from the RAW metadata (JPEG/TIFF from their EXIF); `probe` prints the
   same line.
