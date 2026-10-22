@@ -12,8 +12,8 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v15
 > dark-channel dehaze slider, Copy/Paste carries a look between photos, edited
 > exports can be JPEG or lossless TIFF, the grid sorts by capture date with the
 > choice remembered, Auto-advance moves through a shoot after each label or
-> rating, `1`–`5` rate, and the grid filters by rating. The analysis below still
-> describes the rest of the snapshot.
+> rating, `1`–`5` rate, `S`/`B`/`R`/`O` label, and the grid filters by rating.
+> The analysis below still describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
