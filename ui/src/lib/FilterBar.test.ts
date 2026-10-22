@@ -37,6 +37,30 @@ describe("FilterBar", () => {
     expect(getByLabelText("Search photos")).toBeTruthy();
   });
 
+  it("saves and applies a search", async () => {
+    const onSaveSearch = vi.fn();
+    const onApplySearch = vi.fn();
+    const { getByText, getByLabelText } = render(FilterBar, {
+      props: {
+        filter: "all",
+        search: "flag:pick",
+        savedSearches: ["rating:>3"],
+        onSaveSearch,
+        onApplySearch,
+        shown: 3,
+        selectedCount: 0,
+        onSelectAll: () => {},
+      },
+    });
+
+    await fireEvent.click(getByText("Save"));
+    expect(onSaveSearch).toHaveBeenCalledWith("flag:pick");
+    await fireEvent.change(getByLabelText("Saved searches"), {
+      target: { value: "rating:>3" },
+    });
+    expect(onApplySearch).toHaveBeenCalledWith("rating:>3");
+  });
+
   it("reports the chosen sort order", async () => {
     const onSort = vi.fn();
     const { getByLabelText } = render(FilterBar, {

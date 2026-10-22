@@ -14,9 +14,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v16
 > choice remembered, Auto-advance moves through a shoot after each label or
 > rating, `1`–`5` rate, `S`/`B`/`R`/`O` label, `P`/`X`/`U` flag (single and
 > bulk), the grid filters by rating and flags, sorts by species, remembers the
-> sort/filter, has a token search (`rating:>3`, `flag:pick`, `species:…`), and
-> shows several folders together with the last-clicked one as the action target.
-> The analysis below still describes the rest of the snapshot.
+> sort/filter, has a token search (`rating:>3`, `flag:pick`, `species:…`) with
+> saved searches, and shows several folders together with the last-clicked one
+> as the action target. The analysis below still describes the rest of the
+> snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth

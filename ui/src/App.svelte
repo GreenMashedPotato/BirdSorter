@@ -55,6 +55,12 @@
   import { loadSortKey, saveSortKey } from "./lib/sortPref";
   import { loadFilter, saveFilter } from "./lib/filterPref";
   import { parseSearch } from "./lib/search";
+  import {
+    addSavedSearch,
+    loadSavedSearches,
+    removeSavedSearch,
+    saveSavedSearches,
+  } from "./lib/collections";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -88,6 +94,7 @@
   let filter = $state<FilterKey>(loadFilter());
   let sort = $state<SortKey>(loadSortKey());
   let search = $state("");
+  let savedSearches = $state<string[]>(loadSavedSearches());
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -878,6 +885,23 @@
     if (gridEl) gridEl.scrollTop = 0;
   }
 
+  function saveSearch(query: string) {
+    const next = addSavedSearch(savedSearches, query);
+    savedSearches = next;
+    saveSavedSearches(next);
+    status = `saved search: ${query.trim()}`;
+  }
+
+  function applySavedSearch(query: string) {
+    search = query;
+  }
+
+  function deleteSavedSearch(query: string) {
+    savedSearches = removeSavedSearch(savedSearches, query);
+    saveSavedSearches(savedSearches);
+    status = `removed saved search: ${query}`;
+  }
+
   // A new search changes the virtualized list; return to the top.
   let lastSearch = "";
   $effect(() => {
@@ -1202,7 +1226,11 @@
       bind:filter
       {sort}
       bind:search
+      {savedSearches}
       onSort={changeSort}
+      onSaveSearch={saveSearch}
+      onApplySearch={applySavedSearch}
+      onDeleteSearch={deleteSavedSearch}
       shown={visible.length}
       selectedCount={selected.size}
       onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
