@@ -33,6 +33,7 @@
   import { lumaHistogram } from "./histogram";
   import { neighborIds } from "./navigation";
   import { loadAdjustmentClipboard, saveAdjustmentClipboard } from "./adjustments";
+  import { loadAutoAdvance, saveAutoAdvance } from "./workflow";
   import Filmstrip from "./Filmstrip.svelte";
 
   // The open file plus everything the review needs from App. App owns the
@@ -98,6 +99,7 @@
   let adjustOpen = $state(false);
   let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
   let adjustmentClipboard = $state<Adjustments | null>(loadAdjustmentClipboard());
+  let autoAdvance = $state(loadAutoAdvance());
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
   /// Guards against out-of-order adjusted-preview responses.
@@ -1011,12 +1013,23 @@
     }
   }
 
+  function toggleAutoAdvance() {
+    autoAdvance = !autoAdvance;
+    saveAutoAdvance(autoAdvance);
+    status = autoAdvance ? "auto-advance on" : "";
+  }
+
   async function applyLabelToReview(label: UserLabel) {
+    // Capture the next frame before the label, because a filter (e.g.
+    // "unlabeled") can remove this photo from `ids` on refresh.
+    const index = ids.indexOf(fileId);
+    const nextId = autoAdvance && index >= 0 ? ids[index + 1] : undefined;
     try {
       onPushUndo([fileId]);
       await labelFiles([fileId], label);
       await refreshDetail();
       await onFilesChanged();
+      if (nextId !== undefined) onNavigate(nextId);
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -1158,6 +1171,13 @@
     </button>
     <button onclick={() => nav(-1)}>‹ K</button>
     <button onclick={() => nav(1)}>J ›</button>
+    <button
+      class:active={autoAdvance}
+      onclick={toggleAutoAdvance}
+      title="Advance to the next photo after labelling or rating"
+    >
+      Auto-advance
+    </button>
     <button
       class:active={drawing}
       onclick={() => {
@@ -1512,7 +1532,10 @@
             class="star"
             class:on={rating >= v}
             title="{v} star{v > 1 ? 's' : ''}"
-            onclick={() => onRate(fileId, rating === v ? 0 : v)}
+            onclick={() => {
+              onRate(fileId, rating === v ? 0 : v);
+              if (autoAdvance) nav(1);
+            }}
           >
             ★
           </button>

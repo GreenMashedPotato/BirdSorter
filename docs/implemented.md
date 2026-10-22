@@ -120,6 +120,10 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **Culling workflow**: the file list now carries `rating` and `capturedAt`
+  (fixing Top-rated and enabling date sorts); Date (oldest/newest) is available
+  and the chosen sort is remembered; **Auto-advance** opens the next photo after
+  a label or rating.
 - **Lossless edited export**: `Export image…` writes JPEG or TIFF by the
   destination suffix (`.tif`/`.tiff`); the TIFF path round-trips pixels exactly.
 - **Copy/paste adjustments**: the Adjust panel copies the current look into a

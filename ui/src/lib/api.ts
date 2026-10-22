@@ -26,6 +26,8 @@ export interface FileEntry {
   subjectClass: string | null;
   /** 0-5 stars, mirrored into an XMP sidecar. */
   rating: number;
+  /** EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting. */
+  capturedAt: string | null;
 }
 
 export interface ScanReport {

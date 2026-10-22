@@ -51,6 +51,7 @@
   } from "./lib/api";
   import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
   import { sortFiles, type SortKey } from "./lib/sort";
+  import { loadSortKey, saveSortKey } from "./lib/sortPref";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
@@ -74,7 +75,7 @@
   /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
   const cleanups: (() => void)[] = [];
   let filter = $state<FilterKey>("all");
-  let sort = $state<SortKey>("worst");
+  let sort = $state<SortKey>(loadSortKey());
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -786,6 +787,7 @@
   /// Re-sorting changes what the virtualized grid shows, so return to the top.
   function changeSort(next: SortKey) {
     sort = next;
+    saveSortKey(next);
     focusIndex = -1;
     gridScrollTop = 0;
     if (gridEl) gridEl.scrollTop = 0;
@@ -890,6 +892,8 @@
         hasBokeh: i % 3 === 0,
         species: null,
         subjectClass: i % 4 === 0 ? null : "bird",
+        rating: 0,
+        capturedAt: null,
       })) as FileEntry[];
       status = "browser preview (not connected to the backend)";
       return;
