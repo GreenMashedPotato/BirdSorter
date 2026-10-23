@@ -18,7 +18,7 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v19**; **357 Rust + 126 UI tests**; clippy clean.
+- SQLite schema **v19**; **358 Rust + 128 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
@@ -143,10 +143,10 @@ each slice end-to-end.
 9. **HEIC (optional feature).** Pure-Rust decoder behind a feature flag; document
    patent/licensing; ask before enabling by default.
 🟡 10. **Contact sheet export** — **shipped 2026-10-22** as the CLI
-   `contact <folder> <out.jpg> [--cols/--size/--limit]` (bounded thumbnail grid,
-   built-in captions, verdict accents; verified on real CR3 copies). A4/Letter
-   print layouts, page counts and a desktop button remain. **Command
-   registry/MCP** is still open.
+   `contact <folder> <out.jpg> [--cols/--size/--limit]` and the toolbar's
+   **Contact sheet…** button (bounded thumbnail grid, built-in captions, verdict
+   accents; verified on real CR3 copies and a desktop test). A4/Letter print
+   layouts and page counts remain. **Command registry/MCP** is still open.
 
 Revisit measured/perf items (deferred cache writer, pre-FFT downscale,
 anti-aliased `normalise_size`, ONNX thread sweep) only with a benchmark or a

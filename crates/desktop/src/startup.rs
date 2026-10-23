@@ -181,6 +181,7 @@ pub(crate) fn run() {
             preview::preview_adjusted,
             preview::preview_region,
             preview::export_edited,
+            export::contact_sheet,
             analysis::analysis_detail,
             analysis::score_breakdown,
             analysis::bursts,

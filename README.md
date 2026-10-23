@@ -231,7 +231,9 @@ state.
 clicked is the **primary**: Analyze, Re-score, Keep burst winners, Auto-star,
 Reset stars and Export keepers target it, and the sidebar shows
 "Actions target: …". Labels, ratings and flags act on the selected files across
-folders. Scanning a folder includes all of its child folders.
+folders. Scanning a folder includes all of its child folders. The toolbar's
+**Contact sheet…** exports the selected (or visible) photos as a JPEG grid with
+filename/verdict captions.
 
 **XMP sidecars** stay in sync: ratings (`xmp:Rating`), colour labels
 (`xmp:Label`), and the verdict label plus effective species as `dc:subject`

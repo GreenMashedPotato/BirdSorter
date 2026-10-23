@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   clearEdits,
   DEFAULT_ADJUSTMENTS,
+  exportContactSheet,
   exportEdited,
   getEdits,
   getPreviewSettings,
@@ -47,6 +48,26 @@ describe("preview and edit commands", () => {
     invokeMock.mockResolvedValueOnce(1);
     await expect(clearEdits(7)).resolves.toBe(1);
     expect(invokeMock).toHaveBeenLastCalledWith("clear_edits", { file: 7 });
+  });
+
+  it("exports a contact sheet", async () => {
+    const result = {
+      path: "C:\\out\\sheet.jpg",
+      width: 756,
+      height: 328,
+      cells: 3,
+      skipped: 0,
+    };
+    invokeMock.mockResolvedValueOnce(result);
+    await expect(
+      exportContactSheet([1, 2, 3], "C:\\out\\sheet.jpg"),
+    ).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenCalledWith("contact_sheet", {
+      files: [1, 2, 3],
+      dest: "C:\\out\\sheet.jpg",
+      cols: 4,
+      size: 360,
+    });
   });
 
   it("exports an adjusted JPEG", async () => {

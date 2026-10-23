@@ -12,7 +12,7 @@ use birdsorter_core::io::export::{
 };
 
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +111,120 @@ pub(crate) async fn export_file(
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContactSheetResultDto {
+    path: String,
+    width: u32,
+    height: u32,
+    cells: usize,
+    skipped: usize,
+}
+
+fn accent_for(label: &str) -> Option<[u8; 3]> {
+    Some(match label {
+        "sharp" => [70, 200, 120],
+        "uncertain" => [230, 180, 60],
+        "blurry" => [220, 80, 80],
+        "no_subject" => [120, 124, 132],
+        _ => return None,
+    })
+}
+
+fn contact_sheet_impl(
+    db_path: &Path,
+    files: &[i64],
+    dest: &str,
+    cols: u32,
+    size: u32,
+) -> Result<ContactSheetResultDto, String> {
+    use birdsorter_core::io::contact_sheet::{render, ContactCell, ContactOptions};
+    use birdsorter_core::io::thumb::{encode_rgb_jpeg, thumbnail_bytes};
+
+    if files.is_empty() {
+        return Err("no files for the contact sheet".to_string());
+    }
+    let conn = open_ready(db_path)?;
+    let mut cells = Vec::with_capacity(files.len());
+    let mut skipped = 0usize;
+    for id in files {
+        let Some(lf) = library::get_file(&conn, *id).map_err(err)? else {
+            skipped += 1;
+            continue;
+        };
+        let Ok(bytes) = thumbnail_bytes(&lf.absolute_path, 512) else {
+            skipped += 1;
+            continue;
+        };
+        let Ok(image) = image::load_from_memory(&bytes) else {
+            skipped += 1;
+            continue;
+        };
+        let rgb = birdsorter_core::io::decoder::dynamic_to_rgb(image, None);
+        let analysis = analysis_store::get_analysis(&conn, *id).map_err(err)?;
+        let (caption, accent) = match analysis {
+            Some(row) => (
+                format!(
+                    "{} {} {:.2}",
+                    lf.file.filename, row.predicted_label, row.sharpness_score
+                ),
+                accent_for(&row.predicted_label),
+            ),
+            None => (lf.file.filename.clone(), None),
+        };
+        cells.push(ContactCell {
+            rgb,
+            caption,
+            accent,
+        });
+    }
+    if cells.is_empty() {
+        return Err("no thumbnails could be rendered".to_string());
+    }
+    let cell_width = size.clamp(160, 800) as usize;
+    let options = ContactOptions {
+        cols: cols.clamp(1, 8) as usize,
+        cell_width,
+        cell_height: cell_width * 3 / 4 + 34,
+        margin: 12,
+        caption_height: 34,
+        font_scale: 2,
+    };
+    let sheet = render(&cells, &options).map_err(err)?;
+    let bytes = encode_rgb_jpeg(&sheet, 90).map_err(err)?;
+    std::fs::write(dest, &bytes).map_err(|error| format!("write {dest}: {error}"))?;
+    let (height, width, _) = sheet.dim();
+    Ok(ContactSheetResultDto {
+        path: dest.to_string(),
+        width: width as u32,
+        height: height as u32,
+        cells: cells.len(),
+        skipped,
+    })
+}
+
+/// Render a contact sheet of `files` (the visible grid selection) to `dest`.
+#[tauri::command]
+pub(crate) async fn contact_sheet(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    dest: String,
+    cols: Option<u32>,
+    size: Option<u32>,
+) -> Result<ContactSheetResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        contact_sheet_impl(
+            &db_path,
+            &files,
+            &dest,
+            cols.unwrap_or(4),
+            size.unwrap_or(360),
+        )
+    })
+    .await
+}
+
 /// Copy or move the keepers in `folder` into `dest`.
 ///
 /// With `predicted` set, selection is by the scorer's verdict (so it works
@@ -155,4 +269,45 @@ pub(crate) async fn export_keepers(
         Ok(to_dto(report, warning))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use birdsorter_core::data::db;
+
+    #[test]
+    fn contact_sheet_writes_a_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let photos = dir.path().join("photos");
+        std::fs::create_dir(&photos).unwrap();
+        let jpeg = birdsorter_core::io::thumb::encode_rgb_jpeg(
+            &ndarray::Array3::from_elem((48, 64, 3), 128u8),
+            85,
+        )
+        .unwrap();
+        std::fs::write(photos.join("a.jpg"), &jpeg).unwrap();
+
+        let conn = db::connect(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let folder = library::add_folder(&conn, &photos).unwrap();
+        library::scan_folder(&conn, folder).unwrap();
+        let id = library::list_files(&conn, folder, false, false).unwrap()[0]
+            .file
+            .id;
+        drop(conn);
+
+        let out = dir.path().join("sheet.jpg");
+        let result = contact_sheet_impl(&db_path, &[id], out.to_str().unwrap(), 2, 360).unwrap();
+        assert_eq!(result.cells, 1);
+        assert_eq!(result.skipped, 0);
+        let bytes = std::fs::read(&out).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(
+            (image.width(), image.height()),
+            (result.width, result.height)
+        );
+        assert!(image.width() > 100 && image.height() > 100);
+    }
 }

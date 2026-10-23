@@ -35,6 +35,7 @@
     type PreviewSettings,
     rescoreFolder,
     exportKeepers,
+    exportContactSheet,
     train,
     scoreBreakdown,
     bursts,
@@ -79,7 +80,7 @@
   import PhotoGrid from "./lib/PhotoGrid.svelte";
   import Review from "./lib/Review.svelte";
   import ExportDialog from "./lib/ExportDialog.svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { basename, dirname } from "@tauri-apps/api/path";
   import { preferredDropPath } from "./lib/dnd";
@@ -991,6 +992,32 @@
     }
   }
 
+  /// Render the selected (or visible) photos into a contact-sheet JPEG.
+  async function exportContactSheetAction() {
+    if (!inTauri) return;
+    const ids = (selected.size > 0 ? visible.filter((f) => selected.has(f.id)) : visible).map(
+      (f) => f.id,
+    );
+    if (ids.length === 0) {
+      status = "nothing to put on a contact sheet";
+      return;
+    }
+    const dest = await saveDialog({
+      title: "Export contact sheet…",
+      defaultPath: "contact-sheet.jpg",
+      filters: [{ name: "JPEG", extensions: ["jpg", "jpeg"] }],
+    });
+    if (typeof dest !== "string") return;
+    status = `rendering a ${ids.length}-photo contact sheet…`;
+    try {
+      const result = await exportContactSheet(ids, dest);
+      const skipped = result.skipped ? ` · ${result.skipped} skipped` : "";
+      status = `contact sheet: ${result.cells} cells${skipped} · ${result.width}×${result.height}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   /// Re-sorting changes what the virtualized grid shows, so return to the top.
   function changeSort(next: SortKey) {
     sort = next;
@@ -1330,6 +1357,7 @@
       onOpenModels={() => (showModels = true)}
       onRetrain={retrain}
       onExportKeepers={() => (showExport = true)}
+      onContactSheet={exportContactSheetAction}
       onKeepBurstWinners={keepBurstWinners}
       onPreload={preloadPreviews}
       {preloadBusy}
