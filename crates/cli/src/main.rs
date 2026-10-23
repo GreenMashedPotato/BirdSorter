@@ -850,12 +850,13 @@ fn cmd_diagnostics(args: &[String]) -> ExitCode {
             None => db::default_db_path()?,
         };
         // A missing/broken library must not stop the report from being written.
-        let (schema, counts) = match db::connect(&db_path) {
+        let (schema, counts, analysis_models) = match db::connect(&db_path) {
             Ok(conn) => (
                 db::schema_version(&conn).ok().flatten().unwrap_or(-1),
                 diagnostics::library_counts(&conn).unwrap_or_default(),
+                diagnostics::analysis_models(&conn).unwrap_or_default(),
             ),
-            Err(_) => (-1, Default::default()),
+            Err(_) => (-1, Default::default(), Vec::new()),
         };
 
         let mut report_paths: Vec<(&str, String)> = vec![
@@ -885,6 +886,7 @@ fn cmd_diagnostics(args: &[String]) -> ExitCode {
             schema_expected: db::SCHEMA_VERSION,
             counts,
             models,
+            analysis_models,
             paths: report_paths,
             crash_log_tail,
             home,

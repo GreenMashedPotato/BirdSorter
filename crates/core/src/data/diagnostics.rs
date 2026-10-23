@@ -37,6 +37,16 @@ pub fn library_counts(conn: &Connection) -> Result<LibraryCounts> {
     })
 }
 
+/// Distinct detector/species identities recorded with analyses.
+pub fn analysis_models(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT COALESCE(detector_id, 'none'), COALESCE(species_id, 'none')
+           FROM analysis ORDER BY 1, 2 LIMIT 8",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// One catalogue model and its on-disk footprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelLine {
@@ -59,6 +69,8 @@ pub struct Diagnostics<'a> {
     pub schema_expected: i64,
     pub counts: LibraryCounts,
     pub models: Vec<ModelLine>,
+    /// Distinct `(detector, species)` identities stored with analyses.
+    pub analysis_models: Vec<(String, String)>,
     /// `(role, absolute path)` pairs, printed redacted.
     pub paths: Vec<(&'a str, String)>,
     pub crash_log_tail: Option<String>,
@@ -100,6 +112,18 @@ pub fn build_report(d: &Diagnostics) -> String {
         } else {
             out.push_str(&format!("  {:<18} {}\n", m.key, m.status));
         }
+    }
+
+    out.push_str("\nanalysis models:\n");
+    if d.analysis_models.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for (detector, species) in &d.analysis_models {
+        out.push_str(&format!(
+            "  detector={}  species={}\n",
+            redact_text(detector, home),
+            redact_text(species, home)
+        ));
     }
 
     out.push_str("\npaths:\n");
@@ -240,6 +264,10 @@ mod tests {
                 status: "ready".into(),
                 bytes: 11 * 1024 * 1024,
             }],
+            analysis_models: vec![(
+                "bird_det_v1.onnx#10556144@0".into(),
+                "bird_species.onnx#800000000@0".into(),
+            )],
             paths: vec![
                 (
                     "data",
@@ -265,6 +293,9 @@ mod tests {
         assert!(out.contains("3 folder(s), 42 file(s), 40 analysed, 7 labelled, 5 rated"));
         assert!(out.contains("bird_detector"));
         assert!(out.contains("11.0 MB"));
+        assert!(out.contains("analysis models:"));
+        assert!(out.contains("bird_det_v1.onnx#10556144@0"));
+        assert!(out.contains("bird_species.onnx#800000000@0"));
     }
 
     #[test]

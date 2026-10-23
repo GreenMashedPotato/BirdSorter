@@ -1,9 +1,30 @@
-//! Trained-model bookkeeping (the `models` table).
+//! Trained-model bookkeeping (the `models` table) and model identities.
+
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, OptionalExtension};
 
 use super::{db::with_tx, now_iso};
 use crate::Result;
+
+/// A cheap identity for a model artifact: file name, size and modification
+/// time. Hashing an 818 MB species model on every analysis would be wasteful,
+/// and any of these changing is enough to mark stored analyses stale.
+pub fn model_identity(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    let stamp = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    Some(format!("{name}#{}@{stamp}", metadata.len()))
+}
 
 /// One trained scorer recorded in the library.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +99,21 @@ pub fn list_models(conn: &Connection) -> Result<Vec<ModelRow>> {
 mod tests {
     use super::*;
     use crate::data::db::{connect_in_memory, init_schema};
+
+    #[test]
+    fn model_identity_tracks_name_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.onnx");
+        std::fs::write(&path, b"one").unwrap();
+        let first = model_identity(&path).unwrap();
+        assert!(first.starts_with("a.onnx#3@"), "{first}");
+
+        std::fs::write(&path, b"longer").unwrap();
+        let second = model_identity(&path).unwrap();
+        assert_ne!(first, second);
+        assert!(second.starts_with("a.onnx#6@"), "{second}");
+        assert!(model_identity(&dir.path().join("missing.onnx")).is_none());
+    }
 
     #[test]
     fn insert_and_read_latest() {

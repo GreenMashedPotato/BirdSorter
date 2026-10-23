@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -65,7 +65,10 @@ const DDL: &[&str] = &[
         image_width         INTEGER,
         image_height        INTEGER,
         analyzed_content_hash TEXT,
-        signature           BLOB
+        signature           BLOB,
+        detector_id         TEXT,
+        species_id          TEXT,
+        model_stale         INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -327,6 +330,33 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         )?;
         if has_signature == 0 {
             conn.execute_batch("ALTER TABLE analysis ADD COLUMN signature BLOB;")?;
+        }
+    }
+    if from < 19 {
+        // v18 -> v19: model identities + a stale flag, so a detector/species
+        // change can mark stored analyses pending.
+        for (name, ddl) in [
+            (
+                "detector_id",
+                "ALTER TABLE analysis ADD COLUMN detector_id TEXT;",
+            ),
+            (
+                "species_id",
+                "ALTER TABLE analysis ADD COLUMN species_id TEXT;",
+            ),
+            (
+                "model_stale",
+                "ALTER TABLE analysis ADD COLUMN model_stale INTEGER NOT NULL DEFAULT 0;",
+            ),
+        ] {
+            let present: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )?;
+            if present == 0 {
+                conn.execute_batch(ddl)?;
+            }
         }
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
@@ -613,6 +643,31 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn migration_from_v18_adds_model_identity_columns() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE analysis DROP COLUMN detector_id;
+             ALTER TABLE analysis DROP COLUMN species_id;
+             ALTER TABLE analysis DROP COLUMN model_stale;
+             UPDATE schema_version SET version = 18;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        for name in ["detector_id", "species_id", "model_stale"] {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = ?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 1, "{name}");
+        }
     }
 
     #[test]

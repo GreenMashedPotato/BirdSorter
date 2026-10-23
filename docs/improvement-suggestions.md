@@ -23,9 +23,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > ratings, flags and colours with Ctrl+Z, groups bursts by an 8×8 luminance
 > signature as well as time (flagging exposure brackets), extends saved searches
 > into all/any/none smart collections with an inline editor, renders windowed
-> 1:1 regions above native pixels, and mirrors colours/labels/species into XMP
-> (importing ratings at scan). The analysis below still describes the rest of
-> the snapshot.
+> 1:1 regions above native pixels, mirrors colours/labels/species into XMP
+> (importing ratings at scan), and records detector/species identities so a
+> model change re-analyzes. The analysis below still describes the rest of the
+> snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -116,7 +117,7 @@ roughly describes the code surface.
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | Presets with amount, copy/paste/sync settings | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
-| 17 | Model manager: licence gate, provenance, resumable fetch, model identity per analysis | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
+| 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
 | 18 | Export: richer tokens, resize modes, output sharpening, watermark, metadata policy | LightCraft `engine/src/export.rs`, `rename.rs` | P2 | Small |
 | 19 | Command registry + MCP/control channel | LightCraft `engine/cmd/mod.rs`, `crates/mcp` | P2 | Medium–large |
 | 20 | Undo across ratings, boxes, burst winners, species overrides | LightCraft inverse-op model | P3 | Small–medium |
@@ -912,9 +913,9 @@ These are independent of any porting and worth doing first:
    copied to `.bak` first, but writes still refuse afterwards.
 8. **No fsync / rename retry.** Cache and XMP writes can lose data on power
    loss and fail under antivirus/indexer locks on Windows.
-9. **`analysis.model_version` is the scorer version.** Detector/species model
-   changes do not invalidate stored analysis. Add model identity and mark
-   pending on change.
+9. **`analysis.model_version` is the scorer version (fixed).** Detector/species
+   identities are now stored separately (schema v19) and a change marks the row
+   pending; `model_version` still tracks the scorer.
 10. **No EXIF beyond time/orientation.** The review bar cannot show ISO,
     shutter, aperture or lens, which is the first thing a bird photographer
     checks.

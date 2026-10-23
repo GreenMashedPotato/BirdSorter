@@ -12,7 +12,7 @@ use crate::analysis::eye::EyeDetector;
 use crate::analysis::scorer::{score_rules, ScoreResult};
 use crate::analysis::sharpness::SharpnessFeatures;
 use crate::analysis::species::SpeciesClassifier;
-use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+use crate::data::analysis_store::{self, upsert_analysis, AnalysisRecord};
 use crate::data::library;
 use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
@@ -149,6 +149,16 @@ pub fn ingest_folder(
     ctx: &IngestContext<'_>,
     mut on_progress: impl FnMut(&IngestProgress),
 ) -> Result<IngestProgress> {
+    // A changed detector/species artifact makes stored analyses stale, so the
+    // pending query picks them up on this run.
+    let detector_id = ctx.detector.identity();
+    let species_id = ctx.species.and_then(|classifier| classifier.identity());
+    if let Err(error) =
+        analysis_store::mark_model_stale(conn, detector_id.as_deref(), species_id.as_deref())
+    {
+        tracing::warn!(%error, "could not mark stale model analyses");
+    }
+
     let pending = library::files_needing_analysis(conn, folder_id)?;
     let mut progress = IngestProgress {
         total: pending.len(),
@@ -339,6 +349,8 @@ fn flush_batch(
         return Ok(());
     }
     let images: Vec<&Array3<u8>> = batch.iter().map(|b| &b.rgb).collect();
+    let detector_id = ctx.detector.identity();
+    let species_id = ctx.species.and_then(|classifier| classifier.identity());
     let detections = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.detector.detect_batch(&images)
     })) {
@@ -362,6 +374,8 @@ fn flush_batch(
                 ctx.scorer,
                 ctx.species,
                 ctx.eye,
+                detector_id.as_deref(),
+                species_id.as_deref(),
             )?;
             record.analyzed_content_hash = Some(item.content_hash.clone());
             Ok(record)
@@ -389,6 +403,7 @@ fn flush_batch(
 
 /// Build the analysis record for one image: evaluate every detected subject and
 /// keep the sharpest (mirrors the prototype's "best of N subjects").
+#[allow(clippy::too_many_arguments)]
 fn analyze_one(
     file_id: i64,
     rgb: &Array3<u8>,
@@ -396,6 +411,8 @@ fn analyze_one(
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
     eye: Option<&dyn EyeDetector>,
+    detector_id: Option<&str>,
+    species_id: Option<&str>,
 ) -> Result<AnalysisRecord> {
     let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
@@ -422,6 +439,8 @@ fn analyze_one(
         image_height: Some(img_h as u32),
         analyzed_content_hash: None,
         signature: crate::analysis::burst::signature(rgb).map(|s| s.encode()),
+        detector_id: detector_id.map(str::to_string),
+        species_id: species_id.map(str::to_string),
     })
 }
 
@@ -458,7 +477,18 @@ pub fn analyze_file_with(
     };
     let dets =
         stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
-    let mut record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
+    let mut record = analyze_one(
+        file.file.id,
+        &img.rgb,
+        dets,
+        scorer,
+        species,
+        eye,
+        detector.identity().as_deref(),
+        species
+            .and_then(|classifier| classifier.identity())
+            .as_deref(),
+    )?;
     record.analyzed_content_hash = Some(file.file.content_hash.clone());
     upsert_analysis(conn, &record)?;
     Ok(record)
@@ -591,6 +621,10 @@ mod tests {
             }
             Ok(vec![self.per_image.clone(); images.len()])
         }
+
+        fn identity(&self) -> Option<String> {
+            Some("fake-det".into())
+        }
     }
 
     struct PanicFreeScorer(ScoreSettings);
@@ -607,6 +641,10 @@ mod tests {
     impl crate::analysis::species::SpeciesClassifier for FakeSpecies {
         fn available(&self) -> bool {
             true
+        }
+
+        fn identity(&self) -> Option<String> {
+            Some("fake-species".into())
         }
         fn identify_batch(
             &self,
@@ -693,6 +731,8 @@ mod tests {
             row.signature.as_ref().is_some_and(|s| s.len() == 68),
             "analysis stores an encoded 8x8 signature"
         );
+        assert_eq!(row.detector_id.as_deref(), Some("fake-det"));
+        assert_eq!(row.species_id, None);
     }
 
     #[test]
@@ -884,6 +924,7 @@ mod tests {
         assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
         assert_eq!(row.subject_species[0].top5.len(), 2);
         assert_eq!(row.subject_species[0].bbox, [32, 32, 160, 160]);
+        assert_eq!(row.species_id.as_deref(), Some("fake-species"));
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub struct OnnxSpeciesClassifier {
     labels: Vec<String>,
     preprocess: SpeciesPreprocess,
     top_k: usize,
+    model_id: Option<String>,
 }
 
 impl OnnxSpeciesClassifier {
@@ -44,6 +45,7 @@ impl OnnxSpeciesClassifier {
             labels,
             preprocess,
             top_k: 5,
+            model_id: crate::data::models::model_identity(model),
         })
     }
 
@@ -172,6 +174,10 @@ fn debug_onnx() -> bool {
 impl SpeciesClassifier for OnnxSpeciesClassifier {
     fn available(&self) -> bool {
         !self.labels.is_empty()
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.model_id.clone()
     }
 
     fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {

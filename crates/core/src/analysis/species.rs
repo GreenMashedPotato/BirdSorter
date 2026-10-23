@@ -43,6 +43,11 @@ pub trait SpeciesClassifier: Send + Sync {
 
     /// One result per crop, in order; `None` when a crop is skipped or fails.
     fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>>;
+
+    /// A stable identity for the loaded model artifact, when known.
+    fn identity(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A classifier that never identifies anything (the T0/T1 tiers).

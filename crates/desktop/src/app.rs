@@ -264,12 +264,13 @@ pub(crate) async fn save_diagnostics(
             .collect();
 
         // A broken library must not stop the report from being written.
-        let (schema, counts) = match open(&db_path) {
+        let (schema, counts, analysis_models) = match open(&db_path) {
             Ok(conn) => (
                 db::schema_version(&conn).ok().flatten().unwrap_or(-1),
                 diagnostics::library_counts(&conn).unwrap_or_default(),
+                diagnostics::analysis_models(&conn).unwrap_or_default(),
             ),
-            Err(_) => (-1, Default::default()),
+            Err(_) => (-1, Default::default(), Vec::new()),
         };
 
         let mut paths: Vec<(&str, String)> = Vec::new();
@@ -290,6 +291,7 @@ pub(crate) async fn save_diagnostics(
             schema_expected: db::SCHEMA_VERSION,
             counts,
             models,
+            analysis_models,
             paths,
             crash_log_tail: read_crash_tail(&db_path),
             home: home_dir(),

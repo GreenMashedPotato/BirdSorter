@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **338 core unit tests** (345 Rust tests including the integration/desktop suites,
+- **342 core unit tests** (349 Rust tests including the integration/desktop suites,
   +126 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -153,6 +153,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   only when the DB rating is 0. Covered by 14 XMP unit tests, a scan-import test
   and a desktop label/colour/species sync test. Still open: fsync + Windows
   rename retry, a private settings blob, and a library-wide keyword manager.
+- **Model identity per analysis (2026-10-22)**: the runtime detector/species
+  objects expose a lightweight identity (file name + size + mtime), stored as
+  `analysis.detector_id` / `species_id` (schema **v19**). A changed or
+  previously unknown identity sets `model_stale`, which `files_needing_analysis`
+  treats as pending; writing a fresh row clears it. Diagnostics lists the
+  distinct stored identities. Validated on a copied CR3 with an isolated DB:
+  first run analyzed 1 file, an identical second run analyzed 0, and pointing
+  at a renamed model copy analyzed 1 again; diagnostics reported
+  `bird_det_v1_copy.onnx#10556144@…`.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo
@@ -191,7 +200,7 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   only after the CPU retry fails. Model ZIP imports enforce expected filenames,
   duplicate/entry/expanded-size limits, and stage files before committing;
   ordinary image decoding has a 512 MiB safety limit; thumbnail/XMP temp files
-  are unique per writer. Schema is now **v18**.
+  are unique per writer. Schema is now **v19**.
 - **Refactor Phase 1.3**: subject boxes are now first-class rows in a
   `subject_boxes` table (geometry, class, detector/manual source, subject flag,
   ordinal), written in the same transaction as the analysis row. A **v14**
