@@ -25,8 +25,8 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > into all/any/none smart collections with an inline editor, renders windowed
 > 1:1 regions above native pixels, mirrors colours/labels/species into XMP
 > (importing ratings at scan), records detector/species identities so a model
-> change re-analyzes, and draws the Sony AF frame in Review/Compare. The
-> analysis below still describes the rest of the snapshot.
+> change re-analyzes, draws the Sony AF frame in Review/Compare, and exports a
+> CLI contact sheet. The analysis below still describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -717,6 +717,13 @@ Borrow from LightCraft `engine/src/export.rs` + `rename.rs`:
 **Contact sheets** (`engine/src/contact_sheet.rs`): A4/Letter, landscape,
 rows × columns, filename captions, 150 dpi sRGB, bounded to a sane photo/page
 count, written atomically. Useful for sharing a shoot or a species list.
+
+**Shipped (2026-10-22, CLI):** `birdsorter contact <folder> <out.jpg> [--cols N]
+[--size N] [--limit N]` renders a bounded thumbnail grid with filename/verdict/
+score captions (built-in 5×7 font, verdict accent bars, aspect-preserving fit,
+32 MP cap) and excludes the output file if it lives in the scanned folder.
+Verified on three copied CR3s. Still open: A4/Letter print layouts, page counts,
+150 dpi sizing and a desktop button.
 
 Slideshow and full print/picture-package layouts are available in LightCraft
 but are low value for a culling app; skip unless requested.

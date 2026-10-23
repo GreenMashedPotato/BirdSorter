@@ -46,6 +46,8 @@ Commands:
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
   bursts <folder> [--db <path>]  Print burst groups (capture time + similarity)
+  contact <folder> <out.jpg> [--cols N] [--size N] [--limit N] [--db <path>]
+                              Contact sheet of the folder's thumbnails
   export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
       --label <name>            Which label to export (default: sharp)
       --move                    Move instead of copy
@@ -107,6 +109,7 @@ fn main() -> ExitCode {
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("bursts") => cmd_bursts(&args[1..]),
+        Some("contact") => cmd_contact(&args[1..]),
         Some("export") => cmd_export(&args[1..]),
         Some("export-eyelabels") => cmd_export_eyelabels(&args[1..]),
         Some("cleancache") => cmd_cleancache(&args[1..]),
@@ -555,6 +558,158 @@ fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()
         );
     }
     Ok(())
+}
+
+/// Render a contact sheet of a folder's thumbnails with captions.
+fn cmd_contact(args: &[String]) -> ExitCode {
+    let mut folder = None;
+    let mut out = None;
+    let mut db_path = None;
+    let mut cols = 4usize;
+    let mut size = 360usize;
+    let mut limit = 48usize;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--db" => db_path = it.next().cloned(),
+            "--cols" => {
+                cols = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(cols)
+            }
+            "--size" => {
+                size = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(size)
+            }
+            "--limit" => {
+                limit = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(limit)
+            }
+            other if other.starts_with("--") => {
+                eprintln!("contact: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other if folder.is_none() => folder = Some(other.to_string()),
+            other if out.is_none() => out = Some(other.to_string()),
+            _ => {}
+        }
+    }
+    let (Some(folder), Some(out)) = (folder, out) else {
+        eprintln!(
+            "contact: usage: contact <folder> <out.jpg> [--cols N] [--size N] [--limit N] [--db <path>]"
+        );
+        return ExitCode::FAILURE;
+    };
+    match run_contact(&folder, &out, cols, size, limit, db_path.as_deref()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("contact failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_contact(
+    folder: &str,
+    out: &str,
+    cols: usize,
+    size: usize,
+    limit: usize,
+    db_path: Option<&str>,
+) -> birdsorter_core::Result<()> {
+    use birdsorter_core::io::contact_sheet::{render, ContactCell, ContactOptions};
+    use birdsorter_core::io::thumb::thumbnail_bytes;
+
+    let db_path = match db_path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => db::default_db_path()?,
+    };
+    let conn = db::connect(&db_path)?;
+    db::init_schema(&conn)?;
+    let folder_id = library::add_folder(&conn, Path::new(folder))?;
+    library::scan_folder(&conn, folder_id)?;
+    let mut rows = library::list_files_with_details(&conn, folder_id, false, false)?;
+    // A previous sheet may live in the scanned folder; never include it in the
+    // next sheet.
+    if let Ok(output) = std::fs::canonicalize(out) {
+        rows.retain(|row| row.file.absolute_path != output);
+    }
+    rows.truncate(limit.clamp(1, 200));
+    if rows.is_empty() {
+        return Err(birdsorter_core::CoreError::invalid_input(format!(
+            "no supported photos in {folder}"
+        )));
+    }
+
+    let cell_width = size.clamp(160, 800);
+    let options = ContactOptions {
+        cols: cols.clamp(1, 8),
+        cell_width,
+        cell_height: (cell_width * 3 / 4) + 34,
+        margin: 12,
+        caption_height: 34,
+        font_scale: 2,
+    };
+    let mut cells = Vec::with_capacity(rows.len());
+    let mut skipped = 0usize;
+    for row in &rows {
+        let Ok(bytes) = thumbnail_bytes(&row.file.absolute_path, 512) else {
+            skipped += 1;
+            continue;
+        };
+        let Ok(image) = image::load_from_memory(&bytes) else {
+            skipped += 1;
+            continue;
+        };
+        let rgb = birdsorter_core::io::decoder::dynamic_to_rgb(image, None);
+        let caption = match (row.predicted_label.as_deref(), row.sharpness_score) {
+            (Some(label), Some(score)) => {
+                format!("{} {} {:.2}", row.file.file.filename, label, score)
+            }
+            _ => row.file.file.filename.clone(),
+        };
+        cells.push(ContactCell {
+            rgb,
+            caption,
+            accent: accent_for(row.predicted_label.as_deref()),
+        });
+    }
+    if cells.is_empty() {
+        return Err(birdsorter_core::CoreError::invalid_input(
+            "no thumbnails could be rendered",
+        ));
+    }
+    let sheet = render(&cells, &options)?;
+    let bytes = birdsorter_core::io::thumb::encode_rgb_jpeg(&sheet, 90)?;
+    std::fs::write(out, &bytes)
+        .map_err(|error| birdsorter_core::CoreError::io(Path::new(out), error))?;
+    let (height, width, _) = sheet.dim();
+    let skipped = if skipped > 0 {
+        format!(", {skipped} skipped")
+    } else {
+        String::new()
+    };
+    println!(
+        "wrote {out} ({width}x{height}, {} cells{skipped}, {} KB)",
+        cells.len(),
+        bytes.len() / 1024
+    );
+    Ok(())
+}
+
+fn accent_for(label: Option<&str>) -> Option<[u8; 3]> {
+    Some(match label? {
+        "sharp" => [70, 200, 120],
+        "uncertain" => [230, 180, 60],
+        "blurry" => [220, 80, 80],
+        "no_subject" => [120, 124, 132],
+        _ => return None,
+    })
 }
 
 /// Export keepers to a destination folder.
