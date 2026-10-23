@@ -7,6 +7,7 @@ pub mod develop;
 pub mod disk;
 pub mod exif;
 pub mod export;
+pub mod focus;
 pub mod hash;
 pub mod raw;
 pub mod thumb;

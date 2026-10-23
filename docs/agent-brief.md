@@ -18,7 +18,7 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v19**; **349 Rust + 126 UI tests**; clippy clean.
+- SQLite schema **v19**; **354 Rust + 126 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
@@ -27,7 +27,8 @@ autonomously, ship complete vertical slices, and keep the gates green.
   ratings/flags/colours + Ctrl+Z undo, XMP labels/keywords + rating import at
   scan, model identity per analysis,
   auto-advance, similarity-aware burst grouping + bracket detection, windowed
-  1:1 preview above native pixels, preview adjustments (exposure/contrast/
+  1:1 preview above native pixels, Sony AF-frame overlay, preview adjustments
+  (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
   JPEG/TIFF export.
 - Guided-filter clarity and dehaze shipped 2026-10-22 (see `implemented.md`).
@@ -135,8 +136,10 @@ each slice end-to-end.
    a changed/unknown identity sets `model_stale` so the next run re-analyzes,
    and diagnostics lists the distinct stored identities. Validated on a copied
    CR3: same model → 0 pending; renamed model → 1 re-analyzed.
-8. **Camera AF-point overlay.** Header-only maker-note read (Sony first, then
-   Canon/Nikon), rotation-aware, drawn in Review/Compare.
+🟡 8. **Camera AF-point overlay.** **Sony shipped 2026-10-22** for ILCE-1 and
+   ILCE-7SM3 (header-only maker-note read, orientation-aware, drawn in
+   Review/Compare, synthetic ARW tests). Canon CR3 and Nikon remain; the working
+   corpus is Canon, so a Canon reader could be validated on real files next.
 9. **HEIC (optional feature).** Pure-Rust decoder behind a feature flag; document
    patent/licensing; ask before enabling by default.
 10. **Contact sheet export** and **command registry/MCP** if still valuable.

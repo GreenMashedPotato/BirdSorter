@@ -574,6 +574,7 @@ on a 28-core Windows box.
 | ✅ **Label-based filters** — *My keepers*, *My rejects*, *Unlabelled* chips (the existing chips filter by *predicted* verdict) | new |
 | ✅ **1:1 zoom** — a button that scales the preview to actual pixels (`ZOOM_MAX` raised to 16×) | new |
 | ✅ **Windowed 1:1 (2026-10-22)** — above native pixels the review requests only the visible source window via `preview_region` (256 px grid + 256 px margin), reuses it while panning, and overlays the sharp crop on the base preview. The backend caches one decoded preview (content hash + mode + cache version), crops, applies the current adjustments and encodes JPEG; the thumbnail stand-in never triggers a window. Unit tests: 20×15 crop from a 64×48 source, a 4×8 clamp past the edge, and an opt-in real-CR3 run (`BIRDSORTER_TEST_RAW`, copy only) returning 512×512. | new |
+| ✅ **Sony AF-point overlay (2026-10-22)** — header-only maker-note read for ILCE-1/ILCE-7SM3: focus frame (`0x2027`/`0x2037`), mode/area/tracking (`0x201b`/`0x201c`/`0x2021`) and the enciphered `0x9402` block, normalized through EXIF orientation. Review and Compare draw a dashed AF frame with a tooltip. Synthetic ARW tests cover the point, manual/Wide-centre suppression, orientation 6, unsupported bodies, truncation, and a real CR3 is rejected safely. Canon CR3/Nikon remain open. | new |
 
 ### Blocked / partial
 

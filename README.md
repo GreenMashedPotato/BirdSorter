@@ -244,6 +244,8 @@ the library has no rating for that file.
 - high-resolution preview (rendered on demand at analysis resolution and cached,
   so it is sharper than the grid thumbnail),
 - **YOLO subject boxes overlaid** on the image — click a box to select a subject,
+- a dashed **AF frame** when the camera records one (Sony ILCE-1/7SM3), with the
+  mode/area/tracking on hover, in both the review and Compare panes,
 - per-subject species with the **top-4 predictions plus a blank field** to set
   the actual species (or clear it),
 - an **EXIF strip** with camera, lens, ISO, shutter, aperture and focal length

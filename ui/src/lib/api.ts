@@ -80,6 +80,14 @@ export interface PhotoMeta {
   focalLength: string | null;
 }
 
+/** The camera's autofocus frame, normalized to the upright photo. */
+export interface FocusPoint {
+  rect: [number, number, number, number];
+  mode: string | null;
+  area: string | null;
+  tracking: string | null;
+}
+
 export interface AnalysisDetail {
   fileId: number;
   filename: string;
@@ -96,6 +104,8 @@ export interface AnalysisDetail {
   speciesConfidence: number | null;
   top5: [string, number][];
   boxes: Box[];
+  /** The camera's AF frame, when its maker note carries one. */
+  focus?: FocusPoint | null;
   modelVersion: string | null;
   imageWidth: number | null;
   imageHeight: number | null;
