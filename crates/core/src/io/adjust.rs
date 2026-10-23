@@ -39,6 +39,8 @@ pub struct Adjustments {
     pub saturation: f32,
     /// Local mid-tone contrast (unsharp mask on luma), `-1..=1`.
     pub clarity: f32,
+    /// Suppress magenta/green fringing on high-contrast edges, `0..=1`.
+    pub defringe: f32,
 }
 
 impl Adjustments {
@@ -55,6 +57,7 @@ impl Adjustments {
             && self.vibrance.abs() < 1e-4
             && self.saturation.abs() < 1e-4
             && self.clarity.abs() < 1e-4
+            && self.defringe.abs() < 1e-4
     }
 
     fn tone_is_identity(&self) -> bool {
@@ -114,6 +117,9 @@ pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
     }
     if !adj.colour_is_identity() {
         out = vibrance_saturation(&out, adj.vibrance, adj.saturation);
+    }
+    if adj.defringe.abs() > 1e-4 {
+        out = defringe(&out, adj.defringe);
     }
     out
 }
@@ -339,6 +345,57 @@ fn vibrance_saturation(rgb: &Array3<u8>, vibrance: f32, saturation: f32) -> Arra
     out
 }
 
+/// Suppress magenta/green fringing on high-contrast edges.
+///
+/// Chromatic aberration shows up as a green channel that departs from the
+/// red/blue average on a strong edge. Only pixels with both a large luma
+/// gradient and a large deviation are pulled toward that average, so flat
+/// colour and ordinary saturated subjects stay untouched. The pull scales with
+/// the strength, the edge and the deviation.
+fn defringe(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
+    const EDGE_MIN: f32 = 6.0;
+    const EDGE_MAX: f32 = 32.0;
+    const FRINGE_MIN: f32 = 20.0;
+    // A green deviation this large is a full fringe; below it the pull ramps in.
+    const FRINGE_FULL: f32 = 90.0;
+    let amount = strength.clamp(0.0, 1.0);
+    let (h, w, c) = rgb.dim();
+    if amount < 1e-4 || h < 3 || w < 3 || c != 3 {
+        return rgb.clone();
+    }
+    let mut luma = vec![0.0f32; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            luma[y * w + x] = 0.2126 * rgb[[y, x, 0]] as f32
+                + 0.7152 * rgb[[y, x, 1]] as f32
+                + 0.0722 * rgb[[y, x, 2]] as f32;
+        }
+    }
+    let mut out = rgb.clone();
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let gx = luma[y * w + x + 1] - luma[y * w + x - 1];
+            let gy = luma[(y + 1) * w + x] - luma[(y - 1) * w + x];
+            let edge = ((gx.abs() + gy.abs() - EDGE_MIN) / (EDGE_MAX - EDGE_MIN)).clamp(0.0, 1.0);
+            if edge <= 0.0 {
+                continue;
+            }
+            let r = rgb[[y, x, 0]] as f32;
+            let g = rgb[[y, x, 1]] as f32;
+            let b = rgb[[y, x, 2]] as f32;
+            let deviation = g - (r + b) * 0.5;
+            let magnitude = deviation.abs();
+            if magnitude <= FRINGE_MIN {
+                continue;
+            }
+            let fringe = ((magnitude - FRINGE_MIN) / (FRINGE_FULL - FRINGE_MIN)).clamp(0.0, 1.0);
+            let pull = amount * edge * fringe;
+            out[[y, x, 1]] = (g - deviation * pull).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 /// 3×3 edge-preserving (bilateral) denoise with a range LUT — no `exp` per pixel.
 fn denoise(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
     let (h, w, c) = rgb.dim();
@@ -539,6 +596,53 @@ mod tests {
         let img = Array3::from_shape_fn((4, 5, 3), |(y, x, c)| ((x * 7 + y * 3 + c) % 256) as u8);
         assert_eq!(apply(&img, &Adjustments::default()), img);
         assert!(Adjustments::default().is_identity());
+    }
+
+    #[test]
+    fn defringe_pulls_a_purple_edge_toward_grey() {
+        // Black | purple fringe | white: the fringe column is aberration.
+        let mut img = Array3::from_elem((9, 9, 3), 0u8);
+        for y in 0..9 {
+            for x in 5..9 {
+                for k in 0..3 {
+                    img[[y, x, k]] = 255;
+                }
+            }
+            img[[y, 4, 0]] = 190;
+            img[[y, 4, 1]] = 50;
+            img[[y, 4, 2]] = 190;
+        }
+        let out = apply(
+            &img,
+            &Adjustments {
+                defringe: 1.0,
+                ..Default::default()
+            },
+        );
+        // Green is pulled to the red/blue average (190) at full strength.
+        assert!(out[[4, 4, 1]] > 150, "green = {}", out[[4, 4, 1]]);
+        assert!(out[[4, 4, 1]] <= 190);
+        assert_eq!(out[[4, 2, 1]], 0);
+        assert_eq!(out[[4, 7, 1]], 255);
+        assert!(!Adjustments {
+            defringe: 1.0,
+            ..Default::default()
+        }
+        .is_identity());
+    }
+
+    #[test]
+    fn defringe_leaves_flat_colour_and_zero_alone() {
+        let mut purple = Array3::from_elem((6, 6, 3), 0u8);
+        for y in 0..6 {
+            for x in 0..6 {
+                purple[[y, x, 0]] = 190;
+                purple[[y, x, 1]] = 50;
+                purple[[y, x, 2]] = 190;
+            }
+        }
+        assert_eq!(defringe(&purple, 1.0), purple);
+        assert_eq!(apply(&purple, &Adjustments::default()), purple);
     }
 
     #[test]
@@ -1014,6 +1118,7 @@ mod tests {
             vibrance: 1.0,
             saturation: 1.0,
             clarity: 1.0,
+            defringe: 1.0,
         };
         let out = apply(&img, &adj);
         assert_eq!(out.dim(), img.dim());

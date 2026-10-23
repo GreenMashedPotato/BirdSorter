@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **360 core unit tests** (367 Rust tests including the integration/desktop
+- **362 core unit tests** (369 Rust tests including the integration/desktop
   suites, +136 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 365
+  optional `heic` feature the core suite is 367
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -146,6 +146,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   remains open (the evaluator is shared with saved searches, so translating it
   would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
   then a folder click returns to 3.
+- **Defringe (2026-10-23)**: a preview-only pass pulls the green channel toward
+  the red/blue average only where a strong luma edge **and** a large green
+  deviation coincide, so flat colour and ordinary saturated subjects are
+  untouched; the amount scales the pull. Synthetic tests cover a purple
+  black/white edge (green 50 → 190 at full strength), flat purple, and the
+  identity. Real corpus: six Canon R5 previews had a worst green deviation of
+  14–15 (the threshold is 20), so `--defringe 1` correctly changed **0 pixels**
+  on every one — in-camera/lens correction left no visible fringing. Adds
+  `--defringe` to the CLI and a Defringe slider to the Adjust panel.
 - **Named develop presets (2026-10-23)**: the Adjust panel stores named Looks
   locally (validated, clamped, 16 presets), applies them at 0–200 % with every
   control clamped to its slider range, and can sync the result to the grid
