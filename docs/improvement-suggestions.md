@@ -114,7 +114,7 @@ roughly describes the code surface.
 | 11 | 🟡 Camera AF-point overlay (Sony 2026-10-22; Canon CR3 2026-10-23; Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
-| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, luminance-range mask, crop/straighten (brush/gradient masks and crop open) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
+| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, luminance-range + radial masks, crop/straighten (brush/linear masks and crop open) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | ✅ Presets with amount, partial groups, selection sync and one-step undo (shipped 2026-10-23) | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
@@ -668,12 +668,13 @@ movable input positions.
 
 ### 6.3.1 Local masks
 
-**Shipped (2026-10-23, luminance range):** a local exposure of −2..2 stops limited
-to a luma band (`range_center`, `range_width`, smoothstep falloff). It reads only
-the pixel's own luma, so windowed 1:1 crops are unaffected; it has a `local`
-preset group and CLI flags. Verified on a real R5 preview: +13.1 mean channel
-delta inside the band, ~0 outside. Still open: brush and linear/radial gradient
-masks, which need region-aware rendering for the windowed preview.
+**Shipped (2026-10-23, luminance range and radial):** a local exposure of −2..2
+stops limited to a luma band (`range_center`, `range_width`, smoothstep
+falloff), and a radial mask (centre, radius, feather). The radial mask takes the
+full-image `Region` so `preview_region` crops render exactly like the full
+frame; both have a `local` preset group and CLI flags. Verified on a real R5
+preview: +13.1 mean channel delta inside the luma band and +119 inside the
+radial (both ~0 outside). Still open: brush and linear-gradient masks.
 
 ### 6.4 Defringe and lateral CA correction
 

@@ -282,7 +282,18 @@ fn region_impl(
     let rgb = if request.adjustments.is_identity() {
         crop
     } else {
-        adjust::apply(&crop, &request.adjustments)
+        // Pass the crop's place in the full preview so spatial masks land where
+        // they do on the full-frame render.
+        adjust::apply_with_region(
+            &crop,
+            &request.adjustments,
+            adjust::Region {
+                origin_x: x,
+                origin_y: y,
+                full_width: source_w,
+                full_height: source_h,
+            },
+        )
     };
     let bytes = encode_rgb_jpeg(&rgb, 92).map_err(err)?;
     Ok(data_url(bytes))

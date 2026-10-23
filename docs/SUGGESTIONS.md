@@ -30,9 +30,10 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 - 🟡 **Tone curve** — shipped 2026-10-23 (five points, monotone-clamped LUT,
   curve editor, presets/amount, CLI `--curve`).
-- 🟡 **Local masks** — a **luminance-range local exposure** shipped 2026-10-23
-  (band centre/width, smooth falloff, a `local` preset group, CLI flags).
-  Brush and gradient masks remain.
+- 🟡 **Local masks** — a **luminance-range local exposure** and a **radial
+  mask** shipped 2026-10-23 (band centre/width; mask centre/radius/feather with
+  region-aware windowed rendering; a `local` preset group; CLI flags). Brush
+  and linear-gradient masks remain.
 - 🟡 **Defringe** — shipped 2026-10-23 (edge+green-deviation gated, strength
   scaled; CLI `--defringe`, Adjust slider, presets).
 - 🟡 **Named presets with amounts and group sync** — shipped 2026-10-23:

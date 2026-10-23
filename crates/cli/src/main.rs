@@ -83,6 +83,10 @@ Commands:
       --range-exposure <stops>  Local exposure for one luma band (-2..2)
       --range-at <v>            Band centre (0..1, default 0.5)
       --range-width <v>         Band half-width (0.02..1, default 0.25)
+      --mask-exposure <stops>   Radial local exposure (-2..2, 0 = off)
+      --mask-x <v> --mask-y <v> Mask centre (0..1, default 0.5)
+      --mask-radius <v>         Radius of the short side (0..2, default 0.3)
+      --mask-feather <v>        Feather past the radius (0..1, default 0.15)
   probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
@@ -216,6 +220,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         range_exposure: flag("--range-exposure"),
         range_center: value_flag("--range-at", 0.5),
         range_width: value_flag("--range-width", 0.25),
+        mask_exposure: flag("--mask-exposure"),
+        mask_x: value_flag("--mask-x", 0.5),
+        mask_y: value_flag("--mask-y", 0.5),
+        mask_radius: value_flag("--mask-radius", 0.3),
+        mask_feather: value_flag("--mask-feather", 0.15),
     };
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).

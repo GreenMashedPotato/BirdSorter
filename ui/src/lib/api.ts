@@ -231,6 +231,15 @@ export interface Adjustments {
   range_center: number;
   /** Band half-width before the mask fades out, 0.02..1. */
   range_width: number;
+  /** Radial local exposure in stops, -2..2 (0 = off). */
+  mask_exposure: number;
+  /** Mask centre, normalized to the full image, 0..1. */
+  mask_x: number;
+  mask_y: number;
+  /** Radius as a fraction of the short side, 0..2. */
+  mask_radius: number;
+  /** Feather past the radius, 0..1. */
+  mask_feather: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -250,6 +259,11 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   range_exposure: 0,
   range_center: 0.5,
   range_width: 0.25,
+  mask_exposure: 0,
+  mask_x: 0.5,
+  mask_y: 0.5,
+  mask_radius: 0.3,
+  mask_feather: 0.15,
 };
 
 /** Preview with adjustments applied on top of the cached base render. */

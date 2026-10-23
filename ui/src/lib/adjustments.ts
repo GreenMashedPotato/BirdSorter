@@ -22,6 +22,11 @@ const LIMITS: Record<NumericKey, [number, number]> = {
   range_exposure: [-2, 2],
   range_center: [0, 1],
   range_width: [0.02, 1],
+  mask_exposure: [-2, 2],
+  mask_x: [0, 1],
+  mask_y: [0, 1],
+  mask_radius: [0, 2],
+  mask_feather: [0, 1],
 };
 
 export type Curve = [number, number, number, number, number];
@@ -61,8 +66,17 @@ export function clampAdjustments(
 
 export function isNeutral(adjustments: Adjustments): boolean {
   const scalars = (Object.keys(LIMITS) as NumericKey[]).every((key) => {
-    // The band's centre/width do nothing while its exposure is zero.
-    if (key === "range_center" || key === "range_width") return true;
+    // Geometry does nothing while the local exposure is zero.
+    if (
+      key === "range_center" ||
+      key === "range_width" ||
+      key === "mask_x" ||
+      key === "mask_y" ||
+      key === "mask_radius" ||
+      key === "mask_feather"
+    ) {
+      return true;
+    }
     return Math.abs(adjustments[key]) < 1e-4;
   });
   const curve = clampCurve(adjustments.curve).every(
@@ -80,10 +94,14 @@ export function isNeutral(adjustments: Adjustments): boolean {
 export function scaleAdjustments(adjustments: Adjustments, amount: number): Adjustments {
   const factor = Number.isFinite(amount) ? Math.min(2, Math.max(0, amount)) : 0;
   const out = clampAdjustments(undefined);
-  // Most controls are neutral at zero; the band geometry is not.
+  // Most controls are neutral at zero; the band/mask geometry is not.
   const neutral: Partial<Record<NumericKey, number>> = {
     range_center: 0.5,
     range_width: 0.25,
+    mask_x: 0.5,
+    mask_y: 0.5,
+    mask_radius: 0.3,
+    mask_feather: 0.15,
   };
   for (const key of Object.keys(LIMITS) as NumericKey[]) {
     const [min, max] = LIMITS[key];
@@ -142,6 +160,11 @@ export function applyGroups(
         out.range_exposure = scaled.range_exposure;
         out.range_center = scaled.range_center;
         out.range_width = scaled.range_width;
+        out.mask_exposure = scaled.mask_exposure;
+        out.mask_x = scaled.mask_x;
+        out.mask_y = scaled.mask_y;
+        out.mask_radius = scaled.mask_radius;
+        out.mask_feather = scaled.mask_feather;
         break;
       case "dehaze":
         out.dehaze = scaled.dehaze;
