@@ -21,6 +21,9 @@
     rateFiles,
     setFlag,
     setColor,
+    clearEdits,
+    getEdits,
+    saveEdits,
     autoRate,
     resetRatings,
     trashFiles,
@@ -51,6 +54,7 @@
     type ScoreSettings,
     type TrainResult,
     type ScoreBreakdown as Breakdown,
+    type Adjustments,
   } from "./lib/api";
   import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
   import { sortFiles, type SortKey } from "./lib/sort";
@@ -390,7 +394,8 @@
     | { kind: "labels"; ids: number[]; prev: (UserLabel | null)[] }
     | { kind: "rating"; values: { id: number; rating: number }[] }
     | { kind: "flag"; values: { id: number; flag: string | null }[] }
-    | { kind: "color"; values: { id: number; color: string | null }[] };
+    | { kind: "color"; values: { id: number; color: string | null }[] }
+    | { kind: "edits"; values: { id: number; adjustments: Adjustments | null }[] };
   let undoStack = $state<UndoEntry[]>([]);
   const canUndo = $derived(undoStack.length > 0);
 
@@ -435,6 +440,16 @@
     });
   }
 
+  /// Snapshot the saved preview edits for a bulk preset sync so Ctrl+Z can put
+  /// every photo back (including "had no saved edits").
+  async function pushEditsUndo(ids: number[]) {
+    const unique = [...new Set(ids)];
+    const values = await Promise.all(
+      unique.map(async (id) => ({ id, adjustments: await getEdits(id) })),
+    );
+    pushUndoEntry({ kind: "edits", values });
+  }
+
   /// Revert the last action. Labels use the server-side undo; the other fields
   /// are grouped by their previous value so one command restores each group.
   async function undoLast() {
@@ -466,6 +481,12 @@
         }
         for (const [flag, ids] of byFlag) await setFlag(ids, flag);
         status = `undid a flag change on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "edits") {
+        for (const { id, adjustments } of entry.values) {
+          if (adjustments) await saveEdits(id, adjustments);
+          else await clearEdits(id);
+        }
+        status = `undid a preset sync on ${entry.values.length} file(s)`;
       } else {
         const byColor = new Map<string | null, number[]>();
         for (const { id, color } of entry.values) {
@@ -1510,6 +1531,7 @@
       onNavigate={openReview}
       onFilesChanged={refreshFiles}
       onPushUndo={pushUndo}
+      onPushEditsUndo={pushEditsUndo}
       onRate={rateOne}
       onBurstGroups={(groups) => {
         burstGroups = groups;

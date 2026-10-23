@@ -12,7 +12,7 @@ Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
 - **363 core unit tests** (370 Rust tests including the integration/desktop
-  suites, +140 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  suites, +141 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
   optional `heic` feature the core suite is 368
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -171,10 +171,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   selection (each photo's edit is saved independently). A preset carries only
   the **groups** chosen at save time (tone / colour / detail / dehaze) and
   merging leaves the other groups alone; legacy presets get all groups.
-  Copy/Paste and Reset remain. Verified by 8 pure preset tests (clamping, caps,
-  upsert/remove, amount scaling, groups, legacy) and an App test that saves a
-  preset, applies it at 50 % and checks the save calls for the current photo
-  plus two selected ones.
+  Copy/Paste and Reset remain. A sync snapshots every affected photo's saved
+  edits first, so **Ctrl+Z restores the whole group in one step**. Verified by
+  8 pure preset tests (clamping, caps, upsert/remove, amount scaling, groups,
+  legacy) and App tests for save/apply/sync and the one-step undo.
 - **Windowed 1:1 preview (2026-10-22)**: above native 1:1 the review fetches
   only the visible source window through `preview_region`, snapped to a 256 px
   grid with a 256 px margin and reused while panning. The backend keeps one

@@ -312,7 +312,8 @@ another (the clipboard survives closing the review), and **Export image…** wri
 the adjusted preview as JPEG or lossless TIFF (by the chosen extension) at the
 current resolution. **Named presets** store a look and reapply it at 0–200 %
 (use the **Amount** slider); choose which groups (tone / colour / detail /
-dehaze) a preset carries, and **Sync** also saves it to the selected photos.
+dehaze) a preset carries, and **Sync** also saves it to the selected photos
+(Ctrl+Z undoes the whole group at once).
 Everything stays **non-destructive** — stored scores, labels, XMP sidecars and
 the original file are untouched.
 

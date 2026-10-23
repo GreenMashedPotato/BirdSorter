@@ -42,7 +42,10 @@ beforeAll(() => {
 
 // A test that selects a second folder would otherwise make the next test reopen
 // it (the last folder is remembered).
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  vi.mocked(getEdits).mockResolvedValue(null);
+});
 
 vi.mock("./lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/api")>();
@@ -132,6 +135,9 @@ vi.mock("./lib/api", async (importOriginal) => {
 import App from "./App.svelte";
 import {
   analysisDetail,
+  clearEdits,
+  DEFAULT_ADJUSTMENTS,
+  getEdits,
   getThumbnail,
   labelFiles,
   queryFiles,
@@ -383,6 +389,55 @@ describe("review view", () => {
     );
     expect(saveEdits).toHaveBeenCalledWith(2, expect.objectContaining({ exposure: 0.25 }));
     expect(saveEdits).toHaveBeenCalledWith(3, expect.objectContaining({ exposure: 0.25 }));
+  });
+
+  it("undoes a preset sync as one step", async () => {
+    vi.mocked(getEdits).mockImplementation(async (id: number) =>
+      id === 2 ? { ...DEFAULT_ADJUSTMENTS, exposure: 0.1 } : null,
+    );
+    vi.mocked(saveEdits).mockClear();
+    vi.mocked(clearEdits).mockClear();
+
+    const { container } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    await fireEvent.click(container.querySelector('[data-idx="1"]') as HTMLElement);
+    await fireEvent.click(container.querySelector('[data-idx="2"]') as HTMLElement);
+    await fireEvent.dblClick(container.querySelector('[data-idx="0"]') as HTMLElement);
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img1.cr3"),
+    );
+
+    const review = container.querySelector(".review") as HTMLElement;
+    await fireEvent.click(within(review).getByText("Adjust"));
+    const adjust = container.querySelector(".adjust") as HTMLElement;
+    await fireEvent.input(container.querySelector("#adj-exposure")!, {
+      target: { value: "0.5" },
+    });
+    await fireEvent.input(container.querySelector("#adj-preset-name")!, {
+      target: { value: "Warm" },
+    });
+    await fireEvent.click(within(adjust).getByText("Save"));
+    await fireEvent.click(container.querySelector("#adj-sync")!);
+    await fireEvent.change(container.querySelector("#adj-preset")!, {
+      target: { value: "Warm" },
+    });
+    await waitFor(() =>
+      expect(saveEdits).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({ exposure: 0.5 }),
+      ),
+    );
+
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() =>
+      expect(saveEdits).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({ exposure: 0.1 }),
+      ),
+    );
+    // The other two had no saved edits, so undo clears them.
+    expect(clearEdits).toHaveBeenCalledWith(1);
+    expect(clearEdits).toHaveBeenCalledWith(3);
   });
 
   it("edits the tone curve and clamps it between points", async () => {
