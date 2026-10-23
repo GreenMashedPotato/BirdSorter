@@ -731,7 +731,14 @@ score captions (built-in 5×7 font, verdict accent bars, aspect-preserving fit,
 32 MP cap) and excludes the output file if it lives in the scanned folder.
 The toolbar's **Contact sheet…** button exports the selected (or visible)
 photos through a save dialog. Verified on three copied CR3s and by a desktop
-test. Still open: A4/Letter print layouts, page counts and 150 dpi sizing.
+test.
+
+**Shipped (2026-10-23, print layouts):** `--print a4|letter [--rows N]
+[--dpi N]` renders 150 dpi page images (A4 1240×1754, Letter 1275×1650) with a
+centred rows × columns grid, 10 mm margins, 3:2 cells and numbered pages
+(`sheet-1.jpg`, …), excluding earlier pages from the next scan. Verified on
+five copied CR3s (2 pages, 4 + 1 cells, inspected). PDF output and landscape
+orientation remain open.
 
 Slideshow and full print/picture-package layouts are available in LightCraft
 but are low value for a culling app; skip unless requested.

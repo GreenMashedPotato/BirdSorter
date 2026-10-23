@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **357 core unit tests** (364 Rust tests including the integration/desktop
+- **360 core unit tests** (367 Rust tests including the integration/desktop
   suites, +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 362
+  optional `heic` feature the core suite is 365
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -188,8 +188,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   fit and a 32 MP cap; an output inside the folder is excluded from the next
   scan. The toolbar's **Contact sheet…** button exports the selected (or
   visible) photos via a save dialog. Verified on three copied CR3s (756×644,
-  3 cells, 47 KB) and by a desktop test on a real JPEG. A4/Letter print layouts
-  and page counts remain.
+  3 cells, 47 KB) and by a desktop test on a real JPEG.
+- **Contact-sheet print layouts (2026-10-23)**: `--print a4|letter` renders
+  page-sized 150 dpi images (A4 1240×1754, Letter 1275×1650) with a centred
+  rows × columns grid, 10 mm margins, 3:2 thumbnail cells and numbered pages
+  (`sheet-1.jpg`, `sheet-2.jpg`); a single page keeps the exact output name.
+  Numbered pages are excluded from the next scan. Verified on five copied CR3s:
+  2×2 A4 → 2 pages (4 + 1 cells), 1240×1754 each, 202 KB total, inspected;
+  copies deleted.
 - **Optional HEIC/HEIF input (2026-10-22)**: the `heic` Cargo feature (off by
   default, because HEVC is patent-encumbered) adds the pure-Rust `heic-rs` 0.1.4
   decoder to `birdsorter-core`; the scanner accepts `.heic`/`.heif`/`.hif` only
@@ -419,6 +425,8 @@ birdsorter export <folder> <dest> --predicted sharp    # the scorer's keepers
 birdsorter export <folder> <dest> --predicted sharp --by date   # one folder per capture day
 birdsorter export <folder> <dest> --predicted sharp --by species --rename "{species}_{name}"
 birdsorter cleancache                                  # reclaim orphaned thumbnails
+birdsorter contact <folder> sheet.jpg --cols 4         # shareable contact sheet
+birdsorter contact <folder> sheet.jpg --print a4 --rows 5   # 150 dpi pages
 
 # performance (criterion; HTML reports under target/criterion/)
 cargo bench -p birdsorter-core --bench analysis

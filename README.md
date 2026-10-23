@@ -238,7 +238,9 @@ Reset stars and Export keepers target it, and the sidebar shows
 "Actions target: …". Labels, ratings and flags act on the selected files across
 folders. Scanning a folder includes all of its child folders. The toolbar's
 **Contact sheet…** exports the selected (or visible) photos as a JPEG grid with
-filename/verdict captions.
+filename/verdict captions. For print-ready pages, `birdsorter contact <folder>
+<out.jpg> --print a4|letter [--rows N] [--dpi N]` writes 150 dpi page images
+(numbered when there is more than one).
 
 **XMP sidecars** stay in sync: ratings (`xmp:Rating`), colour labels
 (`xmp:Label`), and the verdict label plus effective species as `dc:subject`

@@ -10,6 +10,9 @@ use ndarray::Array3;
 use crate::{CoreError, Result};
 
 const MAX_PIXELS: u64 = 32_000_000;
+/// Print runs are rendered page by page; bound the whole batch as well.
+const MAX_PRINT_PIXELS: u64 = 64_000_000;
+const MAX_PRINT_PAGES: usize = 100;
 const SHEET_BG: [u8; 3] = [22, 24, 28];
 const CELL_BG: [u8; 3] = [32, 35, 41];
 const CAPTION_BG: [u8; 3] = [28, 30, 35];
@@ -42,6 +45,50 @@ impl Default for ContactOptions {
             cell_width: 360,
             cell_height: 300,
             margin: 12,
+            caption_height: 34,
+            font_scale: 2,
+        }
+    }
+}
+
+/// A paper size, portrait, in millimetres.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageSize {
+    A4,
+    Letter,
+}
+
+impl PageSize {
+    pub fn millimetres(self) -> (f64, f64) {
+        match self {
+            PageSize::A4 => (210.0, 297.0),
+            PageSize::Letter => (215.9, 279.4),
+        }
+    }
+}
+
+/// A print layout: fixed page size and dpi, with a rows × columns grid per
+/// page. Cells beyond one page continue on the next page.
+#[derive(Debug, Clone, Copy)]
+pub struct PrintOptions {
+    pub page: PageSize,
+    pub cols: usize,
+    pub rows: usize,
+    /// Render resolution; 150 dpi matches an ordinary office printer.
+    pub dpi: u32,
+    pub margin_mm: f64,
+    pub caption_height: usize,
+    pub font_scale: usize,
+}
+
+impl Default for PrintOptions {
+    fn default() -> Self {
+        Self {
+            page: PageSize::A4,
+            cols: 4,
+            rows: 5,
+            dpi: 150,
+            margin_mm: 10.0,
             caption_height: 34,
             font_scale: 2,
         }
@@ -82,83 +129,230 @@ pub fn render(cells: &[ContactCell], options: &ContactOptions) -> Result<Array3<
 
     let mut canvas = Array3::<u8>::zeros((height, width, 3));
     fill_rect(&mut canvas, 0, 0, width, height, SHEET_BG);
-    let thumb_height = options.cell_height - options.caption_height;
 
     for (index, cell) in cells.iter().enumerate() {
         let col = index % options.cols;
         let row = index / options.cols;
         let x0 = options.margin + col * (options.cell_width + options.margin);
         let y0 = options.margin + row * (options.cell_height + options.margin);
-        fill_rect(
+        draw_cell(
             &mut canvas,
-            x0,
-            y0,
-            options.cell_width,
-            options.cell_height,
-            CELL_BG,
-        );
-
-        let (img_h, img_w, _) = cell.rgb.dim();
-        let (thumb_w, thumb_h) = fit_dimensions(img_w, img_h, options.cell_width, thumb_height);
-        if thumb_w > 0 && thumb_h > 0 {
-            let pixels: Vec<u8> = cell.rgb.iter().copied().collect();
-            let Ok(w) = u32::try_from(img_w) else {
-                continue;
-            };
-            let Ok(h) = u32::try_from(img_h) else {
-                continue;
-            };
-            let Some(image) = image::RgbImage::from_raw(w, h, pixels) else {
-                continue;
-            };
-            let Ok(tw) = u32::try_from(thumb_w) else {
-                continue;
-            };
-            let Ok(th) = u32::try_from(thumb_h) else {
-                continue;
-            };
-            let resized =
-                image::imageops::resize(&image, tw, th, image::imageops::FilterType::Triangle);
-            let ox = x0 + (options.cell_width - thumb_w) / 2;
-            let oy = y0 + (thumb_height - thumb_h) / 2;
-            for (x, y, pixel) in resized.enumerate_pixels() {
-                set_pixel(&mut canvas, ox + x as usize, oy + y as usize, pixel.0);
-            }
-        }
-
-        let caption_y = y0 + thumb_height;
-        fill_rect(
-            &mut canvas,
-            x0,
-            caption_y,
-            options.cell_width,
-            options.caption_height,
-            CAPTION_BG,
-        );
-        if let Some(accent) = cell.accent {
-            fill_rect(
-                &mut canvas,
-                x0,
-                caption_y,
-                4,
-                options.caption_height,
-                accent,
-            );
-        }
-        let scale = options.font_scale.max(1);
-        let text_height = 7 * scale;
-        let text_y = caption_y + options.caption_height.saturating_sub(text_height) / 2;
-        draw_text(
-            &mut canvas,
-            x0 + 10,
-            text_y,
-            &cell.caption.to_ascii_uppercase(),
-            scale,
-            CAPTION_FG,
-            options.cell_width.saturating_sub(16),
+            cell,
+            CellLayout {
+                x: x0,
+                y: y0,
+                width: options.cell_width,
+                height: options.cell_height,
+                caption_height: options.caption_height,
+                font_scale: options.font_scale,
+            },
         );
     }
     Ok(canvas)
+}
+
+/// Render a print run: one image per page, cells in row-major order.
+///
+/// The grid is centred on the paper; pages after the first continue the cell
+/// list. The batch is bounded by `MAX_PRINT_PIXELS`.
+pub fn render_pages(cells: &[ContactCell], options: &PrintOptions) -> Result<Vec<Array3<u8>>> {
+    if cells.is_empty() {
+        return Err(CoreError::invalid_input(
+            "a contact sheet needs at least one cell",
+        ));
+    }
+    if options.cols == 0 || options.rows == 0 {
+        return Err(CoreError::invalid_input(
+            "print layouts need at least one row and one column",
+        ));
+    }
+    if !(72..=600).contains(&options.dpi) {
+        return Err(CoreError::invalid_input(
+            "print dpi must be between 72 and 600",
+        ));
+    }
+    if !options.margin_mm.is_finite() || options.margin_mm < 0.0 {
+        return Err(CoreError::invalid_input(
+            "print margin must be non-negative",
+        ));
+    }
+
+    let page = PagePixels::new(options)?;
+    let per_page = options
+        .cols
+        .checked_mul(options.rows)
+        .ok_or_else(|| CoreError::invalid_input("print grid is too large"))?;
+    let pages = cells.len().div_ceil(per_page);
+    if pages == 0 || pages > MAX_PRINT_PAGES {
+        return Err(CoreError::invalid_input(format!(
+            "{pages} pages is over the {MAX_PRINT_PAGES}-page cap"
+        )));
+    }
+    let total = (page.width as u64)
+        .saturating_mul(page.height as u64)
+        .saturating_mul(pages as u64);
+    if total > MAX_PRINT_PIXELS {
+        return Err(CoreError::invalid_input(format!(
+            "{pages} pages would be {total} pixels (over the {MAX_PRINT_PIXELS}-pixel cap)"
+        )));
+    }
+
+    let mut out = Vec::with_capacity(pages);
+    for page_index in 0..pages {
+        let mut canvas = Array3::<u8>::zeros((page.height, page.width, 3));
+        fill_rect(&mut canvas, 0, 0, page.width, page.height, SHEET_BG);
+        let start = page_index * per_page;
+        let end = (start + per_page).min(cells.len());
+        for (slot, cell) in cells[start..end].iter().enumerate() {
+            let col = slot % options.cols;
+            let row = slot / options.cols;
+            draw_cell(
+                &mut canvas,
+                cell,
+                CellLayout {
+                    x: page.left + col * page.cell_width,
+                    y: page.top + row * page.cell_height,
+                    width: page.cell_width,
+                    height: page.cell_height,
+                    caption_height: options.caption_height,
+                    font_scale: options.font_scale,
+                },
+            );
+        }
+        out.push(canvas);
+    }
+    Ok(out)
+}
+
+/// Page and cell geometry at the requested dpi.
+struct PagePixels {
+    width: usize,
+    height: usize,
+    cell_width: usize,
+    cell_height: usize,
+    left: usize,
+    top: usize,
+}
+
+impl PagePixels {
+    fn new(options: &PrintOptions) -> Result<Self> {
+        let (width_mm, height_mm) = options.page.millimetres();
+        let to_px = |millimetres: f64| -> usize {
+            (millimetres * f64::from(options.dpi) / 25.4)
+                .round()
+                .max(1.0) as usize
+        };
+        let width = to_px(width_mm);
+        let height = to_px(height_mm);
+        if width as u64 * height as u64 > MAX_PIXELS {
+            return Err(CoreError::invalid_input("page is too large"));
+        }
+        let margin = to_px(options.margin_mm);
+        let usable_w = width
+            .checked_sub(margin.saturating_mul(2))
+            .filter(|value| *value > 0)
+            .ok_or_else(|| CoreError::invalid_input("print margin leaves no page area"))?;
+        let usable_h = height
+            .checked_sub(margin.saturating_mul(2))
+            .filter(|value| *value > 0)
+            .ok_or_else(|| CoreError::invalid_input("print margin leaves no page area"))?;
+        // Thumbnails keep a 3:2 landscape box, so a 2-column page does not turn
+        // into one huge empty cell; a dense grid is limited by the slot instead.
+        const PRINT_ASPECT: f64 = 1.5;
+        let slot_w = usable_w / options.cols;
+        let slot_h = usable_h / options.rows;
+        let mut cell_width = slot_w;
+        let mut cell_height = ((slot_w as f64 / PRINT_ASPECT).round() as usize)
+            .saturating_add(options.caption_height);
+        if cell_height > slot_h {
+            cell_height = slot_h;
+            let available = cell_height.saturating_sub(options.caption_height);
+            cell_width = ((available as f64 * PRINT_ASPECT).round() as usize).min(slot_w);
+        }
+        if cell_width < 16 || cell_height <= options.caption_height + 4 {
+            return Err(CoreError::invalid_input(
+                "the page is too small for this rows × columns grid",
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            cell_width,
+            cell_height,
+            left: (width - cell_width * options.cols) / 2,
+            top: (height - cell_height * options.rows) / 2,
+        })
+    }
+}
+
+/// Where one cell sits and how tall its caption strip is.
+struct CellLayout {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    caption_height: usize,
+    font_scale: usize,
+}
+
+/// Draw one cell (background, fitted thumbnail, caption strip) into `canvas`.
+fn draw_cell(canvas: &mut Array3<u8>, cell: &ContactCell, layout: CellLayout) {
+    let CellLayout {
+        x: x0,
+        y: y0,
+        width: cell_width,
+        height: cell_height,
+        caption_height,
+        font_scale,
+    } = layout;
+    fill_rect(canvas, x0, y0, cell_width, cell_height, CELL_BG);
+    let thumb_height = cell_height.saturating_sub(caption_height);
+    let (img_h, img_w, _) = cell.rgb.dim();
+    let (thumb_w, thumb_h) = fit_dimensions(img_w, img_h, cell_width, thumb_height);
+    if thumb_w > 0 && thumb_h > 0 {
+        let pixels: Vec<u8> = cell.rgb.iter().copied().collect();
+        if let (Ok(w), Ok(h), Ok(tw), Ok(th)) = (
+            u32::try_from(img_w),
+            u32::try_from(img_h),
+            u32::try_from(thumb_w),
+            u32::try_from(thumb_h),
+        ) {
+            if let Some(image) = image::RgbImage::from_raw(w, h, pixels) {
+                let resized =
+                    image::imageops::resize(&image, tw, th, image::imageops::FilterType::Triangle);
+                let ox = x0 + (cell_width - thumb_w) / 2;
+                let oy = y0 + (thumb_height - thumb_h) / 2;
+                for (x, y, pixel) in resized.enumerate_pixels() {
+                    set_pixel(canvas, ox + x as usize, oy + y as usize, pixel.0);
+                }
+            }
+        }
+    }
+
+    let caption_y = y0 + thumb_height;
+    fill_rect(
+        canvas,
+        x0,
+        caption_y,
+        cell_width,
+        caption_height,
+        CAPTION_BG,
+    );
+    if let Some(accent) = cell.accent {
+        fill_rect(canvas, x0, caption_y, 4, caption_height, accent);
+    }
+    let scale = font_scale.max(1);
+    let text_height = 7 * scale;
+    let text_y = caption_y + caption_height.saturating_sub(text_height) / 2;
+    draw_text(
+        canvas,
+        x0 + 10,
+        text_y,
+        &cell.caption.to_ascii_uppercase(),
+        scale,
+        CAPTION_FG,
+        cell_width.saturating_sub(16),
+    );
 }
 
 /// The largest size that fits `width × height` inside `max_w × max_h` without
@@ -451,6 +645,98 @@ mod tests {
                 cols: 1000,
                 cell_width: 1000,
                 cell_height: 1000,
+                ..options
+            }
+        )
+        .is_err());
+    }
+
+    fn print_cell() -> ContactCell {
+        ContactCell {
+            rgb: Array3::from_elem((6, 8, 3), 120u8),
+            caption: "A1".into(),
+            accent: Some([200, 80, 80]),
+        }
+    }
+
+    #[test]
+    fn print_layout_uses_the_paper_size_at_150_dpi() {
+        let options = PrintOptions {
+            page: PageSize::A4,
+            cols: 2,
+            rows: 2,
+            ..PrintOptions::default()
+        };
+        let pages = render_pages(&[print_cell(), print_cell()], &options).unwrap();
+        assert_eq!(pages.len(), 1);
+        // A4 is 210 × 297 mm: 1240 × 1754 px at 150 dpi.
+        assert_eq!(pages[0].dim(), (1754, 1240, 3));
+        assert_eq!(
+            [
+                pages[0][[0, 0, 0]],
+                pages[0][[0, 0, 1]],
+                pages[0][[0, 0, 2]]
+            ],
+            SHEET_BG
+        );
+
+        let letter = PrintOptions {
+            page: PageSize::Letter,
+            cols: 2,
+            rows: 2,
+            ..PrintOptions::default()
+        };
+        let pages = render_pages(&[print_cell()], &letter).unwrap();
+        // Letter is 215.9 × 279.4 mm: 1275 × 1650 px at 150 dpi.
+        assert_eq!(pages[0].dim(), (1650, 1275, 3));
+    }
+
+    #[test]
+    fn print_layout_continues_on_the_next_page() {
+        let options = PrintOptions {
+            page: PageSize::A4,
+            cols: 2,
+            rows: 2,
+            ..PrintOptions::default()
+        };
+        let cells: Vec<_> = (0..5).map(|_| print_cell()).collect();
+        let pages = render_pages(&cells, &options).unwrap();
+        assert_eq!(pages.len(), 2, "5 cells at 4 per page = 2 pages");
+        // The second page has one cell at the top-left; the next slot is bare.
+        let page = &pages[1];
+        let geometry = PagePixels::new(&options).unwrap();
+        let second_x = geometry.left + geometry.cell_width;
+        let second_y = geometry.top;
+        assert_eq!(
+            [page[[second_y, second_x, 0]], page[[second_y, second_x, 1]]],
+            [SHEET_BG[0], SHEET_BG[1]]
+        );
+        // The first slot is the cell background, not the page background.
+        assert_eq!(page[[geometry.top, geometry.left, 0]], CELL_BG[0]);
+    }
+
+    #[test]
+    fn print_layout_validates_geometry_and_bounds() {
+        let cell = print_cell();
+        let one = std::slice::from_ref(&cell);
+        let options = PrintOptions::default();
+        assert!(render_pages(&[], &options).is_err());
+        assert!(render_pages(one, &PrintOptions { rows: 0, ..options }).is_err());
+        assert!(render_pages(one, &PrintOptions { dpi: 10, ..options }).is_err());
+        assert!(render_pages(
+            one,
+            &PrintOptions {
+                margin_mm: 500.0,
+                ..options
+            }
+        )
+        .is_err());
+        // A grid too dense for a caption strip must be refused.
+        assert!(render_pages(
+            one,
+            &PrintOptions {
+                cols: 40,
+                rows: 60,
                 ..options
             }
         )
