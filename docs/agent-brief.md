@@ -14,6 +14,104 @@ autonomously, ship complete vertical slices, and keep the gates green.
    cross-project feature backlog and priority table.
 7. [`CONTRIBUTING.md`](./CONTRIBUTING.md) — recipes and invariants.
 
+## Handover — 2026-10-23 (the previous run stopped on budget)
+
+**Last code commit:** `90e34d4` (this handover note is the commit on top of it).
+**Everything is local — nothing has been pushed.**
+
+**Gates at HEAD (all green):**
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                 # 351 core + 3 integration + 5 desktop = 359 Rust
+cd ui && npm test && npm run check && npm run build   # 128 UI tests, 0/0, build ok
+# optional feature suite (run separately; the feature is OFF by default):
+cargo test -p birdsorter-core --features heic --lib    # 354 core
+cargo build --release -p birdsorter-cli --features heic
+```
+
+### Shipped in this run (newest first)
+
+| Commit | Slice | Evidence |
+|---|---|---|
+| `90e34d4` | **Optional HEIC/HEIF** behind the off-by-default `heic` feature (`heic-rs` 0.1.4, RGB8, container transforms, 512 MiB + 256 MP caps, `catch_unwind`); scanner accepts `.heic/.heif/.hif` only when enabled; `docs/HEIC.md` | garbage → typed error, size bound, feature-gated scanner test, opt-in `BIRDSORTER_TEST_HEIC` hook; release CLI builds with the feature. No real HEIC file exists in the corpus. |
+| `e3f5a35` | **Contact sheet in the toolbar** (`contact_sheet` command, save dialog, selection-or-visible) | desktop test renders a JPEG from a real file; API + toolbar tests |
+| `4eeefae` | **Contact-sheet CLI** (`contact <folder> <out.jpg> --cols/--size/--limit`) with a built-in 5×7 caption font, verdict accents, 32 MP cap | 3 core tests; 756×644 / 3-cell sheet from copied CR3s, inspected, copies deleted |
+| `b6a4a2c` | **Sony AF-point overlay** (ILCE-1/7SM3 header-only maker notes, orientation, Review/Compare) | synthetic ARW tests (point, manual/Wide-centre, orientation 6, unsupported body, truncation); real CR3 rejected safely |
+| `7f7585b` | **Model identity + stale detection** (schema v19) | copied CR3: same model → 0 pending, renamed model → 1 re-analyzed |
+| `f6037b5` | **XMP labels/keywords + rating import** (byte-preserving, backups) | scan + sync tests |
+| `1b0b974` | **Windowed 1:1** above native pixels (`preview_region`) | crop/clamp tests + real-CR3 opt-in |
+| `dde6ee6` | **Smart collections** (all/any/none, inline editor) | evaluator/localStorage tests |
+| `90b027d` | **Burst similarity + brackets** (schema v18) | grouping/bracket tests; 3-frame real burst |
+| `0723686` | **RAW preview parity** (RAF, `JpgFromRaw`, Nikon/Olympus maker notes) | synthetic containers (no NEF/ARW/DNG/RAF in corpus) |
+| `7ac59ba` | **TIFF-based RAW previews** (IFD/SubIFD walk; cache v4) | synthetic TIFF containers |
+| `a6a5549` | **Guided-filter clarity/dehaze** | flat-field/step-edge tests; ~200 → ~144 ms on a 2400×1601 CR3 |
+
+### Start here: HEIC EXIF (capture time)
+
+This is the **next unblocked slice and the exact resume point**. The HEIC decode
+path works, but `io/exif.rs` does not read HEIC EXIF, so a `.heic` has no capture
+time: it will not join time-based bursts or `--by date` exports, and the review
+EXIF strip is empty.
+
+What I found before stopping:
+
+- `heic-rs 0.1.4` exposes `heic_rs::context::Context::open(bytes)`;
+  `ctx.meta.primary` is the primary item id and
+  `ctx.exif(ctx.meta.primary)? -> Option<&[u8]>` returns the **TIFF block** (the
+  HEIF `Exif\0\0` wrapper is already stripped).
+- `io/exif.rs::tiff_exif` already parses a TIFF root IFD with
+  `rawler::formats::tiff::IFD::new_root` + `rawler::exif::Exif::new`. It takes a
+  `Read` source, so a `std::io::Cursor<&[u8]>` works; factor a bytes-based
+  helper and call it from both `capture_time` and `photo_meta` when the
+  extension is `heic`/`heif`/`hif`.
+- **Do not apply EXIF orientation again** for HEIC: `irot`/`imir` are already
+  applied by `decode_heic`.
+- Tests: a minimal little-endian TIFF EXIF block with `DateTimeOriginal` in a
+  unit test needs no HEIC file; extend the opt-in
+  `BIRDSORTER_TEST_HEIC=/path/photo.heic` hook for the full path. The corpus is
+  Canon-only, so no real iPhone file is available here.
+- Update `HEIC.md` (the "not wired yet" row), `implemented`, `progress`,
+  `SUGGESTIONS`, `improvement-suggestions`, and this queue.
+
+### Open queue after that
+
+1. 🟡 **Canon/Nikon AF points** — Sony is in `io/focus.rs`; LightCraft has no
+   Canon/Nikon implementation, so this is original reverse engineering. The
+   corpus is Canon; start with CR3 `CMT1`/`AFInfo` maker notes on a **copy**.
+2. 🟡 **Contact-sheet print layouts** — A4/Letter, rows × columns, page counts,
+   150 dpi. Core renderer: `io/contact_sheet.rs`; the UI button is wired.
+3. 🟡 **Library-wide smart collections** — client-side all/any/none shipped;
+   server-side SQL evaluation and a library-wide view remain.
+4. **Named presets** with amounts and group sync (LightCraft `develop/src/presets.rs`).
+5. **Tone curve / local masks / defringe** (preview pipeline).
+6. **Command registry + MCP** — a product call; ask before building.
+7. **Scoring changes** (block-percentile sharpness, anti-aliased downscale,
+   pre-FFT downscale) — require a labelled set for recalibration; never swap
+   silently.
+
+### Blocked / needs input
+
+- **HEIC on by default** — never without an explicit distributor decision (HEVC
+  patents). The user chose opt-in on 2026-10-23.
+- **Command registry/MCP** — value decision.
+- **Signing/notarization, auto-updater, macOS validation, fine-tuned models** —
+  external (certificates, a Mac, labelled data).
+- **A real HEIC file** to validate the decoder end-to-end — none in the corpus.
+
+### Working rules for the next run
+
+- **Do not push.** The user has only asked for local commits; say when a commit
+  is local.
+- Real-corpus work only on copies under the session scratchpad, then delete;
+  never mutate `D:/unsorted data/DCIM`.
+- Run the full gates before every commit and update the docs listed under
+  *Definition of done*.
+- Keep the default build free of HEIC; run the `--features heic` suite separately.
+- Do not edit `.commandcode/taste/`; use the `taste` tool if the user states a
+  preference.
+
 ## Current state
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
@@ -28,8 +126,8 @@ autonomously, ship complete vertical slices, and keep the gates green.
   ratings/flags/colours + Ctrl+Z undo, XMP labels/keywords + rating import at
   scan, model identity per analysis,
   auto-advance, similarity-aware burst grouping + bracket detection, windowed
-  1:1 preview above native pixels, Sony AF-frame overlay, CLI contact-sheet
-  export, optional HEIC input (off-by-default `heic` feature),
+  1:1 preview above native pixels, Sony AF-frame overlay, contact-sheet export
+  (CLI + toolbar), optional HEIC input (off-by-default `heic` feature),
   preview adjustments (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
   JPEG/TIFF export.
@@ -74,9 +172,9 @@ each slice end-to-end.
 - Keep async UI stale-response guards, listener cleanup and bounded caches.
 - Don't add dependencies unless the feature genuinely needs them; verify
   licences are AGPL-compatible.
-- Ask the user only when there is a real fork: windowed 1:1 UX, HEIC
-  patent/licensing, a scoring change that needs a labelled set, or a feature
-  whose semantics are ambiguous. Otherwise decide and proceed.
+- Ask the user only when there is a real fork: making HEIC default-on (patents),
+  a scoring change that needs a labelled set, command-registry/MCP value, or a
+  feature whose semantics are ambiguous. Otherwise decide and proceed.
 
 ## Definition of done for each slice
 
