@@ -79,9 +79,11 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   still decodes at 2400 px.
 - **HEIC/HEIF** (`heic`/`heif`/`hif`) is available behind an **off-by-default
   `heic` feature**: build with `--features heic` to enable the pure-Rust
-  `heic-rs` decoder. It is opt-in because HEVC is patent-encumbered (a
-  distributor's call), not a code one. See [`HEIC.md`](./docs/HEIC.md); a default
-  build ignores those files, and JPEG/TIFF/RAW are unaffected either way.
+  `heic-rs` decoder. Capture time and the review EXIF strip come from the file's
+  `Exif` item; the container's rotation/mirror is applied once, at decode. It is
+  opt-in because HEVC is patent-encumbered (a distributor's call), not a code
+  one. See [`HEIC.md`](./docs/HEIC.md); a default build ignores those files, and
+  JPEG/TIFF/RAW are unaffected either way.
 
 ## Layout
 

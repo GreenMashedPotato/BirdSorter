@@ -40,13 +40,26 @@ heic` once the distributor has made the patent call.
 - Bounds: the same **512 MiB file cap** as ordinary images, plus `heic-rs`'s
   **256-megapixel** default pixel cap, checked before decoding.
 
+## EXIF
+
+Capture metadata comes from the file's `Exif` item (the primary item's `cdsc`
+reference). `heic-rs` parses only the container — no pixels are touched — and
+returns the TIFF block with the HEIF `Exif\0\0` wrapper already stripped, so the
+same root-IFD reader as TIFF/JPEG fills **capture time** (burst grouping,
+`--by date` export, the review strip) and **camera make/model, lens, ISO,
+exposure, aperture and focal length**. It runs under `catch_unwind`, reuses the
+512 MiB file cap, and is only attempted for `.heic`/`.heif`/`.hif` names.
+
+EXIF **orientation is deliberately not applied**: the container's `irot`/`imir`
+transforms already oriented the pixels, so applying the tag as well would rotate
+the image twice.
+
 ## Supported / not yet
 
 | | |
 |---|---|
-| Supported | single pictures and grid-tiled photos, 4:2:0 and monochrome, 8–10 bit (and 16-bit paths), alpha auxiliary images, container rotation/mirror/crop |
+| Supported | single pictures and grid-tiled photos, 4:2:0 and monochrome, 8–10 bit (and 16-bit paths), alpha auxiliary images, container rotation/mirror/crop, **EXIF capture time and the review strip** |
 | Refused by the decoder | 4:2:2 and 4:4:4 (some Canon/Sony "HIF"), image sequences, overlays, non-HEVC derivations — reported as a clear error |
-| Not wired yet | HEIC **EXIF** (capture time, orientation beyond the container): a HEIC file has no capture time, so it joins no time-based burst. The grid, preview, analysis, review, ratings/XMP and export paths all work. |
 | Not done | the macOS ImageIO path (see `MACOS_TODO.md`), which would avoid bundling a decoder on macOS |
 
 ## Evidence
@@ -54,7 +67,12 @@ heic` once the distributor has made the patent call.
 - Feature-gated unit tests: garbage bytes produce a typed error (no panic), the
   file-size bound is enforced, and the scanner accepts `.heic`/`.heif`/`.hif`
   **only** when the feature is on.
+- A synthetic HEIF container with a minimal TIFF `Exif` item (Make, Model,
+  `Orientation`, `DateTimeOriginal`) is built in-test and fed through the real
+  `capture_time`/`photo_meta` entry points: capture time, camera name and the
+  "no double orientation" rule are asserted. A corrupt container yields no
+  metadata and does not panic.
 - An opt-in real-file test hooks on `BIRDSORTER_TEST_HEIC=/path/photo.heic`.
 - The working corpus (`D:/unsorted data`) is Canon-only, so no real iPhone HEIC
-  was available when this shipped: the error-path tests and the opt-in hook are
-  the evidence until a real file is run through it.
+  was available when this shipped: the synthetic container, error-path tests and
+  the opt-in hook are the evidence until a real file is run through it.

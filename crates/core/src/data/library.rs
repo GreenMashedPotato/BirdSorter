@@ -41,7 +41,7 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
 
 /// HEIC/HEIF extensions, accepted only when the optional decoder is compiled in.
 #[cfg(feature = "heic")]
-const HEIC_EXTENSIONS: &[&str] = &["heic", "heif", "hif"];
+const HEIC_EXTENSIONS: &[&str] = crate::io::heic::EXTENSIONS;
 #[cfg(not(feature = "heic"))]
 const HEIC_EXTENSIONS: &[&str] = &[];
 

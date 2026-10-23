@@ -41,9 +41,10 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 ## Formats
 
 - 🟡 **HEIC/HEIF** — shipped 2026-10-22 behind the off-by-default `heic` feature
-  (pure-Rust `heic-rs`; `docs/HEIC.md`). Still open: HEIC EXIF (capture time),
-  the macOS ImageIO alternative, and a real iPhone file to validate against (the
-  corpus is Canon-only).
+  (pure-Rust `heic-rs`; `docs/HEIC.md`). **HEIC EXIF** (capture time and the
+  review strip) shipped 2026-10-23, with orientation left to the container's
+  `irot`/`imir`. Still open: the macOS ImageIO alternative and a real iPhone file
+  to validate against (the corpus is Canon-only).
 
 ## UX & features
 
