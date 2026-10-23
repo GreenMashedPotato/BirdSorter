@@ -22,9 +22,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > for read-only commands, supports colour labels (`6`–`9`), undoes labels,
 > ratings, flags and colours with Ctrl+Z, groups bursts by an 8×8 luminance
 > signature as well as time (flagging exposure brackets), extends saved searches
-> into all/any/none smart collections with an inline editor, and renders
-> windowed 1:1 regions above native pixels. The analysis below still describes
-> the rest of the snapshot.
+> into all/any/none smart collections with an inline editor, renders windowed
+> 1:1 regions above native pixels, and mirrors colours/labels/species into XMP
+> (importing ratings at scan). The analysis below still describes the rest of
+> the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -111,7 +112,7 @@ roughly describes the code surface.
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
 | 11 | Camera AF-point overlay (start Sony, then Canon/Nikon) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | HEIC/HEIF via pure-Rust `heic-rs` | LightCraft `crates/heif` | P2 | Small |
-| 13 | XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
+| 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | Presets with amount, copy/paste/sync settings | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
@@ -505,7 +506,14 @@ think it focused?" is exactly the question when the bird is small.
 
 ### 5.5 Expand XMP and make writes safer
 
-BirdSorter writes only `xmp:Rating` and refuses an unparseable sidecar.
+~~BirdSorter writes only `xmp:Rating` and refuses an unparseable sidecar.~~
+**Shipped (2026-10-22, partial):** ratings, colour labels (`xmp:Label`), verdict
+labels and effective species (`dc:subject`) are merged byte-preservingly;
+`shot.xmp` and `shot.CR3.xmp` are both resolved (editing the existing sidecar);
+an unreadable one is copied to `.bak.<pid>.<seq>`; and scan imports a sidecar
+rating only when the DB has none. Still open: fsync + Windows rename retry, a
+private settings blob, and continuing writes after a backup (we still refuse).
+
 LightCraft's approach is more robust:
 
 - Write `xmp:Rating`, `xmp:Label`, `dc:subject` (keywords), and optionally a
@@ -530,6 +538,11 @@ Add keywords stored in XMP and in SQLite, with rename/merge/delete across the
 library as one undoable batch (`catalog/src/keywords.rs`). Bird photographers
 already use keywords for species/place; importing them makes BirdSorter a good
 citizen rather than a silo.
+
+**Partial (2026-10-22):** `dc:subject` keywords now carry the verdict label and
+effective species, and unrelated keywords are preserved on every merge. Still
+open: a SQLite keyword index, importing existing keywords at scan, and
+library-wide rename/merge/delete as one undoable batch.
 
 ### 5.7 Ingest: copy/move, templates, watched folders
 
@@ -891,11 +904,12 @@ These are independent of any porting and worth doing first:
 5. **Thumbnail strings never evict.** `thumbs` in `App.svelte` grows with the
    number of visited tiles. Evict off-screen entries or move to the custom
    protocol.
-6. **XMP sidecar naming collision.** `raw.with_extension("xmp")` makes
-   `IMG.CR3` and `IMG.JPG` share `IMG.xmp`. Detect the conflict and prefer the
-   raw, or use the Full naming style.
-7. **XMP write refusal is permanent.** A malformed sidecar blocks all future
-   rating writes. Back it up and continue.
+6. **XMP sidecar naming collision (partly fixed).** Both `IMG.xmp` and
+   `IMG.CR3.xmp` are now resolved and the existing one is edited in place, but a
+   RAW and JPEG sharing a stem still share the stem sidecar; prefer the raw or
+   switch to Full naming if that matters.
+7. **XMP write refusal is permanent (partly fixed).** A malformed sidecar is now
+   copied to `.bak` first, but writes still refuse afterwards.
 8. **No fsync / rename retry.** Cache and XMP writes can lose data on power
    loss and fail under antivirus/indexer locks on Windows.
 9. **`analysis.model_version` is the scorer version.** Detector/species model

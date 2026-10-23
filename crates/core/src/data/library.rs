@@ -220,6 +220,7 @@ enum Pending {
     },
     Update {
         id: i64,
+        rel: String,
         hash: String,
         size: i64,
         mtime: f64,
@@ -231,6 +232,11 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
     if pending.is_empty() {
         return Ok(());
     }
+    // Ratings set in Lightroom/ON1 are imported when the database has none.
+    let base: String =
+        conn.query_row("SELECT path FROM folders WHERE id = ?1", [folder_id], |r| {
+            r.get(0)
+        })?;
     with_tx(conn, || {
         for op in pending.iter() {
             match op {
@@ -243,11 +249,13 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                     format,
                     captured_at,
                 } => {
+                    let path = PathBuf::from(&base).join(rel);
+                    let rating = crate::io::xmp::read_rating(&path).unwrap_or(0) as i64;
                     conn.execute(
                         "INSERT INTO files
                            (folder_id, relative_path, filename, content_hash,
-                            filesize, mtime, format, imported_at, captured_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            filesize, mtime, format, imported_at, captured_at, rating)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         rusqlite::params![
                             folder_id,
                             rel,
@@ -257,12 +265,14 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                             mtime,
                             format,
                             now_iso(),
-                            captured_at
+                            captured_at,
+                            rating
                         ],
                     )?;
                 }
                 Pending::Update {
                     id,
+                    rel,
                     hash,
                     size,
                     mtime,
@@ -274,6 +284,15 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                           WHERE id = ?5",
                         rusqlite::params![hash, size, mtime, captured_at, id],
                     )?;
+                    if let Some(rating) =
+                        crate::io::xmp::read_rating(&PathBuf::from(&base).join(rel))
+                            .filter(|rating| *rating > 0)
+                    {
+                        conn.execute(
+                            "UPDATE files SET rating = ?1 WHERE id = ?2 AND rating = 0",
+                            rusqlite::params![rating, id],
+                        )?;
+                    }
                 }
             }
         }
@@ -421,6 +440,7 @@ pub fn scan_folder_streaming(
                 let hash = hash_file(path)?;
                 pending.push(Pending::Update {
                     id: *id,
+                    rel: rel.clone(),
                     hash,
                     size,
                     mtime,
@@ -889,6 +909,34 @@ mod tests {
 
         let missing = dir.path().join("nope");
         assert!(add_folder(&conn, &missing).is_err());
+    }
+
+    #[test]
+    fn scan_imports_a_sidecar_rating_only_when_unrated() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"raw");
+        write(dir.path(), "a.xmp", b"<rdf:Description xmp:Rating='4'/>");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM files WHERE filename = 'a.cr3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let rating: i64 = conn
+            .query_row("SELECT rating FROM files WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rating, 4);
+
+        // A user rating is never overwritten by a later scan.
+        set_rating(&conn, &[id], 2).unwrap();
+        write(dir.path(), "a.cr3", b"raw changed");
+        write(dir.path(), "a.xmp", b"<rdf:Description xmp:Rating='5'/>");
+        scan_folder(&conn, fid).unwrap();
+        let rating: i64 = conn
+            .query_row("SELECT rating FROM files WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rating, 2);
     }
 
     #[test]

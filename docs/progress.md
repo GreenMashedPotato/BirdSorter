@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **332 core unit tests** (338 Rust tests including the integration/desktop suites,
+- **338 core unit tests** (345 Rust tests including the integration/desktop suites,
   +126 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -145,6 +145,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   returns a 512×512 window (passed in 11.6 s debug on `_5268869.CR3`); the
   browser overlay is `svelte-check`-clean. Still open: a maximum window/GPU
   texture cap and a dedicated 6000 px developed source.
+- **XMP sidecars beyond ratings (2026-10-22)**: `xmp:Label` carries the colour
+  label, `dc:subject` carries the verdict label and effective species, and
+  `xmp:Rating` stays the star rating. Writes merge byte-preservingly, resolve
+  both `shot.xmp` and `shot.CR3.xmp`, and back up an unreadable sidecar as
+  `<name>.xmp.bak.<pid>.<seq>` before refusing. Scan imports a sidecar rating
+  only when the DB rating is 0. Covered by 14 XMP unit tests, a scan-import test
+  and a desktop label/colour/species sync test. Still open: fsync + Windows
+  rename retry, a private settings blob, and a library-wide keyword manager.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

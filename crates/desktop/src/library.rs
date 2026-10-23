@@ -15,6 +15,7 @@ use birdsorter_core::pipeline::CancelToken;
 
 use crate::state::AppState;
 use crate::util::{blocking, err, open, open_ready};
+use crate::xmp_sync;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -376,7 +377,9 @@ pub(crate) async fn set_color(
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
-        library::set_color(&conn, &files, color.as_deref()).map_err(err)
+        let changed = library::set_color(&conn, &files, color.as_deref()).map_err(err)?;
+        xmp_sync::sync_color_label(&conn, &files, color.as_deref());
+        Ok(changed)
     })
     .await
 }

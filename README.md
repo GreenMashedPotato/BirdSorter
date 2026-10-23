@@ -232,6 +232,13 @@ Reset stars and Export keepers target it, and the sidebar shows
 "Actions target: …". Labels, ratings and flags act on the selected files across
 folders. Scanning a folder includes all of its child folders.
 
+**XMP sidecars** stay in sync: ratings (`xmp:Rating`), colour labels
+(`xmp:Label`), and the verdict label plus effective species as `dc:subject`
+keywords. Writes merge into an existing `shot.xmp` or `shot.CR3.xmp` and
+preserve every unrelated property; an unreadable sidecar is copied to `.bak`
+and left untouched. An existing sidecar rating is imported at scan only when
+the library has no rating for that file.
+
 **Double-click a tile** to open the review view:
 
 - high-resolution preview (rendered on demand at analysis resolution and cached,
