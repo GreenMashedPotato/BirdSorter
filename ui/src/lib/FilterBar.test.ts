@@ -61,6 +61,56 @@ describe("FilterBar", () => {
     expect(onApplySearch).toHaveBeenCalledWith("rating:>3");
   });
 
+  it("applies a smart collection", async () => {
+    const onApplyCollection = vi.fn();
+    const collection = { name: "keepers", all: ["rating:>=4"], any: [], none: [] };
+    const { getByLabelText } = render(FilterBar, {
+      props: {
+        filter: "all",
+        collections: [collection],
+        activeCollection: null,
+        onApplyCollection,
+        shown: 3,
+        selectedCount: 0,
+        onSelectAll: () => {},
+      },
+    });
+    await fireEvent.change(getByLabelText("Smart collection"), {
+      target: { value: "keepers" },
+    });
+    expect(onApplyCollection).toHaveBeenCalledWith(collection);
+  });
+
+  it("saves an all/any/none collection draft", async () => {
+    const onSaveCollection = vi.fn();
+    const { getByText, getByLabelText } = render(FilterBar, {
+      props: {
+        filter: "all",
+        onSaveCollection,
+        shown: 3,
+        selectedCount: 0,
+        onSelectAll: () => {},
+      },
+    });
+    await fireEvent.click(getByText("Edit…"));
+    await fireEvent.input(getByLabelText("Collection name"), {
+      target: { value: "keepers" },
+    });
+    await fireEvent.input(getByLabelText("All rules"), {
+      target: { value: "rating:>=4\nspecies:egret" },
+    });
+    await fireEvent.input(getByLabelText("None rules"), {
+      target: { value: "verdict:blurry" },
+    });
+    await fireEvent.click(getByText("Save collection"));
+    expect(onSaveCollection).toHaveBeenCalledWith({
+      name: "keepers",
+      all: ["rating:>=4", "species:egret"],
+      any: [],
+      none: ["verdict:blurry"],
+    });
+  });
+
   it("reports the chosen sort order", async () => {
     const onSort = vi.fn();
     const { getByLabelText } = render(FilterBar, {

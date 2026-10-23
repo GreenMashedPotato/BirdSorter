@@ -12,7 +12,7 @@ Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
 - **332 core unit tests** (336 Rust tests including the integration/desktop suites,
-  +120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+  +126 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -129,6 +129,12 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   three-frame CR3 burst with an isolated DB: 3.71 img/s, all three grouped,
   signatures stored, means 0.43–0.45 (not a bracket). Similarity splits and a
   bracketed span are synthetic tests; the corpus has no bracket sequence.
+- **Smart collections (2026-10-22)**: saved searches extend into all/any/none
+  rule groups, with an inline editor (create/rename/delete/clear) and
+  per-folder filtering. Verified JSON persistence in `localStorage` (validated,
+  capped, deduped) and the compiled evaluator are covered by 8 pure tests; a
+  FilterBar test covers applying a collection and saving a draft. Remaining: a
+  library-wide view and server-side SQL evaluation.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo
