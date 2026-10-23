@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **363 core unit tests** (370 Rust tests including the integration/desktop
-  suites, +141 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 368
+- **365 core unit tests** (372 Rust tests including the integration/desktop
+  suites, +142 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  optional `heic` feature the core suite is 370
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -146,6 +146,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   remains open (the evaluator is shared with saved searches, so translating it
   would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
   then a folder click returns to 3.
+- **Luminance-range local exposure (2026-10-23)**: a local dodge/burn that
+  applies `-2..2` stops only to pixels whose luma lies in a band (`centre`,
+  `width`), with a smoothstep falloff. It reads only the pixel's own luma, so
+  windowed 1:1 crops render identically. The Adjust panel has Range exp/at/w
+  sliders; presets carry a **local** group; CLI `--range-exposure`,
+  `--range-at`, `--range-width`. Verified on a copied R5 preview at 1600 px with
+  0.8 stop at 0.22/0.15: band pixels +13.1 mean channel delta, far pixels
+  ~0 (max 17 on 827 of 1.7 M pixels); copy deleted. Unit tests cover band
+  targeting and the zero-strength identity. Brush/gradient masks remain open.
 - **Tone curve (2026-10-23)**: a five-point curve (output at input 0, ¼, ½, ¾
   and 1) runs as the last tone step, as a shared 256-entry LUT per channel. The
   curve is clamped to 0..1 and forced non-decreasing, so it can never invert.
@@ -169,8 +178,8 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   locally (validated, clamped, 16 presets), applies them at 0–200 % with every
   control clamped to its slider range, and can sync the result to the grid
   selection (each photo's edit is saved independently). A preset carries only
-  the **groups** chosen at save time (tone / colour / detail / dehaze) and
-  merging leaves the other groups alone; legacy presets get all groups.
+  the **groups** chosen at save time (tone / colour / detail / local / dehaze)
+  and merging leaves the other groups alone; legacy presets get all groups.
   Copy/Paste and Reset remain. A sync snapshots every affected photo's saved
   edits first, so **Ctrl+Z restores the whole group in one step**. Verified by
   8 pure preset tests (clamping, caps, upsert/remove, amount scaling, groups,

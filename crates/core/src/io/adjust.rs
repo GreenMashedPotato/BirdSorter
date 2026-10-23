@@ -44,6 +44,12 @@ pub struct Adjustments {
     /// Point tone curve: the output level at input 0, ¼, ½, ¾ and 1.
     /// Neutral is `[0.0, 0.25, 0.5, 0.75, 1.0]`; values must not decrease.
     pub curve: [f32; 5],
+    /// Local exposure in stops for pixels near `range_center` luma, `-2..=2`.
+    pub range_exposure: f32,
+    /// Luma band centre for the local exposure, `0..=1`.
+    pub range_center: f32,
+    /// Half-width of the band before the mask fades out, `0.02..=1`.
+    pub range_width: f32,
 }
 
 /// The neutral diagonal tone curve.
@@ -65,6 +71,9 @@ impl Default for Adjustments {
             clarity: 0.0,
             defringe: 0.0,
             curve: LINEAR_CURVE,
+            range_exposure: 0.0,
+            range_center: 0.5,
+            range_width: 0.25,
         }
     }
 }
@@ -84,6 +93,7 @@ impl Adjustments {
             && self.saturation.abs() < 1e-4
             && self.clarity.abs() < 1e-4
             && self.defringe.abs() < 1e-4
+            && self.range_exposure.abs() < 1e-4
             && curve_is_identity(&self.curve)
     }
 
@@ -148,6 +158,9 @@ pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
     }
     if adj.defringe.abs() > 1e-4 {
         out = defringe(&out, adj.defringe);
+    }
+    if adj.range_exposure.abs() > 1e-4 {
+        out = range_exposure(&out, adj.range_exposure, adj.range_center, adj.range_width);
     }
     out
 }
@@ -459,6 +472,47 @@ fn defringe(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
     out
 }
 
+/// Local exposure limited to a luma band.
+///
+/// Pixels near `center` get the full gain, fading to none at `width` away. It
+/// reads only the pixel's own luma, so it stays correct when the preview is
+/// cropped for windowed 1:1 rendering (no image coordinates involved). The gain
+/// is applied in display space: a local dodge/burn, not a colour-managed split.
+fn range_exposure(rgb: &Array3<u8>, exposure: f32, center: f32, width: f32) -> Array3<u8> {
+    let center = center.clamp(0.0, 1.0);
+    let width = width.clamp(0.02, 1.0);
+    let gain = 2f32.powf(exposure.clamp(-2.0, 2.0));
+    let mut gains = [1.0f32; 256];
+    for (i, slot) in gains.iter_mut().enumerate() {
+        let luma = i as f32 / 255.0;
+        let distance = (luma - center).abs() / width;
+        let weight = if distance >= 1.0 {
+            0.0
+        } else {
+            // Smoothstep, so the band has no visible hard edge.
+            1.0 - distance * distance * (3.0 - 2.0 * distance)
+        };
+        *slot = 1.0 + (gain - 1.0) * weight;
+    }
+    let (h, w, c) = rgb.dim();
+    let mut out = rgb.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let luma = 0.2126 * rgb[[y, x, 0]] as f32
+                + 0.7152 * rgb[[y, x, 1]] as f32
+                + 0.0722 * rgb[[y, x, 2]] as f32;
+            let factor = gains[luma.round().clamp(0.0, 255.0) as usize];
+            if (factor - 1.0).abs() < 1e-4 {
+                continue;
+            }
+            for k in 0..c.min(3) {
+                out[[y, x, k]] = (rgb[[y, x, k]] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// 3×3 edge-preserving (bilateral) denoise with a range LUT — no `exp` per pixel.
 fn denoise(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
     let (h, w, c) = rgb.dim();
@@ -685,6 +739,45 @@ mod tests {
         assert!(linear[0] < 1e-6);
         assert!((linear[255] - 1.0).abs() < 1e-6);
         assert!((linear[128] - 128.0 / 255.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_luminance_range_mask_targets_only_its_band() {
+        let mut img = Array3::from_elem((2, 4, 3), 0u8);
+        for y in 0..2 {
+            for x in 0..2 {
+                for k in 0..3 {
+                    img[[y, x, k]] = 60;
+                }
+            }
+            for x in 2..4 {
+                for k in 0..3 {
+                    img[[y, x, k]] = 200;
+                }
+            }
+        }
+        let adj = Adjustments {
+            range_exposure: 1.0,
+            range_center: 60.0 / 255.0,
+            range_width: 0.2,
+            ..Default::default()
+        };
+        let out = apply(&img, &adj);
+        assert!(out[[0, 0, 0]] > 60 + 20, "dark side = {}", out[[0, 0, 0]]);
+        assert_eq!(out[[0, 3, 0]], 200);
+        assert!(!adj.is_identity());
+        assert_eq!(out.dim(), img.dim());
+    }
+
+    #[test]
+    fn a_range_mask_is_identity_at_zero() {
+        let img = Array3::from_elem((3, 3, 3), 90u8);
+        let adj = Adjustments {
+            range_center: 0.1,
+            range_width: 0.05,
+            ..Default::default()
+        };
+        assert_eq!(apply(&img, &adj), img);
     }
 
     #[test]
@@ -1209,6 +1302,9 @@ mod tests {
             clarity: 1.0,
             defringe: 1.0,
             curve: [0.0, 0.10, 0.90, 0.95, 1.0],
+            range_exposure: 2.0,
+            range_center: 0.5,
+            range_width: 0.5,
         };
         let out = apply(&img, &adj);
         assert_eq!(out.dim(), img.dim());

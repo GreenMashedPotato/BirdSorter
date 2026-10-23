@@ -29,14 +29,16 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 ## Preview adjustments (next)
 
 - 🟡 **Tone curve** — shipped 2026-10-23 (five points, monotone-clamped LUT,
-  curve editor, presets/amount, CLI `--curve`). **Local masks**
-  (brush/gradient/luminance range) remain.
+  curve editor, presets/amount, CLI `--curve`).
+- 🟡 **Local masks** — a **luminance-range local exposure** shipped 2026-10-23
+  (band centre/width, smooth falloff, a `local` preset group, CLI flags).
+  Brush and gradient masks remain.
 - 🟡 **Defringe** — shipped 2026-10-23 (edge+green-deviation gated, strength
   scaled; CLI `--defringe`, Adjust slider, presets).
 - 🟡 **Named presets with amounts and group sync** — shipped 2026-10-23:
   16 named presets, 0–200 % amount with per-control clamping, partial groups
-  (tone / colour / detail / dehaze), Sync to the grid selection and a one-step
-  Ctrl+Z for the whole sync.
+  (tone / colour / detail / local / dehaze), Sync to the grid selection and a
+  one-step Ctrl+Z for the whole sync.
 
 ## Correctness & robustness
 

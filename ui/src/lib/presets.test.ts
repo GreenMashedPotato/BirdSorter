@@ -131,6 +131,18 @@ describe("develop presets", () => {
     expect(detail.temperature).toBe(-0.4);
   });
 
+  it("keeps the local band neutral until its exposure is set", () => {
+    const centred = { ...DEFAULT_ADJUSTMENTS, range_center: 0.8, range_width: 0.1 };
+    expect(isNeutral(centred)).toBe(true);
+    expect(isNeutral({ ...centred, range_exposure: 0.5 })).toBe(false);
+
+    const preset = { ...DEFAULT_ADJUSTMENTS, range_exposure: 1, range_center: 0.2 };
+    const out = applyGroups(DEFAULT_ADJUSTMENTS, preset, ["local"], 1);
+    expect(out.range_exposure).toBe(1);
+    expect(out.range_center).toBe(0.2);
+    expect(out.exposure).toBe(0);
+  });
+
   it("clamps stored values to slider ranges", () => {
     const out = clampAdjustments({ exposure: -9, shadows: 3, tint: Number.NaN });
     expect(out.exposure).toBe(-2);
