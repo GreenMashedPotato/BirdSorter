@@ -18,9 +18,10 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v17**; **320 Rust + 120 UI tests**; clippy clean.
-- Shipped: folder scan/review, CR3 `PRVW` thumbnails, sharded render cache v2,
-  startup-migrated read-only DB path, EXIF strip, filmstrip, multi-folder view
+- SQLite schema **v17**; **326 Rust + 120 UI tests**; clippy clean.
+- Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
+  render cache v3, startup-migrated read-only DB path, EXIF strip, filmstrip,
+  multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches, ratings/flags/colours + Ctrl+Z undo,
   auto-advance, preview adjustments (exposure/contrast/shadows/highlights/WB/
@@ -100,9 +101,11 @@ each slice end-to-end.
 2. **Windowed 1:1 rendering.** Design first: fetch/render only the visible
    region at 100% when zoomed, snap to a 256 px grid, reuse the window while
    panning. Needs a region command + cache key; ask if the UX fork is unclear.
-3. **TIFF-based RAW preview extraction.** Generalise the CR3 `PRVW` win: choose
-   the smallest embedded JPEG that covers the request from TIFF/NEF/ARW/DNG IFD
-   pointers, validate SOI/EOI, fall back safely.
+~~3. TIFF-based RAW preview extraction~~ — **shipped 2026-10-22** (classic TIFF
+   + BigTIFF IFD/SubIFD walk, `JPEGInterchangeFormat` and JPEG strips, smallest
+   covering preview, SOI/EOI validation; `RENDER_CACHE_VERSION` is now 3). No
+   NEF/ARW/DNG samples exist in the corpus, so it is tested with synthetic
+   containers only.
 4. **Burst similarity + bracket detection.** Compute an 8×8 mean-subtracted
    luminance signature during analysis (schema migration), group by time +
    similarity, detect brackets by exposure span, and fall back to time-only for

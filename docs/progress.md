@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **316 core unit tests** (320 Rust tests including the integration/desktop suites,
+- **322 core unit tests** (326 Rust tests including the integration/desktop suites,
   +120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -99,8 +99,19 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   pixel (new synthetic tests for both). Validated on a copy of
   `D:/unsorted data/DCIM/100R5_26/_5268869.CR3` at 2400×1601: neutral, clarity=1
   and dehaze=1 all render (no halos), with ~144 ms / ~78 ms of adjustment time;
-  the copy was deleted. The cached base render is unchanged, so
-  `RENDER_CACHE_VERSION` stays at 2.
+  the copy was deleted. That slice did not change the cached base render (it
+  stayed at version 2); the TIFF-preview slice below later bumped it to 3.
+- **TIFF-based RAW previews (2026-10-22)**: `embedded_preview` now handles
+  NEF/ARW/DNG by walking the classic-TIFF/BigTIFF IFD chain and SubIFDs with
+  bounded random-access reads, then choosing the smallest embedded JPEG that
+  covers the requested long edge (largest if none does), validating SOI/EOI and
+  falling through on bad candidates. It supports `JPEGInterchangeFormat` and
+  JPEG-in-TIFF strips. Six synthetic tests cover classic/BigTIFF, both
+  endiannesses, strips, invalid JPEGs, IFD chains, out-of-bounds offsets and the
+  end-to-end thumbnail path. `RENDER_CACHE_VERSION` is now **3** (TIFF RAW
+  thumbnail bytes change). No NEF/ARW/DNG samples exist in the working corpus,
+  so this is synthetic-container evidence only; the real CR3 `thumb`/`preview`
+  paths were re-run on a copy and still work.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

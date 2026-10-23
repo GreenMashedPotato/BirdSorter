@@ -19,7 +19,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Bump when a decoder/renderer/adjustment change makes cached bytes stale.
 /// The version is part of every render key and [`ThumbCache::retain`] drops
 /// entries from older versions.
-pub const RENDER_CACHE_VERSION: u32 = 2;
+pub const RENDER_CACHE_VERSION: u32 = 3;
 
 /// Default on-disk render cache budget (4 GiB). The cache is regenerable, so
 /// [`ThumbCache::prune_to_budget`] evicts the oldest entries first.

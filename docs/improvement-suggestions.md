@@ -7,7 +7,8 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17
 > preview, the grid evicts off-screen thumbnails above 600 entries, the filter
 > bar has a sort selector (worst/best/rating/filename), the review shows an EXIF
 > strip (camera/lens/ISO/shutter/aperture/focal), CR3 thumbnails read the compact
-> `PRVW` JPEG, the review shows a cached thumbnail while the preview renders, a
+> `PRVW` JPEG and TIFF RAWs (NEF/ARW/DNG) pick the smallest covering embedded
+> JPEG from their IFDs, the review shows a cached thumbnail while the preview renders, a
 > filmstrip of nearby frames sits under the loupe, the Adjust panel has
 > guided-filter clarity and a dark-channel + guided-filter dehaze slider,
 > Copy/Paste carries a look between photos, edited
@@ -165,6 +166,15 @@ therefore pays a failed call, a log line, and a large JPEG decode.
 
 At minimum, wire this for Canon/Nikon/Sony/Fuji previews (the formats most bird
 photographers use) and make the fallback explicit instead of a failed call.
+
+**Status (2026-10-22):** CR3 reads the compact `PRVW`/`THMB` boxes from the first
+2 MiB, and TIFF-based RAWs (NEF/ARW/DNG) now use a bounded IFD/SubIFD walk that
+picks the smallest embedded JPEG covering the request, validates SOI/EOI and
+falls through to the next candidate (`RENDER_CACHE_VERSION` 3). Still open:
+Nikon MakerNote PreviewIFD, Olympus camera-settings previews, RAF fixed-header
+pointers, choosing after aspect-ratio checks, and colour-space handling
+(Adobe RGB). The working corpus has no NEF/ARW/DNG samples, so those formats are
+covered by synthetic containers rather than real files.
 
 **Why it matters:** faster grid/review opens, far less CPU per thumbnail, and
 correct colour when the camera preview is Adobe RGB.
