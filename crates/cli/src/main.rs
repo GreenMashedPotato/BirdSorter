@@ -80,6 +80,9 @@ Commands:
       --clarity <v>             Local contrast (-1..1)
       --defringe <v>            Suppress magenta/green fringing (0..1)
       --curve b,q,m,t,w         Point tone curve (five 0..1 outputs)
+      --range-exposure <stops>  Local exposure for one luma band (-2..2)
+      --range-at <v>            Band centre (0..1, default 0.5)
+      --range-width <v>         Band half-width (0.02..1, default 0.25)
   probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
@@ -189,6 +192,13 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             <[f32; 5]>::try_from(points).ok()
         })
         .unwrap_or([0.0, 0.25, 0.5, 0.75, 1.0]);
+    let value_flag = |name: &str, default: f32| -> f32 {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
     let adjustments = birdsorter_core::io::adjust::Adjustments {
         exposure: flag("--exposure"),
         contrast: flag("--contrast"),
@@ -203,6 +213,9 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         clarity: flag("--clarity"),
         defringe: flag("--defringe"),
         curve,
+        range_exposure: flag("--range-exposure"),
+        range_center: value_flag("--range-at", 0.5),
+        range_width: value_flag("--range-width", 0.25),
     };
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).

@@ -155,6 +155,7 @@
     tone: true,
     colour: true,
     detail: true,
+    local: true,
     dehaze: true,
   });
   let autoAdvance = $state(loadAutoAdvance());
@@ -956,6 +957,7 @@
       adjustments.saturation !== 0 ||
       adjustments.clarity !== 0 ||
       adjustments.defringe !== 0 ||
+      adjustments.range_exposure !== 0 ||
       curveAdjusted,
   );
 
@@ -977,6 +979,9 @@
     { key: "saturation", label: "Saturation", min: -1, max: 1, step: 0.05 },
     { key: "clarity", label: "Clarity", min: -1, max: 1, step: 0.05 },
     { key: "defringe", label: "Defringe", min: 0, max: 1, step: 0.05 },
+    { key: "range_exposure", label: "Range exp", min: -2, max: 2, step: 0.05 },
+    { key: "range_center", label: "Range at", min: 0, max: 1, step: 0.05 },
+    { key: "range_width", label: "Range w", min: 0.02, max: 1, step: 0.01 },
     { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
   ];
 

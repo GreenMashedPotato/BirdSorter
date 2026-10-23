@@ -19,6 +19,9 @@ const LIMITS: Record<NumericKey, [number, number]> = {
   saturation: [-1, 1],
   clarity: [-1, 1],
   defringe: [0, 1],
+  range_exposure: [-2, 2],
+  range_center: [0, 1],
+  range_width: [0.02, 1],
 };
 
 export type Curve = [number, number, number, number, number];
@@ -57,9 +60,11 @@ export function clampAdjustments(
 }
 
 export function isNeutral(adjustments: Adjustments): boolean {
-  const scalars = (Object.keys(LIMITS) as NumericKey[]).every(
-    (key) => Math.abs(adjustments[key]) < 1e-4,
-  );
+  const scalars = (Object.keys(LIMITS) as NumericKey[]).every((key) => {
+    // The band's centre/width do nothing while its exposure is zero.
+    if (key === "range_center" || key === "range_width") return true;
+    return Math.abs(adjustments[key]) < 1e-4;
+  });
   const curve = clampCurve(adjustments.curve).every(
     (value, index) => Math.abs(value - LINEAR_CURVE[index]) < 1e-4,
   );
@@ -75,9 +80,15 @@ export function isNeutral(adjustments: Adjustments): boolean {
 export function scaleAdjustments(adjustments: Adjustments, amount: number): Adjustments {
   const factor = Number.isFinite(amount) ? Math.min(2, Math.max(0, amount)) : 0;
   const out = clampAdjustments(undefined);
+  // Most controls are neutral at zero; the band geometry is not.
+  const neutral: Partial<Record<NumericKey, number>> = {
+    range_center: 0.5,
+    range_width: 0.25,
+  };
   for (const key of Object.keys(LIMITS) as NumericKey[]) {
     const [min, max] = LIMITS[key];
-    const value = Math.round(adjustments[key] * factor * 1000) / 1000;
+    const base = neutral[key] ?? 0;
+    const value = Math.round((base + (adjustments[key] - base) * factor) * 1000) / 1000;
     out[key] = Math.min(max, Math.max(min, value));
   }
   const curve = clampCurve(adjustments.curve);
@@ -92,7 +103,7 @@ export function scaleAdjustments(adjustments: Adjustments, amount: number): Adju
 }
 
 /** The settings groups a preset can carry. */
-export const PRESET_GROUPS = ["tone", "colour", "detail", "dehaze"] as const;
+export const PRESET_GROUPS = ["tone", "colour", "detail", "local", "dehaze"] as const;
 export type PresetGroup = (typeof PRESET_GROUPS)[number];
 
 /**
@@ -126,6 +137,11 @@ export function applyGroups(
         out.clarity = scaled.clarity;
         out.denoise = scaled.denoise;
         out.defringe = scaled.defringe;
+        break;
+      case "local":
+        out.range_exposure = scaled.range_exposure;
+        out.range_center = scaled.range_center;
+        out.range_width = scaled.range_width;
         break;
       case "dehaze":
         out.dehaze = scaled.dehaze;

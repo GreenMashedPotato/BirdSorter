@@ -225,6 +225,12 @@ export interface Adjustments {
   defringe: number;
   /** Output level at input 0, ¼, ½, ¾, 1. Neutral is 0,.25,.5,.75,1. */
   curve: [number, number, number, number, number];
+  /** Local exposure in stops for one luma band, -2..2 (0 = off). */
+  range_exposure: number;
+  /** Band centre, 0..1. */
+  range_center: number;
+  /** Band half-width before the mask fades out, 0.02..1. */
+  range_width: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -241,6 +247,9 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   clarity: 0,
   defringe: 0,
   curve: [0, 0.25, 0.5, 0.75, 1],
+  range_exposure: 0,
+  range_center: 0.5,
+  range_width: 0.25,
 };
 
 /** Preview with adjustments applied on top of the cached base render. */
