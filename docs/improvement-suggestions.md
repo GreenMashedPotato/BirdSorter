@@ -21,9 +21,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > action target, stores previews in a sharded cache, opens the already-migrated DB
 > for read-only commands, supports colour labels (`6`–`9`), undoes labels,
 > ratings, flags and colours with Ctrl+Z, groups bursts by an 8×8 luminance
-> signature as well as time (flagging exposure brackets), and extends saved
-> searches into all/any/none smart collections with an inline editor. The
-> analysis below still describes the rest of the snapshot.
+> signature as well as time (flagging exposure brackets), extends saved searches
+> into all/any/none smart collections with an inline editor, and renders
+> windowed 1:1 regions above native pixels. The analysis below still describes
+> the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -102,7 +103,7 @@ roughly describes the code surface.
 | 2 | Preview cache: sharding, size budget, renderer version, deferred writes | LightCraft `crates/preview` | P1 | Small–medium |
 | 3 | Pick the smallest embedded preview that covers the request | LightCraft `raw/src/preview.rs` | P1 | Small |
 | 4 | Prefetch next/previous; memory LRU; evict off-screen thumbs | LightCraft `media.rs`, `render.rs` | P1 | Small |
-| 5 | Windowed 1:1 rendering instead of whole-frame high-res | LightCraft `ui-egui/src/region.rs` | P1 | Medium |
+| 5 | ✅ Windowed 1:1 rendering instead of whole-frame high-res (above native 1:1, shipped 2026-10-22) | LightCraft `ui-egui/src/region.rs` | P1 | Medium |
 | 6 | EXIF panel in grid/review | LightCraft `crates/meta` | P1 | Small |
 | 7 | Filmstrip, Survey/Compare/Reference, auto-advance, flags, colour labels | LightCraft `panels/compare.rs` | P1 | Medium |
 | 8 | ✅ Search token grammar and smart collections (client-side all/any/none shipped 2026-10-22) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
@@ -251,6 +252,18 @@ decode, memory and cache for a small on-screen region.
 This replaces the "Develop (6000 px)" path for zooming and gives a true 1:1
 view with lower latency and memory. Keep a full develop for export/proofing if
 needed.
+
+**Shipped (2026-10-22, scope: above native 1:1):** the review keeps the
+whole-frame preview at fit and 100%, and only once the image is drawn above one
+source pixel per screen pixel requests the visible window through
+`preview_region`, snapped to a 256 px grid with a 256 px margin and reused
+while panning. The backend caches one decoded base preview (content hash + mode
++ cache version), crops at native resolution, applies the current adjustments
+and encodes JPEG. The margin is frozen at 256 px and the debounce at 80 ms
+instead of LightCraft's 4.5 %/1.25 ratio. Unit tests cover the crop and edge
+clamping, and an opt-in `BIRDSORTER_TEST_RAW` run validates a 512×512 window on
+a copied CR3. Still open: a maximum window/GPU texture cap, a dedicated 6000 px
+developed source, and freezing sizes during continuous zoom.
 
 ### 3.6 Show something immediately, refine later
 

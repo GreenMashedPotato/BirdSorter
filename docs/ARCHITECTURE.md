@@ -178,7 +178,7 @@ off-screen thumbnails above 600 entries.
 
 - **Commands** (request/response): `list_folders`, `add_folder`, `scan_folder`,
   `cancel_scan`, `query_files`, `thumbnail`, `preview_image`, `preview_adjusted`,
-  `export_edited`, `analysis_detail`,
+  `preview_region`, `export_edited`, `analysis_detail`,
   `score_breakdown`, `bursts`, `set_burst_winner`, `set_species`, `label_files`,
   `undo_labels`, `eye_points`, `add_eye_point`, `clear_eye_points`,
   `eye_label_stats`, `trash_files`, `analyze_folder`, `cancel_analysis`,

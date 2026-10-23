@@ -738,6 +738,13 @@ input {
      scaling of a small raster is what made zoomed-in previews soft). */
   image-rendering: auto;
 }
+/* Windowed 1:1 crop, positioned in image coordinates above the base preview. */
+.imgwrap img.region {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0;
+}
 /* Side-by-side burst compare: two stages share one zoom/pan transform. */
 .preview.compare {
   display: flex;

@@ -236,6 +236,23 @@ export async function previewAdjusted(
   return invoke("preview_adjusted", { file, mode, adjustments });
 }
 
+/**
+ * A native-resolution rectangle of the cached preview, for windowed 1:1
+ * rendering. Coordinates are source pixels; the caller snaps them to a 256 px
+ * grid and reuses the returned window while panning inside it.
+ */
+export async function previewRegion(
+  file: number,
+  mode: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  adjustments: Adjustments = DEFAULT_ADJUSTMENTS,
+): Promise<string> {
+  return invoke("preview_region", { file, mode, x, y, width, height, adjustments });
+}
+
 /** Saved preview adjustments for a file, or `null` when none are stored. */
 export async function getEdits(file: number): Promise<Adjustments | null> {
   return invoke("get_edits", { file });
