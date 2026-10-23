@@ -252,5 +252,5 @@ provider as the comparison. Current measurements are in `implemented.md`.
 - Current status and backlog: [`progress.md`](./progress.md) · [`SUGGESTIONS.md`](./SUGGESTIONS.md)
 - Engineering rules (invariants, error handling, DB/model/UI rules): [`rule.md`](./rule.md)
 - Model contracts and provenance: [`MODELS.md`](./MODELS.md) · [`EYE_MODEL.md`](./EYE_MODEL.md)
-- Building, running and packaging: [`README.md`](../README.md) · [`SIGNING.md`](./SIGNING.md) · [`MACOS_TODO.md`](./MACOS_TODO.md)
+- Building, running and packaging: [`README.md`](../README.md) · [`SIGNING.md`](./SIGNING.md) · [`MACOS_TODO.md`](./MACOS_TODO.md) · [`HEIC.md`](./HEIC.md)
 - Adding code / debugging: [`CONTRIBUTING.md`](./CONTRIBUTING.md) · [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)

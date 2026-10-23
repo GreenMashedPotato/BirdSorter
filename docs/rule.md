@@ -30,6 +30,7 @@ raw-sorter-app/
     MODELS.md        Model contracts and licenses
     EYE_MODEL.md     Eye model data/training/runtime contract
     DENOISE_PLAN.md  Future denoise feature: models, licences, tiling plan
+    HEIC.md          Optional HEIC/HEIF input: feature flag, decoder, patents
     MACOS_TODO.md    Mac-specific validation brief
     SIGNING.md       Signing and notarization instructions
     rule.md          Engineering rules (this file)
@@ -217,7 +218,8 @@ Threat model includes:
 
 Required controls:
 
-- image byte/pixel limits
+- image byte/pixel limits (including the optional HEIC decoder: the ordinary
+  file cap plus the decoder's own pixel cap, and `catch_unwind` around it)
 - network timeout and response-size limits
 - mandatory remote artifact checksums
 - ZIP entry/path/expanded-size limits

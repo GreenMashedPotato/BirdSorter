@@ -18,7 +18,8 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v19**; **358 Rust + 128 UI tests**; clippy clean.
+- SQLite schema **v19**; **359 Rust + 128 UI tests** (354 core with the optional
+  `heic` feature); clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
@@ -28,7 +29,8 @@ autonomously, ship complete vertical slices, and keep the gates green.
   scan, model identity per analysis,
   auto-advance, similarity-aware burst grouping + bracket detection, windowed
   1:1 preview above native pixels, Sony AF-frame overlay, CLI contact-sheet
-  export, preview adjustments (exposure/contrast/
+  export, optional HEIC input (off-by-default `heic` feature),
+  preview adjustments (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
   JPEG/TIFF export.
 - Guided-filter clarity and dehaze shipped 2026-10-22 (see `implemented.md`).
@@ -56,6 +58,8 @@ each slice end-to-end.
 
 ## Non-negotiable constraints
 
+- **HEIC is opt-in.** Never flip the `heic` feature on by default: HEVC patents
+  make that the distributor's call (`docs/HEIC.md`).
 - **Never delete or modify the user's originals.** Test on copies under
   `%TEMP%`, then remove the copies. Use an isolated DB/data dir for real-corpus
   runs. The working corpus is `D:/unsorted data/DCIM`.
@@ -140,8 +144,12 @@ each slice end-to-end.
    ILCE-7SM3 (header-only maker-note read, orientation-aware, drawn in
    Review/Compare, synthetic ARW tests). Canon CR3 and Nikon remain; the working
    corpus is Canon, so a Canon reader could be validated on real files next.
-9. **HEIC (optional feature).** Pure-Rust decoder behind a feature flag; document
-   patent/licensing; ask before enabling by default.
+~~9. HEIC (optional feature)~~ — **shipped 2026-10-22, opt-in** (the user chose
+   this): pure-Rust `heic-rs` 0.1.4 behind the off-by-default `heic` feature,
+   documented in `docs/HEIC.md` (patents, licence, limits). The scanner accepts
+   `.heic`/`.heif`/`.hif` only when built with `--features heic`. Still open:
+   HEIC EXIF (capture time), the macOS ImageIO path, and a real iPhone file to
+   validate against (the corpus is Canon-only).
 🟡 10. **Contact sheet export** — **shipped 2026-10-22** as the CLI
    `contact <folder> <out.jpg> [--cols/--size/--limit]` and the toolbar's
    **Contact sheet…** button (bounded thumbnail grid, built-in captions, verdict

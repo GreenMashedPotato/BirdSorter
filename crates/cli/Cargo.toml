@@ -17,3 +17,8 @@ ndarray.workspace = true
 serde_json.workspace = true
 image.workspace = true
 tracing-subscriber.workspace = true
+
+[features]
+# Optional HEIC/HEIF input; off by default (HEVC patents). Build with
+# `--features heic` to enable it.
+heic = ["birdsorter-core/heic"]

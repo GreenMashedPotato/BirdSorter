@@ -59,8 +59,11 @@ rebuilds the session on CPU once and retries.
   formats (X3F, SRW, DCR/DCS/KDC, ERF, IIQ, MEF, MOS, MRW, NKD, TFR, ARI).
 - **JPEG/TIFF**: supported. EXIF capture time (bursts, `--by date`) and
   orientation are applied, so portrait JPEGs are upright and group correctly.
-- **HEIC** is not supported yet (needs libheif; macOS could use ImageIO — see
-  `MACOS_TODO.md`).
+- **HEIC/HEIF** is opt-in: a default build ignores `.heic`/`.heif`/`.hif`. Build
+  with `--features heic` to enable the pure-Rust decoder (`docs/HEIC.md`); HEVC
+  patents are why it is not on by default. 4:2:2/4:4:4 files (some Canon/Sony
+  "HIF") and image sequences are refused with a clear error, and HEIC capture
+  time is not read yet.
 - A supported-extension file that cannot be decoded is reported per file; the
   rest of the run continues.
 

@@ -19,10 +19,9 @@ use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{
     analysis_store, db, diagnostics, eye_labels, library::ScanReport, paths,
 };
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
+use birdsorter_core::io::decoder::{CompositeDecoder, ImageDecoder};
 use birdsorter_core::io::exif;
 use birdsorter_core::io::hash::hash_file;
-use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     ingest_folder, IngestContext, IngestProgress, RulesScorer, VerdictScorer,
@@ -245,10 +244,7 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             }
         };
     }
-    let decoder = CompositeDecoder::new(vec![
-        Box::new(RawDecoder::new(Some(max))),
-        Box::new(ImageCrateDecoder::new(Some(max))),
-    ]);
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(max)));
     match decoder.decode(Path::new(src)) {
         Ok(img) => {
             let rgb = birdsorter_core::io::adjust::apply(&img.rgb, &adjustments);
@@ -362,10 +358,7 @@ fn run_probe(
     imgsz: u32,
     region_batch: usize,
 ) -> birdsorter_core::Result<()> {
-    let decoder = CompositeDecoder::new(vec![
-        Box::new(RawDecoder::new(Some(2400))),
-        Box::new(ImageCrateDecoder::new(Some(2400))),
-    ]);
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
     let img = decoder.decode(Path::new(file))?;
     let (w, h) = img.dimensions();
     println!("decoded: {w}x{h}");
@@ -1425,10 +1418,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         ),
     }
 
-    let decoder = CompositeDecoder::new(vec![
-        Box::new(RawDecoder::new(Some(2400))),
-        Box::new(ImageCrateDecoder::new(Some(2400))),
-    ]);
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
     let settings = ScoreSettings::load_default();
     let scorer: Box<dyn VerdictScorer> = match models::latest_model(&conn)? {
         Some(m) => match TrainedScorer::load(Path::new(&m.path)) {
