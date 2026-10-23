@@ -221,6 +221,8 @@ export interface Adjustments {
   vibrance: number;
   saturation: number;
   clarity: number;
+  /** Suppress magenta/green fringing on high-contrast edges, 0..1. */
+  defringe: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -235,6 +237,7 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   vibrance: 0,
   saturation: 0,
   clarity: 0,
+  defringe: 0,
 };
 
 /** Preview with adjustments applied on top of the cached base render. */

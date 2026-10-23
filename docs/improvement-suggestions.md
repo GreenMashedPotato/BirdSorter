@@ -114,7 +114,7 @@ roughly describes the code surface.
 | 11 | 🟡 Camera AF-point overlay (Sony 2026-10-22; Canon CR3 2026-10-23; Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
-| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
+| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten (clarity/dehaze and defringe shipped) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | 🟡 Presets with amount and selection sync (0–200 % shipped 2026-10-23; partial groups open) | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
@@ -665,6 +665,15 @@ PhotoCraft `algo/lens.rs` models lateral CA as radial scaling of the R and B
 planes about the centre relative to G, plus defringe as a separate
 display-stage op (`pipeline/src/finish.rs`). The radial correction is compact
 and does not need a lens database.
+
+**Shipped (2026-10-23, edge-gated defringe):** `io::adjust::defringe` pulls the
+green channel toward the red/blue average only where a strong luma edge and a
+large green deviation coincide (thresholds 6/32 luma gradient, 20 green
+deviation; full pull at 90), scaled by the strength. Six Canon R5 previews had
+a worst deviation of 14–15, so the pass correctly changed 0 pixels there; the
+positive case is a synthetic purple edge. Still open: radial lateral-CA
+correction (needs a centre estimate but no lens database) and a manual
+fringe-colour picker.
 
 ### 6.5 Crop and straighten
 

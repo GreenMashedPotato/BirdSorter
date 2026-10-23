@@ -930,7 +930,8 @@
       adjustments.tint !== 0 ||
       adjustments.vibrance !== 0 ||
       adjustments.saturation !== 0 ||
-      adjustments.clarity !== 0,
+      adjustments.clarity !== 0 ||
+      adjustments.defringe !== 0,
   );
 
   const ADJUST_CONTROLS: {
@@ -950,6 +951,7 @@
     { key: "vibrance", label: "Vibrance", min: -1, max: 1, step: 0.05 },
     { key: "saturation", label: "Saturation", min: -1, max: 1, step: 0.05 },
     { key: "clarity", label: "Clarity", min: -1, max: 1, step: 0.05 },
+    { key: "defringe", label: "Defringe", min: 0, max: 1, step: 0.05 },
     { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
   ];
 

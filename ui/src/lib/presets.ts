@@ -17,6 +17,7 @@ const LIMITS: Record<keyof Adjustments, [number, number]> = {
   vibrance: [-1, 1],
   saturation: [-1, 1],
   clarity: [-1, 1],
+  defringe: [0, 1],
 };
 
 export interface DevelopPreset {
