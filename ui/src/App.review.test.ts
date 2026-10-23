@@ -110,6 +110,9 @@ vi.mock("./lib/api", async (importOriginal) => {
     previewImage: vi.fn(async () => "data:image/jpeg;base64,"),
     getThumbnail: vi.fn(async () => "data:image/jpeg;base64,thumb"),
     labelFiles: vi.fn(async () => 1),
+    saveEdits: vi.fn(async () => {}),
+    clearEdits: vi.fn(async () => {}),
+    getEdits: vi.fn(async () => null),
     rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
     setFlag: vi.fn(async () => 1),
     setColor: vi.fn(async () => 1),
@@ -133,6 +136,7 @@ import {
   labelFiles,
   queryFiles,
   rateFiles,
+  saveEdits,
   setColor,
   setFlag,
 } from "./lib/api";
@@ -338,6 +342,47 @@ describe("review view", () => {
 
     const pasted = container.querySelector<HTMLInputElement>("#adj-exposure")!;
     expect(pasted.value).toBe("0.5");
+  });
+
+  it("saves a named preset and applies it to the selection", async () => {
+    vi.mocked(saveEdits).mockClear();
+    const { container } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    // Select two other photos, then open the first one.
+    await fireEvent.click(container.querySelector('[data-idx="1"]') as HTMLElement);
+    await fireEvent.click(container.querySelector('[data-idx="2"]') as HTMLElement);
+    await fireEvent.dblClick(container.querySelector('[data-idx="0"]') as HTMLElement);
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img1.cr3"),
+    );
+
+    const review = container.querySelector(".review") as HTMLElement;
+    await fireEvent.click(within(review).getByText("Adjust"));
+    const adjust = container.querySelector(".adjust") as HTMLElement;
+    await fireEvent.input(container.querySelector("#adj-exposure")!, {
+      target: { value: "0.5" },
+    });
+    await fireEvent.input(container.querySelector("#adj-preset-name")!, {
+      target: { value: "Warm" },
+    });
+    await fireEvent.click(within(adjust).getByText("Save"));
+
+    await fireEvent.input(container.querySelector("#adj-amount")!, {
+      target: { value: "0.5" },
+    });
+    await fireEvent.click(container.querySelector("#adj-sync")!);
+    await fireEvent.change(container.querySelector("#adj-preset")!, {
+      target: { value: "Warm" },
+    });
+
+    await waitFor(() =>
+      expect(saveEdits).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ exposure: 0.25 }),
+      ),
+    );
+    expect(saveEdits).toHaveBeenCalledWith(2, expect.objectContaining({ exposure: 0.25 }));
+    expect(saveEdits).toHaveBeenCalledWith(3, expect.objectContaining({ exposure: 0.25 }));
   });
 
   it("offers image export in the adjust panel", async () => {

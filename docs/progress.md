@@ -12,7 +12,7 @@ Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
 - **360 core unit tests** (367 Rust tests including the integration/desktop
-  suites, +129 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  suites, +136 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
   optional `heic` feature the core suite is 365
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -146,6 +146,13 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   remains open (the evaluator is shared with saved searches, so translating it
   would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
   then a folder click returns to 3.
+- **Named develop presets (2026-10-23)**: the Adjust panel stores named Looks
+  locally (validated, clamped, 16 presets), applies them at 0–200 % with every
+  control clamped to its slider range, and can sync the result to the grid
+  selection (each photo's edit is saved independently). Copy/Paste and Reset
+  remain. Verified by 6 pure preset tests (clamping, caps, upsert/remove,
+  amount scaling) and an App test that saves a preset, applies it at 50 % and
+  checks the save calls for the current photo plus two selected ones.
 - **Windowed 1:1 preview (2026-10-22)**: above native 1:1 the review fetches
   only the visible source window through `preview_region`, snapped to a 256 px
   grid with a 256 px margin and reused while panning. The backend keeps one
