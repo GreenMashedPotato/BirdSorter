@@ -16,7 +16,7 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 ## Handover — 2026-10-23 (this run)
 
-**Last code commit:** `b460013` (this handover note is the commit on top of it).
+**Last code commit:** `92329c6` (this handover note is the commit on top of it).
 **Everything is local — nothing has been pushed.**
 
 **Gates at HEAD (all green):**
@@ -24,10 +24,10 @@ autonomously, ship complete vertical slices, and keep the gates green.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                 # 365 core + 3 integration + 5 desktop = 373 Rust
+cargo test --workspace                 # 367 core + 3 integration + 5 desktop = 375 Rust
 cd ui && npm test && npm run check && npm run build   # 142 UI tests, 0/0, build ok
 # optional feature suite (run separately; the feature is OFF by default):
-cargo test -p birdsorter-core --features heic --lib    # 370 core
+cargo test -p birdsorter-core --features heic --lib    # 372 core
 cargo build --release -p birdsorter-cli --features heic
 ```
 
@@ -35,7 +35,8 @@ cargo build --release -p birdsorter-cli --features heic
 
 | Commit | Slice | Evidence |
 |---|---|---|
-| `b460013` | **Luminance-range local exposure** (`range_exposure`/`range_center`/`range_width`, smoothstep band, `local` preset group, CLI flags) | copied R5 preview: +13.1 mean delta in-band, ~0 out; 2 core tests |
+| `92329c6` | **Radial local mask** (centre/radius/feather, `apply_with_region(Region)`, windowed 1:1 parity, `local` preset group, CLI flags) | copied R5: +119 mean in-radius, ~0 out; crop-vs-full unit test |
+| `b460013` | **Luminance-range local exposure** (`range_exposure`/`range_center`/`range_width`, smoothstep band, CLI flags) | copied R5 preview: +13.1 mean delta in-band, ~0 out; 2 core tests |
 | `ef7996d` | **Five-point tone curve** (shared 256-entry LUT, monotone-clamped, Adjust editor, presets/amount, `--curve`) | copied R5 preview `0,0.2,0.6,0.9,1`: mean luma 113.5 → 132.8; core + UI tests |
 | `a6050ab` | **Edge-gated defringe** (green vs red/blue average, only on strong edges) | synthetic purple edge; six real R5 previews correctly unchanged |
 | `924ae5d` | **One-step undo for a preset sync** (snapshot `getEdits` before saving the group) | App test: sync then Ctrl+Z restores/clears all three |
@@ -48,35 +49,33 @@ cargo build --release -p birdsorter-cli --features heic
 
 ### Start here
 
-The old numbered queue is essentially exhausted; the remaining work is either a
-sub-feature with a known design cost, or blocked on input. The best unblocked
-slice is **brush / linear / radial gradient masks** (the rest of the local-mask
-item):
+The old numbered queue is essentially exhausted; the remaining preview work is a
+sub-feature with a known design, and the rest is blocked or a product call.
 
-- `io::adjust` is intentionally **region-independent**: the luminance-range
-  mask reads only each pixel's own luma, so `preview_region` crops render the
-  same as the full preview. A spatial mask needs image coordinates, so add an
-  explicit mask context (crop origin + scale, and the full image size) to the
-  apply path and pass it from `preview_region`; do not silently apply a
-  full-frame mask to a crop.
-- Start with a **radial** mask (centre, radii, feather, exposure) since it needs
-  no angle math, then a linear gradient. Store it in `Adjustments` as numeric
-  fields so the existing preset groups, amount scaling and CLI flags keep
-  working; add a `masks` preset group and a preview overlay so the user can see
-  where it lands.
-- Alternative unblocked slices: **crop/straighten** (preview + `export_edited`,
-  collision-safe; high value for bird photos) or **server-side SQL evaluation**
-  for smart collections. The latter is deliberately deferred: the compiled
-  `ui/src/lib/search.ts` evaluator is shared with saved searches, so a second
-  grammar in Rust needs a shared spec first.
+The best unblocked slice is **crop / straighten**, which is high value for bird
+photos (a tight crop is often the keeper decision) and not yet started:
+
+- Store the crop as normalized `crop_x/y/w/h` plus a rotation angle in
+  `Adjustments` (numeric fields, so presets/amount/CLI keep working). Reject
+  degenerate rects and clamp to `0..=1`.
+- Apply it in the **preview** (the review can display a cropped render) and in
+  `export_edited`; never touch the original or its sidecars. Rendering must
+  compose with the existing `Region` for windowed 1:1 (crop first, then the
+  region origin/scale in the cropped frame).
+- Tests: crop clamp/rotation math, exported bytes differ from the source while
+  the source hash is unchanged, and a windowed crop matches the full crop.
+
+If you prefer preview masks instead: **linear-gradient** and **brush** masks
+remain. `apply_with_region(Region)` already exists, so a linear gradient is a
+small extension; a brush needs a serialized mask raster (bounded size) and an
+overlay for editing.
 
 ### Open queue
 
-1. 🟡 **Brush / linear / radial gradient masks** — luminance-range mask shipped;
-   spatial masks need the region-aware apply described above.
-2. 🟡 **Crop / straighten** — free/locked aspect, rotate, preview + exported
-   JPEG/TIFF, never the original. Not in the old queue but high value
-   (`improvement-suggestions.md` §6.5).
+1. 🟡 **Crop / straighten** — free/locked aspect, rotate, preview + exported
+   JPEG/TIFF, never the original. Highest-value unblocked feature.
+2. 🟡 **Linear-gradient / brush masks** — luminance-range and radial masks
+   shipped; `apply_with_region` is in place.
 3. 🟡 **Server-side SQL smart collections** — library-wide view shipped; SQL
    evaluation remains. Decide whether to share a grammar or leave filtering
    client-side (20k files load fine).
@@ -118,7 +117,7 @@ item):
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v19**; **373 Rust + 142 UI tests** (370 core with the optional
+- SQLite schema **v19**; **375 Rust + 142 UI tests** (372 core with the optional
   `heic` feature); clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip (HEIC too),
@@ -134,10 +133,10 @@ item):
   (off-by-default `heic` feature),
   preview adjustments (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise/defringe,
-  **five-point tone curve**, **luminance-range local exposure**), named presets
-  with amount/groups/sync/undo, copy/paste, JPEG/TIFF export.
+  **five-point tone curve**, **luminance-range and radial local masks**), named
+  presets with amount/groups/sync/undo, copy/paste, JPEG/TIFF export.
 - Guided-filter clarity and dehaze shipped 2026-10-22; defringe, tone curve,
-  presets and the range mask shipped 2026-10-23 (see `implemented.md`).
+  presets and the range/radial masks shipped 2026-10-23 (see `implemented.md`).
 - The main product decision for multi-folder is settled: the **last-clicked
   folder is primary**; Analyze/Re-score/Keep burst winners/Auto-star/Reset
   stars/Export target it, and the UI says so. Scans include child folders.
@@ -223,8 +222,8 @@ loads every folder and keeps the primary action target. SQL evaluation remains.
 ~~5. Named presets with amounts and group sync~~ — **shipped 2026-10-23**:
 0–200 %, five partial groups, sync to selection, one-step Ctrl+Z.
 🟡 6. **Preview pipeline.** clarity/dehaze (2026-10-22), defringe, five-point
-tone curve and a luminance-range local exposure shipped 2026-10-23. Brush /
-linear / radial gradient masks and crop/straighten remain.
+tone curve, a luminance-range local exposure and a radial mask shipped
+2026-10-23. Linear-gradient / brush masks and crop/straighten remain.
 🟡 7. **Nikon AF points** — needs a NEF corpus.
 8. **A4 landscape / PDF contact sheets.**
 9. **Command registry + MCP** — product call; ask.
