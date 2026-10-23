@@ -152,7 +152,7 @@ impl PreviewCandidate {
 
 /// The TIFF fields this module needs; everything else is ignored.
 #[derive(Debug, Default)]
-struct IfdFields {
+pub(crate) struct IfdFields {
     width: Option<u32>,
     height: Option<u32>,
     compression: Option<u32>,
@@ -164,18 +164,29 @@ struct IfdFields {
     /// Undefined-type values large enough to be a whole embedded JPEG.
     raw_jpegs: Vec<(u64, u64)>,
     /// The Exif MakerNote blob (offset, length), for maker-note previews.
-    maker_note: Option<(u64, u64)>,
+    pub(crate) maker_note: Option<(u64, u64)>,
     /// Exif IFD pointer (0x8769), absolute.
-    exif_ifd: Option<u64>,
+    pub(crate) exif_ifd: Option<u64>,
     /// Nikon PreviewIFD pointer (0x0011), absolute.
     preview_ifd: Option<u64>,
     /// Olympus CameraSettings IFD pointer (0x2020), absolute.
     camera_settings_ifd: Option<u64>,
+    /// Camera identity and orientation (IFD0).
+    pub(crate) make: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) orientation: Option<u16>,
+    /// Sony focus tags (maker note).
+    pub(crate) focus_mode: Option<u8>,
+    pub(crate) af_area: Option<u8>,
+    pub(crate) af_tracking: Option<u8>,
+    pub(crate) focus_location: Option<[u16; 4]>,
+    pub(crate) focus_frame: Option<Vec<u8>>,
+    pub(crate) focus_block: Option<Vec<u8>>,
 }
 
 /// Bounded random-access TIFF reader. Every read is size-checked before it
 /// touches the file, so a malformed IFD cannot make us read the whole RAW.
-struct TiffReader<R> {
+pub(crate) struct TiffReader<R> {
     reader: R,
     len: u64,
     little: bool,
@@ -186,7 +197,7 @@ struct TiffReader<R> {
 }
 
 /// Read exactly `len` bytes at `offset`, refusing any range past the file end.
-fn read_exact_at<R: Read + Seek>(
+pub(crate) fn read_exact_at<R: Read + Seek>(
     reader: &mut R,
     file_len: u64,
     offset: u64,
@@ -199,6 +210,18 @@ fn read_exact_at<R: Read + Seek>(
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).ok()?;
     Some(buf)
+}
+
+impl<R> TiffReader<R> {
+    pub(crate) fn new(reader: R, len: u64, little: bool, big: bool, base: u64) -> Self {
+        Self {
+            reader,
+            len,
+            little,
+            big,
+            base,
+        }
+    }
 }
 
 impl<R: Read + Seek> TiffReader<R> {
@@ -272,6 +295,31 @@ impl<R: Read + Seek> TiffReader<R> {
         Some(values)
     }
 
+    /// The raw bytes of a value (ASCII, UNDEFINED or numeric), bounded.
+    fn entry_bytes(&mut self, typ: u16, count: u64, inline: &[u8]) -> Option<Vec<u8>> {
+        let size = match typ {
+            1 | 2 | 6 | 7 => 1u64,
+            3 | 8 => 2,
+            4 | 9 | 11 | 13 => 4,
+            5 | 10 | 12 | 16..=18 => 8,
+            _ => return None,
+        };
+        let total = count.checked_mul(size)?;
+        if total > 64 * 1024 {
+            return None;
+        }
+        if total <= inline.len() as u64 {
+            Some(inline[..total as usize].to_vec())
+        } else {
+            let offset = if self.big {
+                self.u64(inline)?
+            } else {
+                self.u32(inline)? as u64
+            };
+            self.read_at(offset.saturating_add(self.base), total as usize)
+        }
+    }
+
     /// The byte range of a large BYTE/UNDEFINED value (a blob, not inline
     /// numbers), without reading the blob itself.
     fn entry_data(&self, typ: u16, count: u64, inline: &[u8]) -> Option<(u64, u64)> {
@@ -289,7 +337,11 @@ impl<R: Read + Seek> TiffReader<R> {
     /// Parse one IFD, returning its fields and the next-IFD offset. With
     /// `olympus_settings`, tags 0x0101/0x0102 mean the CameraSettings preview
     /// start/length rather than ImageLength/rows-per-strip.
-    fn read_ifd(&mut self, offset: u64, olympus_settings: bool) -> Option<(IfdFields, u64)> {
+    pub(crate) fn read_ifd(
+        &mut self,
+        offset: u64,
+        olympus_settings: bool,
+    ) -> Option<(IfdFields, u64)> {
         let (count_size, entry_size, next_size) = if self.big {
             (8usize, 20usize, 8usize)
         } else {
@@ -377,6 +429,45 @@ impl<R: Read + Seek> TiffReader<R> {
                         first_u64(self.entry_values(typ, values_count, inline))
                             .map(|v| v.saturating_add(self.base));
                 }
+                0x010F => {
+                    fields.make = self
+                        .entry_bytes(typ, values_count, inline)
+                        .map(|b| c_string(&b));
+                }
+                0x0110 => {
+                    fields.model = self
+                        .entry_bytes(typ, values_count, inline)
+                        .map(|b| c_string(&b));
+                }
+                0x0112 => {
+                    fields.orientation = first_u32(self.entry_values(typ, values_count, inline))
+                        .and_then(|v| u16::try_from(v).ok());
+                }
+                0x201b => {
+                    fields.focus_mode = first_u32(self.entry_values(typ, values_count, inline))
+                        .and_then(|v| u8::try_from(v).ok());
+                }
+                0x201c => {
+                    fields.af_area = first_u32(self.entry_values(typ, values_count, inline))
+                        .and_then(|v| u8::try_from(v).ok());
+                }
+                0x2021 => {
+                    fields.af_tracking = first_u32(self.entry_values(typ, values_count, inline))
+                        .and_then(|v| u8::try_from(v).ok());
+                }
+                0x2027 => {
+                    fields.focus_location =
+                        self.entry_values(typ, values_count, inline)
+                            .and_then(|values| {
+                                let values: Vec<u16> = values
+                                    .iter()
+                                    .filter_map(|value| u16::try_from(*value).ok())
+                                    .collect();
+                                values.try_into().ok()
+                            });
+                }
+                0x2037 => fields.focus_frame = self.entry_bytes(typ, values_count, inline),
+                0x9402 => fields.focus_block = self.entry_bytes(typ, values_count, inline),
                 0x927C => fields.maker_note = self.entry_data(typ, values_count, inline),
                 _ => {
                     if values_count > UNDEFINED_JPEG_MIN {
@@ -579,6 +670,14 @@ fn similar_frame(frame: (u32, u32, u8), reference: (u32, u32, u8)) -> bool {
     let lhs = u64::from(width) * u64::from(ref_height);
     let rhs = u64::from(height) * u64::from(ref_width);
     lhs.abs_diff(rhs) * 100 <= lhs
+}
+
+fn c_string(bytes: &[u8]) -> String {
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).trim().to_string()
 }
 
 fn first_u32(values: Option<Vec<u64>>) -> Option<u32> {

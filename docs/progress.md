@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **342 core unit tests** (349 Rust tests including the integration/desktop suites,
+- **347 core unit tests** (354 Rust tests including the integration/desktop suites,
   +126 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -162,6 +162,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   first run analyzed 1 file, an identical second run analyzed 0, and pointing
   at a renamed model copy analyzed 1 again; diagnostics reported
   `bird_det_v1_copy.onnx#10556144@…`.
+- **Sony AF-point overlay (2026-10-22)**: a header-only maker-note read
+  (ILCE-1/ILCE-7SM3) decodes the focus frame, mode, area and tracking from
+  `0x2027`/`0x2037`/`0x201b`/`0x201c`/`0x2021` plus the enciphered `0x9402`
+  block, and maps the rect through EXIF orientation. Review and Compare draw it
+  as a dashed "AF" frame with a mode/area/tracking tooltip. Synthetic ARW tests
+  cover the point, manual/Wide-centre suppression, orientation 6, unsupported
+  bodies and truncation; a real CR3 is rejected safely (not TIFF). Canon
+  CR3/Nikon AF points remain open.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

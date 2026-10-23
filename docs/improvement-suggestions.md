@@ -24,9 +24,9 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > signature as well as time (flagging exposure brackets), extends saved searches
 > into all/any/none smart collections with an inline editor, renders windowed
 > 1:1 regions above native pixels, mirrors colours/labels/species into XMP
-> (importing ratings at scan), and records detector/species identities so a
-> model change re-analyzes. The analysis below still describes the rest of the
-> snapshot.
+> (importing ratings at scan), records detector/species identities so a model
+> change re-analyzes, and draws the Sony AF frame in Review/Compare. The
+> analysis below still describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -111,7 +111,7 @@ roughly describes the code surface.
 | 8 | ✅ Search token grammar and smart collections (client-side all/any/none shipped 2026-10-22) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
 | 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
-| 11 | Camera AF-point overlay (start Sony, then Canon/Nikon) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
+| 11 | 🟡 Camera AF-point overlay (Sony shipped 2026-10-22; Canon/Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | HEIC/HEIF via pure-Rust `heic-rs` | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
@@ -500,6 +500,14 @@ LightCraft `meta/src/focus_read.rs` reads the camera's AF point with a
 only the pointed-at ranges, bounded to ~32 KB per photo; it reported ~100
 photos/s on a slow USB drive. It then draws the point in Detail, Compare and
 Survey, and handles rotation/crop.
+
+**Shipped (2026-10-22, Sony only):** `io::focus` walks the bounded TIFF/Exif/
+maker IFDs in a Sony ARW (ILCE-1 / ILCE-7SM3), decodes the focus frame, mode,
+area and tracking (including the enciphered `0x9402` block), applies EXIF
+orientation, and suppresses manual focus and the untracked Wide centre. Review
+and Compare draw it with a tooltip. Synthetic ARW tests are the evidence; a
+real CR3 is rejected as non-TIFF. Still open: Canon CR3 and Nikon AF-point
+layouts (Canon can be validated on the working corpus).
 
 Start with Sony (documented tag ids and the `p³ mod 249` obfuscation), then
 Canon/Nikon. This is a strong differentiator for culling: "where did the camera

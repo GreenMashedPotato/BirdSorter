@@ -638,6 +638,11 @@
   const compareBoxW = $derived(compareDetail?.imageWidth ?? boxW);
   const compareBoxH = $derived(compareDetail?.imageHeight ?? boxH);
 
+  function afTitle(focus: NonNullable<AnalysisDetail["focus"]>): string {
+    const words = [focus.mode, focus.area, focus.tracking].filter(Boolean);
+    return words.length ? `AF: ${words.join(" · ")}` : "AF point";
+  }
+
   // --- focus peaking -------------------------------------------------------
   // A Sobel edge map of the previewed photo, drawn over it so the sharpest
   // regions glow. Computed client-side from the already-loaded preview bitmap.
@@ -1519,6 +1524,13 @@
                 style="left:{regionWindow.x * sourceScale}px; top:{regionWindow.y * sourceScale}px; width:{regionWindow.w * sourceScale}px; height:{regionWindow.h * sourceScale}px"
               />
             {/if}
+            {#if detail?.focus}
+              <div
+                class="afpoint"
+                style="left:{detail.focus.rect[0] * 100}%; top:{detail.focus.rect[1] * 100}%; width:{(detail.focus.rect[2] - detail.focus.rect[0]) * 100}%; height:{(detail.focus.rect[3] - detail.focus.rect[1]) * 100}%"
+                title={afTitle(detail.focus)}
+              ></div>
+            {/if}
             {#if peakingOn}
               <canvas class="peaking" bind:this={peakingCanvas}></canvas>
             {/if}
@@ -1583,6 +1595,13 @@
               style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
             >
               <img src={compareUrl} alt={compareDetail?.filename ?? ""} draggable="false" />
+              {#if compareDetail?.focus}
+                <div
+                  class="afpoint"
+                  style="left:{compareDetail.focus.rect[0] * 100}%; top:{compareDetail.focus.rect[1] * 100}%; width:{(compareDetail.focus.rect[2] - compareDetail.focus.rect[0]) * 100}%; height:{(compareDetail.focus.rect[3] - compareDetail.focus.rect[1]) * 100}%"
+                  title={afTitle(compareDetail.focus)}
+                ></div>
+              {/if}
               {#each compareDetail?.boxes ?? [] as b, i (i)}
                 <div
                   class="box"

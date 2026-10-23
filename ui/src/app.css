@@ -738,6 +738,15 @@ input {
      scaling of a small raster is what made zoomed-in previews soft). */
   image-rendering: auto;
 }
+/* Camera autofocus frame (maker-note point), subtle and click-through. */
+.afpoint {
+  position: absolute;
+  z-index: 0;
+  border: 1.5px dashed rgba(255, 209, 102, 0.9);
+  border-radius: 3px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
 /* Windowed 1:1 crop, positioned in image coordinates above the base preview. */
 .imgwrap img.region {
   position: absolute;

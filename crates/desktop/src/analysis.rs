@@ -54,6 +54,16 @@ pub(crate) struct BoxDto {
     top5: Vec<(String, f32)>,
 }
 
+/// The camera's autofocus frame, normalized to the upright photo.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FocusPointDto {
+    rect: [f64; 4],
+    mode: Option<String>,
+    area: Option<String>,
+    tracking: Option<String>,
+}
+
 /// Everything the review view needs for one file.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +83,8 @@ pub(crate) struct AnalysisDetailDto {
     species_confidence: Option<f32>,
     top5: Vec<(String, f32)>,
     boxes: Vec<BoxDto>,
+    /// The camera's AF frame, when the maker note carries one.
+    focus: Option<FocusPointDto>,
     model_version: Option<String>,
     /// Dimensions of the image the boxes are expressed in.
     image_width: Option<u32>,
@@ -123,6 +135,15 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         .map(|l| l.as_str().to_string());
     let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
     let meta = exif::photo_meta(&lf.absolute_path);
+    let focus = birdsorter_core::io::focus::read_focus(&lf.absolute_path)
+        .ok()
+        .flatten()
+        .map(|point| FocusPointDto {
+            rect: point.rect,
+            mode: point.mode,
+            area: point.area,
+            tracking: point.tracking,
+        });
 
     let Some(a) = analysis else {
         return Ok(AnalysisDetailDto {
@@ -139,6 +160,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
             species_confidence: None,
             top5: Vec::new(),
             boxes: Vec::new(),
+            focus,
             model_version: None,
             image_width: None,
             image_height: None,
@@ -185,6 +207,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         species_confidence: a.species_confidence,
         top5: a.species_top5.clone(),
         boxes,
+        focus,
         model_version: Some(a.model_version.clone()),
         image_width: a.image_width,
         image_height: a.image_height,
