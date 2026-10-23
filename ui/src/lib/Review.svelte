@@ -73,6 +73,7 @@
     onNavigate,
     onFilesChanged,
     onPushUndo,
+    onPushEditsUndo = async () => {},
     onRate,
     onBurstGroups,
     onOpenBreakdown,
@@ -110,6 +111,8 @@
     onNavigate: (id: number) => void;
     onFilesChanged: () => void | Promise<void>;
     onPushUndo: (ids: number[]) => void;
+    /** Snapshot saved edits before a bulk preset sync, for Ctrl+Z. */
+    onPushEditsUndo?: (ids: number[]) => Promise<void>;
     onRate: (id: number, rating: number) => void;
     onBurstGroups: (
       groups: {
@@ -1086,7 +1089,17 @@
     status = `saved preset: ${name}`;
   }
 
-  function applyPreset(preset: DevelopPreset) {
+  async function applyPreset(preset: DevelopPreset) {
+    const targets = presetSync ? selectedIds.filter((id) => id !== fileId) : [];
+    if (targets.length > 0) {
+      // Snapshot first: the edit is bulk and must stay one undo step.
+      try {
+        await onPushEditsUndo([fileId, ...targets]);
+      } catch (e) {
+        status = `error: ${e}`;
+        return;
+      }
+    }
     adjustments = applyGroups(
       adjustments,
       preset.adjustments,
@@ -1095,7 +1108,6 @@
     );
     settleAdjustTimers();
     clearRegion();
-    const targets = presetSync ? selectedIds.filter((id) => id !== fileId) : [];
     void saveEdits(fileId, adjustments).catch(() => {});
     for (const id of targets) void saveEdits(id, adjustments).catch(() => {});
     void renderPreview();
@@ -1110,7 +1122,7 @@
   function applyNamedPreset(name: string) {
     activePreset = name;
     const preset = presets.find((entry) => entry.name === name);
-    if (preset) applyPreset(preset);
+    if (preset) void applyPreset(preset);
   }
 
   function deleteActivePreset() {

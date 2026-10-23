@@ -35,8 +35,8 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
   scaled; CLI `--defringe`, Adjust slider, presets).
 - 🟡 **Named presets with amounts and group sync** — shipped 2026-10-23:
   16 named presets, 0–200 % amount with per-control clamping, partial groups
-  (tone / colour / detail / dehaze) and Sync to the grid selection. One undo
-  step per sync remains.
+  (tone / colour / detail / dehaze), Sync to the grid selection and a one-step
+  Ctrl+Z for the whole sync.
 
 ## Correctness & robustness
 
