@@ -563,6 +563,18 @@ on a 28-core Windows box.
 
 ### Format coverage (done)
 
+- ✅ **TIFF-based RAW previews (2026-10-22)**: `embedded_preview` now walks the
+  classic-TIFF/BigTIFF IFD chain and SubIFDs for NEF/ARW/DNG, reading only the
+  IFD blocks and the chosen JPEG. It supports `JPEGInterchangeFormat` pointers
+  and JPEG-in-TIFF strip previews, picks the smallest JPEG whose long edge
+  covers the request (largest when nothing does), validates SOI/EOI, and falls
+  through to the next candidate. Reads are bounded (IFD entries/bytes, values,
+  visit count, depth, 64 MiB preview cap) and out-of-bounds offsets are
+  rejected. Six synthetic TIFF tests cover selection, strips, invalid JPEGs,
+  IFD chains, out-of-bounds pointers, classic/BigTIFF both endiannesses and the
+  end-to-end thumbnail path. `RENDER_CACHE_VERSION` is now **3** because TIFF
+  RAW thumbnail bytes change; the working corpus is all Canon CR3, so real
+  NEF/ARW/DNG samples were not available — synthetic containers only.
 - ✅ **JPEG/TIFF + wider RAW support**: the scanner accepts every `rawler` format
   (Canon/Nikon/Sony/OM/Fuji/Panasonic/Pentax/DNG plus X3F, SRW, KDC, ERF, IIQ,
   MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG/TIFF EXIF supplies **capture
