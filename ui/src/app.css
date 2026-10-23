@@ -845,6 +845,19 @@ input {
   margin: 6px 0 0;
   font-size: 11px;
 }
+.adjust .curve-row {
+  align-items: start;
+}
+.adjust .curve-title {
+  padding-top: 4px;
+}
+.adjust svg.curve {
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+}
 
 /* Luminance histogram: a small overlay in the preview's corner. */
 .histogram {

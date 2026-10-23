@@ -79,6 +79,7 @@ Commands:
       --saturation <v>          Saturation (-1..1)
       --clarity <v>             Local contrast (-1..1)
       --defringe <v>            Suppress magenta/green fringing (0..1)
+      --curve b,q,m,t,w         Point tone curve (five 0..1 outputs)
   probe <photo> [--model <onnx>]  Decode one file and print detections + features
       --imgsz <n>               Detector input size (default 640)
       --slice auto|off|on|<n>   Sliced inference for distant birds
@@ -176,6 +177,18 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.0)
     };
+    let curve = args
+        .iter()
+        .position(|a| a == "--curve")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|value| {
+            let points: Vec<f32> = value
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            <[f32; 5]>::try_from(points).ok()
+        })
+        .unwrap_or([0.0, 0.25, 0.5, 0.75, 1.0]);
     let adjustments = birdsorter_core::io::adjust::Adjustments {
         exposure: flag("--exposure"),
         contrast: flag("--contrast"),
@@ -189,6 +202,7 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         saturation: flag("--saturation"),
         clarity: flag("--clarity"),
         defringe: flag("--defringe"),
+        curve,
     };
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).

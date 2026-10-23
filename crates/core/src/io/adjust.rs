@@ -13,8 +13,8 @@
 use ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
-/// Preview adjustments. All values are neutral at zero.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+/// Preview adjustments. All values are neutral at zero (the curve at identity).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Adjustments {
     /// Exposure in stops, clamped to `-2..=2`.
@@ -41,6 +41,32 @@ pub struct Adjustments {
     pub clarity: f32,
     /// Suppress magenta/green fringing on high-contrast edges, `0..=1`.
     pub defringe: f32,
+    /// Point tone curve: the output level at input 0, ¼, ½, ¾ and 1.
+    /// Neutral is `[0.0, 0.25, 0.5, 0.75, 1.0]`; values must not decrease.
+    pub curve: [f32; 5],
+}
+
+/// The neutral diagonal tone curve.
+const LINEAR_CURVE: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+impl Default for Adjustments {
+    fn default() -> Self {
+        Self {
+            exposure: 0.0,
+            contrast: 0.0,
+            shadows: 0.0,
+            highlights: 0.0,
+            dehaze: 0.0,
+            denoise: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            vibrance: 0.0,
+            saturation: 0.0,
+            clarity: 0.0,
+            defringe: 0.0,
+            curve: LINEAR_CURVE,
+        }
+    }
 }
 
 impl Adjustments {
@@ -58,6 +84,7 @@ impl Adjustments {
             && self.saturation.abs() < 1e-4
             && self.clarity.abs() < 1e-4
             && self.defringe.abs() < 1e-4
+            && curve_is_identity(&self.curve)
     }
 
     fn tone_is_identity(&self) -> bool {
@@ -67,6 +94,7 @@ impl Adjustments {
             && self.highlights.abs() < 1e-4
             && self.temperature.abs() < 1e-4
             && self.tint.abs() < 1e-4
+            && curve_is_identity(&self.curve)
     }
 
     fn colour_is_identity(&self) -> bool {
@@ -141,8 +169,40 @@ fn linear_to_srgb(v: f32) -> f32 {
     }
 }
 
+fn curve_is_identity(curve: &[f32; 5]) -> bool {
+    curve
+        .iter()
+        .zip(LINEAR_CURVE.iter())
+        .all(|(value, neutral)| (value - neutral).abs() < 1e-4)
+}
+
+/// A 256-entry LUT for the five-point curve, with each point clamped and the
+/// sequence forced to be non-decreasing so the curve can never invert.
+fn curve_lut(curve: &[f32; 5]) -> [f32; 256] {
+    let mut points = [0.0f32; 5];
+    for i in 0..5 {
+        let mut value = if curve[i].is_finite() {
+            curve[i].clamp(0.0, 1.0)
+        } else {
+            LINEAR_CURVE[i]
+        };
+        if i > 0 {
+            value = value.max(points[i - 1]);
+        }
+        points[i] = value;
+    }
+    let mut lut = [0.0f32; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let scaled = i as f32 / 255.0 * 4.0;
+        let index = (scaled.floor() as usize).min(3);
+        let fraction = scaled - index as f32;
+        *slot = points[index] * (1.0 - fraction) + points[index + 1] * fraction;
+    }
+    lut
+}
+
 /// One LUT per channel: exposure and white balance are per-channel gains, the
-/// shadow/highlight/contrast curve is shared.
+/// shadow/highlight/contrast curve and the point curve are shared.
 fn channel_luts(adj: &Adjustments) -> [[u8; 256]; 3] {
     let exposure = 2f32.powf(adj.exposure.clamp(-2.0, 2.0));
     let warm = adj.temperature.clamp(-1.0, 1.0);
@@ -156,6 +216,7 @@ fn channel_luts(adj: &Adjustments) -> [[u8; 256]; 3] {
     let contrast = 1.0 + adj.contrast.clamp(-1.0, 1.0);
     let shadows = adj.shadows.clamp(0.0, 1.0);
     let highlights = adj.highlights.clamp(0.0, 1.0);
+    let curve = curve_lut(&adj.curve);
     let mut luts = [[0u8; 256]; 3];
     for (channel, lut) in luts.iter_mut().enumerate() {
         for (i, slot) in lut.iter_mut().enumerate() {
@@ -167,6 +228,8 @@ fn channel_luts(adj: &Adjustments) -> [[u8; 256]; 3] {
             v -= highlights * v * v;
             // Contrast pivots around mid-grey.
             v = (v - 0.5) * contrast + 0.5;
+            // The point curve runs last, so it shapes the adjusted tone.
+            v = curve[(v.clamp(0.0, 1.0) * 255.0).round() as usize];
             *slot = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
@@ -596,6 +659,32 @@ mod tests {
         let img = Array3::from_shape_fn((4, 5, 3), |(y, x, c)| ((x * 7 + y * 3 + c) % 256) as u8);
         assert_eq!(apply(&img, &Adjustments::default()), img);
         assert!(Adjustments::default().is_identity());
+    }
+
+    #[test]
+    fn the_tone_curve_lifts_midtones_and_never_inverts() {
+        let img = flat(128, 2, 2);
+        let lifted = Adjustments {
+            curve: [0.0, 0.25, 0.65, 0.85, 1.0],
+            ..Default::default()
+        };
+        assert!(apply(&img, &lifted)[[0, 0, 0]] > 128);
+        let darkened = Adjustments {
+            curve: [0.0, 0.10, 0.35, 0.60, 1.0],
+            ..Default::default()
+        };
+        assert!(apply(&img, &darkened)[[0, 0, 0]] < 128);
+        assert!(!lifted.is_identity());
+        assert!(Adjustments::default().is_identity());
+
+        // A non-monotonic curve is clamped so the mapping can never invert.
+        let lut = curve_lut(&[0.0, 0.8, 0.4, 0.75, 1.0]);
+        assert!(lut.windows(2).all(|pair| pair[1] >= pair[0] - 1e-6));
+        // The neutral curve is the diagonal.
+        let linear = curve_lut(&LINEAR_CURVE);
+        assert!(linear[0] < 1e-6);
+        assert!((linear[255] - 1.0).abs() < 1e-6);
+        assert!((linear[128] - 128.0 / 255.0).abs() < 1e-3);
     }
 
     #[test]
@@ -1119,6 +1208,7 @@ mod tests {
             saturation: 1.0,
             clarity: 1.0,
             defringe: 1.0,
+            curve: [0.0, 0.10, 0.90, 0.95, 1.0],
         };
         let out = apply(&img, &adj);
         assert_eq!(out.dim(), img.dim());

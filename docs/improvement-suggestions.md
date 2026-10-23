@@ -114,7 +114,7 @@ roughly describes the code surface.
 | 11 | 🟡 Camera AF-point overlay (Sony 2026-10-22; Canon CR3 2026-10-23; Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
-| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten (clarity/dehaze and defringe shipped) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
+| 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten (all but crop/straighten shipped) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | 🟡 Presets with amount and selection sync (0–200 % shipped 2026-10-23; partial groups open) | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
@@ -657,6 +657,14 @@ Parametric region curve with movable splits plus RGB/Red/Green/Blue point
 curves, monotone-cubic interpolation so an inversion is impossible
 (`tone.rs`). This is the missing "make the bird pop" control and pairs well
 with the existing histogram.
+
+**Shipped (2026-10-23, five-point curve):** a shared output curve at 0, ¼, ½,
+¾ and 1, clamped and forced non-decreasing, applied as the last tone step via
+a 256-entry LUT. The Adjust panel draws it and offers five sliders (each
+clamped between neighbours); presets, the clipboard and the preset amount carry
+it; CLI `--curve`. Real R5 preview: mean luma 113.5 → 132.8 with
+`0,0.2,0.6,0.9,1`. Still open: per-channel curves and a drag editor with
+movable input positions.
 
 ### 6.4 Defringe and lateral CA correction
 

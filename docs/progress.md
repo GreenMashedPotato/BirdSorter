@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **362 core unit tests** (369 Rust tests including the integration/desktop
-  suites, +136 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 367
+- **363 core unit tests** (370 Rust tests including the integration/desktop
+  suites, +138 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  optional `heic` feature the core suite is 368
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -146,6 +146,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   remains open (the evaluator is shared with saved searches, so translating it
   would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
   then a folder click returns to 3.
+- **Tone curve (2026-10-23)**: a five-point curve (output at input 0, ¼, ½, ¾
+  and 1) runs as the last tone step, as a shared 256-entry LUT per channel. The
+  curve is clamped to 0..1 and forced non-decreasing, so it can never invert.
+  The Adjust panel shows a curve preview and five sliders (each clamped between
+  its neighbours), plus a reset; presets and the clipboard carry it, and it
+  scales with the preset amount. CLI: `--curve b,q,m,t,w`. Verified on a copied
+  R5 preview at 1600 px with `0,0.2,0.6,0.9,1`: mean luma 113.5 → 132.8, median
+  120.9 → 143.1, p90 128.8 → 154.8; the copy was deleted. Unit tests cover the
+  lift/darken directions, the diagonal, non-monotonic sanitising, and a UI test
+  covers the neighbour clamp.
 - **Defringe (2026-10-23)**: a preview-only pass pulls the green channel toward
   the red/blue average only where a strong luma edge **and** a large green
   deviation coincide, so flat colour and ordinary saturated subjects are
