@@ -712,9 +712,13 @@ export interface Burst {
   size: number;
   /** True when `best` is a manual choice, not the highest score. */
   winnerOverride: boolean;
+  /** True when the frames look like an exposure bracket. */
+  bracket: boolean;
+  /** Brightest-to-darkest exposure span in stops, when known. */
+  exposureSpanEv: number | null;
 }
 
-/** Burst groups for a folder (by EXIF capture time). */
+/** Burst groups for a folder (by capture time and visual similarity). */
 export async function bursts(folder: number): Promise<Burst[]> {
   return invoke("bursts", { folder });
 }

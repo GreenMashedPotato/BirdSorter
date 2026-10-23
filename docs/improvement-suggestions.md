@@ -1,6 +1,6 @@
 # Improvement suggestions: features worth borrowing from the Rust craft apps
 
-_Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17)._
+_Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18)._
 
 > **Status update (same day, later):** the render cache now carries a version
 > salt, prunes to a 4 GiB budget, the review prefetches the previous/next
@@ -19,9 +19,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v17
 > sort/filter, has a token search (`rating:>3`, `flag:pick`, `species:…`) with
 > saved searches, shows several folders together with the last-clicked one as the
 > action target, stores previews in a sharded cache, opens the already-migrated DB
-> for read-only commands, supports colour labels (`6`–`9`), and undoes labels,
-> ratings, flags and colours with Ctrl+Z. The analysis below still describes the
-> rest of the snapshot.
+> for read-only commands, supports colour labels (`6`–`9`), undoes labels,
+> ratings, flags and colours with Ctrl+Z, and groups bursts by an 8×8 luminance
+> signature as well as time, flagging exposure brackets. The analysis below still
+> describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -70,7 +71,7 @@ Verified in the current tree rather than inferred from the docs:
 
 | Area | Current behaviour |
 |---|---|
-| Architecture | Tauri v2 shell, Svelte 5 UI, `birdsorter-core` (headless), `birdsorter` CLI. SQLite schema **v17**. |
+| Architecture | Tauri v2 shell, Svelte 5 UI, `birdsorter-core` (headless), `birdsorter` CLI. SQLite schema **v18**. |
 | Grid | 512 px embedded-preview JPEG thumbnails, cached on disk, virtualized rows, worst-score-first. |
 | Review | Fast (2400 px), Full (native embedded preview), Develop (demosaic, 6000 px). Burst compare. Zoom/pan, focus peaking, histogram, boxes, eye labels, species override, adjustments. |
 | Image transport | Every thumbnail and preview returns a **base64 `data:` URL** from a Tauri command. |
@@ -104,7 +105,7 @@ roughly describes the code surface.
 | 6 | EXIF panel in grid/review | LightCraft `crates/meta` | P1 | Small |
 | 7 | Filmstrip, Survey/Compare/Reference, auto-advance, flags, colour labels | LightCraft `panels/compare.rs` | P1 | Medium |
 | 8 | Search token grammar and smart collections | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
-| 9 | Burst grouping by image similarity; bracket detection | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
+| 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
 | 11 | Camera AF-point overlay (start Sony, then Canon/Nikon) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | HEIC/HEIF via pure-Rust `heic-rs` | LightCraft `crates/heif` | P2 | Small |
@@ -359,6 +360,15 @@ that happen to be one second apart.
   least ½ EV — a bracket is not a burst (`catalog/src/stacks.rs: bracket_sets`).
 
 This directly improves "Keep burst winners" and compare candidate selection.
+
+**Shipped (2026-10-22):** each analysis stores the 8×8 mean-subtracted,
+unit-normalised signature and mean luma (schema v18). Grouping keeps the
+existing 2 s gap and splits when adjacent signatures correlate below 0.75 (old
+rows without a signature stay time-only). A ≥3-frame burst spanning ≥1 EV is
+flagged with its EV span; the review shows a **Bracket** badge and the CLI
+prints it. Deliberately more conservative than LightCraft's 10 s / 0.93: the
+existing 2 s behaviour is preserved until a real multi-shooter corpus justifies
+widening it.
 
 ### 4.5 Raise the sharpness metric quality
 

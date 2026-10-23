@@ -224,7 +224,16 @@
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
   /// The full burst groups (frame ids + winner), for the review compare view.
-  let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
+  let burstGroups = $state<
+    {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[]
+  >([]);
 
   async function refreshBursts() {
     const selected = [...selectedFolders];
@@ -251,7 +260,14 @@
 
   /// Rebuild the per-file burst badge map from the group list.
   function applyBurstInfo(
-    groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+    groups: {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[],
   ) {
     const map: Record<number, { size: number; best: boolean }> = {};
     for (const g of groups) {
