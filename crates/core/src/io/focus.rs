@@ -1,4 +1,4 @@
-//! Camera autofocus point from maker notes (Sony first).
+//! Camera autofocus point from maker notes (Sony and Canon).
 //!
 //! Sony ARWs store the focus frame in the maker note: `0x2027` holds the frame
 //! the point is measured in plus the point, `0x2037` the frame size, and
@@ -10,9 +10,18 @@
 //! Canon). No real point is reported for manual focus, an unsupported body, a
 //! malformed tag, or the untracked Wide centre.
 //!
-//! Reads are header-only and bounded: the TIFF/Exif/maker IFDs and the focus
-//! tags, never the sensor data.
+//! Canon CR3 is ISO BMFF: `moov` → the Canon `uuid` → `CMT1` (identity and
+//! orientation) and `CMT3` (maker notes). `CMT3` tag `0x0026` (AFInfo2, with
+//! `0x003c`/AFInfo3 as a fallback) is a self-describing record: image and AF
+//! coordinate sizes, then per-point widths, heights and signed centre offsets
+//! (0,0 is the centre; EOS counts +Y upwards), then a bitset of the points in
+//! focus. The union of the in-focus points is the frame drawn. Checked against
+//! a real EOS R5.
+//!
+//! Reads are header-only and bounded: the BMFF box headers, the two `CMT`
+//! TIFFs and their IFD values, never the sensor data.
 
+use std::io::Cursor;
 use std::path::Path;
 
 use super::raw::{read_exact_at, IfdFields, TiffReader};
@@ -20,6 +29,13 @@ use crate::{CoreError, Result};
 
 /// Sony bodies whose focus tags have been checked against real files.
 pub const SONY_MODELS: &[&str] = &["ILCE-1", "ILCE-7SM3"];
+
+/// Canon's CRX UUID, which wraps the `CMT` boxes inside `moov`.
+const CRX_UUID: [u8; 16] = [
+    0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48,
+];
+const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CMT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Side of the box drawn when the camera gave a point but no frame size, as a
 /// fraction of the frame's short side.
@@ -57,6 +73,9 @@ pub fn read_focus(path: &Path) -> Result<Option<FocusPoint>> {
     let Some(header) = read_exact_at(&mut file, len, 0, 16.min(len as usize)) else {
         return Ok(None);
     };
+    if header.get(4..8) == Some(b"ftyp".as_slice()) {
+        return Ok(read_canon_focus(&mut file, len));
+    }
     let little = match header.get(..2) {
         Some(b"II") => true,
         Some(b"MM") => false,
@@ -135,6 +154,291 @@ pub fn read_focus(path: &Path) -> Result<Option<FocusPoint>> {
         return Ok(None);
     };
     Ok(decode(&fields, little, ifd0.orientation.unwrap_or(1)))
+}
+
+/// Canon CR3: read the AFInfo2 record out of the `CMT3` maker-note TIFF.
+fn read_canon_focus(file: &mut std::fs::File, len: u64) -> Option<FocusPoint> {
+    let moov = moov_payload(file, len)?;
+    let (cmt1, cmt3) = crx_meta(&moov)?;
+    let (identity, _) = tiff_ifd(&cmt1)?;
+    let make = identity.make.as_deref().unwrap_or_default();
+    let model = identity.model.as_deref().unwrap_or_default().trim();
+    if !make.eq_ignore_ascii_case("Canon") || !model.starts_with("Canon EOS") {
+        return None;
+    }
+    let (maker, little) = tiff_ifd(&cmt3)?;
+    let af = maker
+        .canon_af_info_2
+        .as_deref()
+        .or(maker.canon_af_info_3.as_deref())?;
+    decode_canon(
+        maker.canon_settings.as_deref(),
+        af,
+        little,
+        identity.orientation.unwrap_or(1),
+    )
+}
+
+/// The `moov` payload, found by walking top-level BMFF boxes with header reads.
+fn moov_payload(file: &mut std::fs::File, len: u64) -> Option<Vec<u8>> {
+    let mut at = 0u64;
+    for _ in 0..64 {
+        let head = read_exact_at(file, len, at, 16).or_else(|| read_exact_at(file, len, at, 8))?;
+        let size32 = u32::from_be_bytes(head.get(..4)?.try_into().ok()?);
+        let kind = head.get(4..8)?;
+        let (size, header) = match size32 {
+            0 => (len.checked_sub(at)?, 8u64),
+            1 => (u64::from_be_bytes(head.get(8..16)?.try_into().ok()?), 16u64),
+            n => (u64::from(n), 8u64),
+        };
+        if size < header || at.checked_add(size)? > len {
+            return None;
+        }
+        if kind == b"moov" {
+            if size - header > MAX_MOOV_BYTES {
+                return None;
+            }
+            return read_exact_at(file, len, at + header, usize::try_from(size - header).ok()?);
+        }
+        at += size;
+    }
+    None
+}
+
+/// One ISO BMFF box at `at`: payload start, payload length and type.
+fn bmff_box(bytes: &[u8], at: usize) -> Option<(usize, usize, [u8; 4])> {
+    let size32 = u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+    let kind: [u8; 4] = bytes.get(at + 4..at + 8)?.try_into().ok()?;
+    let (size, header) = match size32 {
+        0 => (bytes.len().checked_sub(at)? as u64, 8usize),
+        1 => (
+            u64::from_be_bytes(bytes.get(at + 8..at + 16)?.try_into().ok()?),
+            16usize,
+        ),
+        n => (u64::from(n), 8usize),
+    };
+    if size < header as u64 {
+        return None;
+    }
+    let size = usize::try_from(size).ok()?;
+    let end = at.checked_add(size)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some((at + header, end - (at + header), kind))
+}
+
+/// The `CMT1` and `CMT3` payloads inside the Canon CRX `uuid` box.
+fn crx_meta(moov: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut at = 0usize;
+    while at + 8 <= moov.len() {
+        let (payload, size, kind) = bmff_box(moov, at)?;
+        if &kind == b"uuid" && size >= 16 && moov.get(payload..payload + 16)? == CRX_UUID.as_slice()
+        {
+            return cmt_boxes(moov.get(payload + 16..payload + size)?);
+        }
+        at = payload + size;
+    }
+    None
+}
+
+fn cmt_boxes(inner: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut cmt1 = None;
+    let mut cmt3 = None;
+    let mut at = 0usize;
+    while at + 8 <= inner.len() {
+        let (payload, size, kind) = bmff_box(inner, at)?;
+        if &kind == b"CMT1" || &kind == b"CMT3" {
+            if size > MAX_CMT_BYTES {
+                return None;
+            }
+            let data = inner.get(payload..payload + size)?.to_vec();
+            if &kind == b"CMT1" {
+                cmt1 = Some(data);
+            } else {
+                cmt3 = Some(data);
+            }
+        }
+        at = payload + size;
+    }
+    Some((cmt1?, cmt3?))
+}
+
+/// Parse a complete TIFF block (header + IFDs) from memory, returning the root
+/// fields and the block's byte order.
+fn tiff_ifd(bytes: &[u8]) -> Option<(IfdFields, bool)> {
+    let head = bytes.get(..8)?;
+    let little = match &head[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let magic = if little {
+        u16::from_le_bytes([head[2], head[3]])
+    } else {
+        u16::from_be_bytes([head[2], head[3]])
+    };
+    let big = magic == 43;
+    if magic != 42 && !big {
+        return None;
+    }
+    let first = if big {
+        let value: [u8; 8] = bytes.get(8..16)?.try_into().ok()?;
+        if little {
+            u64::from_le_bytes(value)
+        } else {
+            u64::from_be_bytes(value)
+        }
+    } else {
+        let value: [u8; 4] = head.get(4..8)?.try_into().ok()?;
+        u64::from(if little {
+            u32::from_le_bytes(value)
+        } else {
+            u32::from_be_bytes(value)
+        })
+    };
+    let mut reader = TiffReader::new(Cursor::new(bytes), bytes.len() as u64, little, big, 0);
+    let (fields, _) = reader.read_ifd(first, false)?;
+    Some((fields, little))
+}
+
+/// The focus mode from `CanonCameraSettings` (ExifTool index 7; word 0 is the
+/// record size, so the value sits at byte 14).
+fn canon_focus_mode(settings: Option<&[u8]>, little: bool) -> Option<u16> {
+    let pair: [u8; 2] = settings?.get(14..16)?.try_into().ok()?;
+    Some(if little {
+        u16::from_le_bytes(pair)
+    } else {
+        u16::from_be_bytes(pair)
+    })
+}
+
+fn canon_focus_mode_name(value: u16) -> Option<&'static str> {
+    Some(match value {
+        0 | 256 => "One-shot AF",
+        1 | 257 => "AI Servo AF",
+        2 | 258 => "AI Focus AF",
+        3 | 6 => "Manual Focus",
+        4 => "Single",
+        5 => "Continuous",
+        16 => "Pan Focus",
+        512 => "Movie Snap Focus",
+        519 => "Movie Servo AF",
+        _ => return None,
+    })
+}
+
+fn canon_af_mode_name(value: u16) -> Option<&'static str> {
+    Some(match value {
+        1 => "AF Point Expansion (surround)",
+        2 => "Single-point AF",
+        4 => "Auto",
+        5 => "Face Detect AF",
+        6 => "Face + Tracking",
+        7 => "Zone AF",
+        8 => "AF Point Expansion (4 point)",
+        9 => "Spot AF",
+        10 => "AF Point Expansion (8 point)",
+        11 => "Flexizone Multi (49 point)",
+        12 => "Flexizone Multi (9 point)",
+        13 => "Flexizone Single",
+        14 => "Large Zone AF",
+        16 => "Large Zone AF (vertical)",
+        17 => "Large Zone AF (horizontal)",
+        19 => "Flexible Zone AF 1",
+        20 => "Flexible Zone AF 2",
+        21 => "Flexible Zone AF 3",
+        22 => "Whole Area AF",
+        _ => return None,
+    })
+}
+
+/// Decode a Canon AFInfo2/AFInfo3 record into the union of its in-focus points.
+fn decode_canon(
+    settings: Option<&[u8]>,
+    af: &[u8],
+    little: bool,
+    orientation: u16,
+) -> Option<FocusPoint> {
+    let read = |at: usize| -> Option<u16> {
+        let pair: [u8; 2] = af.get(at..at + 2)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(pair)
+        } else {
+            u16::from_be_bytes(pair)
+        })
+    };
+    let signed = |at: usize| -> Option<i16> { read(at).map(|value| value as i16) };
+
+    let declared = usize::from(read(0)?);
+    let area = read(2)?;
+    let num = usize::from(read(4)?);
+    let valid = usize::from(read(6)?);
+    let af_w = f64::from(read(12)?);
+    let af_h = f64::from(read(14)?);
+    if area == 0 || num == 0 || num > 8192 || valid == 0 || valid > num {
+        return None;
+    }
+    if !(af_w >= 1.0 && af_h >= 1.0) {
+        return None;
+    }
+    if declared != 0 && declared > af.len() {
+        return None;
+    }
+    let mask_at = 16usize.checked_add(num.checked_mul(8)?)?;
+    let mask_words = num.div_ceil(16);
+    if af.len() < mask_at.checked_add(mask_words * 2)? {
+        return None;
+    }
+    let mode = canon_focus_mode(settings, little);
+    if matches!(mode, Some(3 | 6)) {
+        return None;
+    }
+
+    let mut union: Option<[f64; 4]> = None;
+    for bit in 0..num {
+        if read(mask_at + (bit / 16) * 2)? & (1 << (bit % 16)) == 0 {
+            continue;
+        }
+        let width = f64::from(signed(16 + bit * 2)?);
+        let height = f64::from(signed(16 + num * 2 + bit * 2)?);
+        let x = f64::from(signed(16 + num * 4 + bit * 2)?);
+        let y = f64::from(signed(16 + num * 6 + bit * 2)?);
+        if !(width > 0.0 && height > 0.0 && width <= af_w && height <= af_h) {
+            continue;
+        }
+        // EOS AF coordinates are centred with +Y upwards.
+        let cx = af_w / 2.0 + x;
+        let cy = af_h / 2.0 - y;
+        let rect = [
+            cx - width / 2.0,
+            cy - height / 2.0,
+            cx + width / 2.0,
+            cy + height / 2.0,
+        ];
+        union = Some(match union {
+            Some(current) => [
+                current[0].min(rect[0]),
+                current[1].min(rect[1]),
+                current[2].max(rect[2]),
+                current[3].max(rect[3]),
+            ],
+            None => rect,
+        });
+    }
+    let union = union?;
+    let sensor = [
+        union[0] / af_w,
+        union[1] / af_h,
+        union[2] / af_w,
+        union[3] / af_h,
+    ];
+    Some(FocusPoint {
+        rect: sanitize_rect(map_orientation(sensor, orientation))?,
+        mode: mode.and_then(canon_focus_mode_name).map(str::to_string),
+        area: canon_af_mode_name(area).map(str::to_string),
+        tracking: None,
+    })
 }
 
 fn decode(fields: &IfdFields, little: bool, orientation: u16) -> Option<FocusPoint> {
@@ -475,13 +779,203 @@ mod tests {
         assert!(read_focus(&path).unwrap().is_none());
     }
 
-    /// Opt-in: a real non-Sony RAW (the working corpus is Canon CR3) must be
-    /// rejected quickly and safely. Run with `BIRDSORTER_TEST_RAW=...`.
+    /// Opt-in: a real corpus file. The working corpus is Canon CR3, which must
+    /// yield a point; other formats are not asserted here. Run with
+    /// `BIRDSORTER_TEST_RAW=...`.
     #[test]
-    fn a_real_non_sony_raw_has_no_focus_point() {
+    fn a_real_corpus_raw_has_a_focus_point_when_configured() {
         let Ok(path) = std::env::var("BIRDSORTER_TEST_RAW") else {
             return;
         };
-        assert!(read_focus(std::path::Path::new(&path)).unwrap().is_none());
+        let point = read_focus(std::path::Path::new(&path)).unwrap();
+        if path.to_ascii_lowercase().ends_with(".cr3") {
+            assert!(point.is_some(), "expected a Canon AF point");
+        }
+    }
+
+    fn cr3_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A little-endian root TIFF IFD with the given entries; values over four
+    /// bytes are laid out after the IFD.
+    fn tiff_root(entries: &[(u16, u16, u32, Vec<u8>)]) -> Vec<u8> {
+        let ifd_offset = 8usize;
+        let data_start = ifd_offset + 2 + entries.len() * 12 + 4;
+        let mut out = b"II*\0".to_vec();
+        out.extend_from_slice(&(ifd_offset as u32).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        let mut data = Vec::new();
+        for (tag, kind, count, value) in entries {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
+            if value.len() <= 4 {
+                let mut inline = [0u8; 4];
+                inline[..value.len()].copy_from_slice(value);
+                out.extend_from_slice(&inline);
+            } else {
+                out.extend_from_slice(&((data_start + data.len()) as u32).to_le_bytes());
+                data.extend_from_slice(value);
+            }
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    fn af_info2(
+        mode: u16,
+        af: (u16, u16),
+        points: &[(i16, i16, i16, i16)],
+        in_focus: &[usize],
+    ) -> Vec<u8> {
+        let num = points.len();
+        let masks = num.div_ceil(16);
+        let mut out = Vec::new();
+        for word in [
+            (16 + num * 8 + masks * 2) as u16,
+            mode,
+            num as u16,
+            num as u16,
+            af.0,
+            af.1,
+            af.0,
+            af.1,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        for point in points {
+            out.extend_from_slice(&point.0.to_le_bytes());
+        }
+        for point in points {
+            out.extend_from_slice(&point.1.to_le_bytes());
+        }
+        for point in points {
+            out.extend_from_slice(&point.2.to_le_bytes());
+        }
+        for point in points {
+            out.extend_from_slice(&point.3.to_le_bytes());
+        }
+        let mut mask = vec![0u16; masks];
+        for bit in in_focus {
+            mask[bit / 16] |= 1 << (bit % 16);
+        }
+        for word in mask {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+
+    /// A minimal CR3: `ftyp` → `moov` → Canon `uuid` → `CMT1`/`CMT3`.
+    fn synthetic_cr3(model: &str, orientation: u16, af: &[u8], focus_mode: i16) -> Vec<u8> {
+        let make = b"Canon\0".to_vec();
+        let model = format!("{model}\0").into_bytes();
+        let cmt1 = tiff_root(&[
+            (0x010F, 2, make.len() as u32, make),
+            (0x0110, 2, model.len() as u32, model),
+            (0x0112, 3, 1, orientation.to_le_bytes().to_vec()),
+        ]);
+        let mut settings = vec![0u8; 55 * 2];
+        settings[0..2].copy_from_slice(&110u16.to_le_bytes());
+        settings[14..16].copy_from_slice(&(focus_mode as u16).to_le_bytes());
+        let cmt3 = tiff_root(&[
+            (0x0001, 3, 55, settings),
+            (0x0026, 3, (af.len() / 2) as u32, af.to_vec()),
+        ]);
+
+        let mut uuid = CRX_UUID.to_vec();
+        uuid.extend_from_slice(&cr3_box(b"CMT1", &cmt1));
+        uuid.extend_from_slice(&cr3_box(b"CMT3", &cmt3));
+        let moov = cr3_box(b"moov", &cr3_box(b"uuid", &uuid));
+        let mut file = cr3_box(b"ftyp", b"crx \0\0\0\x01crx isom");
+        file.extend_from_slice(&moov);
+        file
+    }
+
+    fn read_cr3(file: &[u8]) -> Option<FocusPoint> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.cr3");
+        std::fs::write(&path, file).unwrap();
+        read_focus(&path).unwrap()
+    }
+
+    #[test]
+    fn decodes_a_canon_cr3_focus_frame() {
+        let af = af_info2(
+            2,
+            (8000, 6000),
+            &[
+                (200, 200, -400, 0),
+                (200, 200, 0, 0),
+                (200, 200, 200, 0),
+                (200, 200, 0, -400),
+            ],
+            &[3],
+        );
+        let point = read_cr3(&synthetic_cr3("Canon EOS R5", 1, &af, 1)).expect("focus point");
+        assert!((point.rect[0] - 0.4875).abs() < 1e-6, "{:?}", point.rect);
+        assert!((point.rect[1] - 0.55).abs() < 1e-6);
+        assert!((point.rect[2] - 0.5125).abs() < 1e-6);
+        assert!((point.rect[3] - 0.583_333).abs() < 1e-5);
+        assert_eq!(point.mode.as_deref(), Some("AI Servo AF"));
+        assert_eq!(point.area.as_deref(), Some("Single-point AF"));
+        assert_eq!(point.tracking, None);
+        assert_eq!(point.words(), vec!["AI Servo AF", "Single-point AF"]);
+    }
+
+    #[test]
+    fn the_in_focus_points_form_one_frame() {
+        let af = af_info2(
+            7,
+            (8000, 6000),
+            &[(200, 200, -400, 0), (200, 200, 0, 0), (200, 200, 400, 0)],
+            &[0, 2],
+        );
+        let point = read_cr3(&synthetic_cr3("Canon EOS R5", 1, &af, 1)).expect("focus point");
+        assert!((point.rect[0] - 0.4375).abs() < 1e-6, "{:?}", point.rect);
+        assert!((point.rect[1] - 0.483_333).abs() < 1e-5);
+        assert!((point.rect[2] - 0.5625).abs() < 1e-6);
+        assert!((point.rect[3] - 0.516_667).abs() < 1e-5);
+        assert_eq!(point.area.as_deref(), Some("Zone AF"));
+    }
+
+    #[test]
+    fn manual_focus_and_an_empty_mask_are_not_points() {
+        let af = af_info2(2, (8000, 6000), &[(200, 200, 0, 0)], &[0]);
+        assert!(read_cr3(&synthetic_cr3("Canon EOS R5", 1, &af, 3)).is_none());
+        assert!(read_cr3(&synthetic_cr3("Canon EOS R5", 1, &af, 6)).is_none());
+        let no_area = af_info2(0, (8000, 6000), &[(200, 200, 0, 0)], &[0]);
+        assert!(read_cr3(&synthetic_cr3("Canon EOS R5", 1, &no_area, 1)).is_none());
+        let empty = af_info2(2, (8000, 6000), &[(200, 200, 0, 0)], &[]);
+        assert!(read_cr3(&synthetic_cr3("Canon EOS R5", 1, &empty, 1)).is_none());
+    }
+
+    #[test]
+    fn canon_orientation_is_applied_to_the_rect() {
+        let af = af_info2(2, (8000, 6000), &[(200, 200, 0, 0)], &[0]);
+        let point = read_cr3(&synthetic_cr3("Canon EOS R5", 6, &af, 1)).expect("focus point");
+        assert!((point.rect[0] - 0.483_333).abs() < 1e-5, "{:?}", point.rect);
+        assert!((point.rect[1] - 0.4875).abs() < 1e-6);
+        assert!((point.rect[2] - 0.516_667).abs() < 1e-5);
+        assert!((point.rect[3] - 0.5125).abs() < 1e-6);
+    }
+
+    #[test]
+    fn non_eos_canon_and_broken_cr3_are_ignored() {
+        let af = af_info2(2, (8000, 6000), &[(200, 200, 0, 0)], &[0]);
+        assert!(read_cr3(&synthetic_cr3("Canon PowerShot G7 X", 1, &af, 1)).is_none());
+
+        let good = synthetic_cr3("Canon EOS R5", 1, &af, 1);
+        assert!(read_cr3(&good[..40]).is_none());
+        assert!(read_cr3(b"not a cr3 at all").is_none());
+
+        let mut bad_size = good.clone();
+        bad_size[0..4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(read_cr3(&bad_size).is_none());
     }
 }

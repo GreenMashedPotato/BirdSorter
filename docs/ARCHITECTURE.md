@@ -102,7 +102,7 @@ raw-sorter-app/
 │       │                   saliency, mod
 │       ├── io/             raw (rawler), decoder, develop (demosaic),
 │       │                   cache (thumb/preview), thumb, hash (xxh3),
-│       │                   exif, xmp (sidecars), focus (Sony AF),
+│       │                   exif, xmp (sidecars), focus (Sony/Canon AF),
 │       │                   contact_sheet, export, trash, disk
 │       │                   (free-space checks)
 │       ├── data/           db (schema + migrations), library (scan/re-link),
