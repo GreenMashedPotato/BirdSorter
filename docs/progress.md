@@ -11,8 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **350 core unit tests** (358 Rust tests including the integration/desktop suites,
-  +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **351 core unit tests** (359 Rust tests including the integration/desktop
+  suites, +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  optional `heic` feature the core suite is 354
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -80,8 +81,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
 4. **Signing/notarization** — Windows is wired and only needs a certificate
    (`SIGNING.md` §1; Azure Trusted Signing is ~$10/month). macOS needs the
    Apple Developer Program + the §2 steps. Auto-updater after that.
-5. **HEIC input** — needs `libheif` (no mature pure-Rust decoder). Easiest on
-   macOS via system ImageIO (see `MACOS_TODO.md`). JPEG is already first-class.
+5. ~~**HEIC input**~~ — **shipped 2026-10-22 behind the off-by-default `heic`
+   feature** (pure-Rust `heic-rs`, no C/unsafe; `docs/HEIC.md`). It is opt-in
+   because HEVC is patent-encumbered. Still open: HEIC EXIF (capture time) and
+   the macOS ImageIO path.
 6. **Anti-aliased downscaling + recalibration** — `normalise_size` subsamples;
    a box average is more faithful but shifts every metric, so it needs a scoring
    recalibration rather than a silent swap.
@@ -178,6 +181,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   visible) photos via a save dialog. Verified on three copied CR3s (756×644,
   3 cells, 47 KB) and by a desktop test on a real JPEG. A4/Letter print layouts
   and page counts remain.
+- **Optional HEIC/HEIF input (2026-10-22)**: the `heic` Cargo feature (off by
+  default, because HEVC is patent-encumbered) adds the pure-Rust `heic-rs` 0.1.4
+  decoder to `birdsorter-core`; the scanner accepts `.heic`/`.heif`/`.hif` only
+  when it is compiled in, decoding is RGB8 with the container transforms applied,
+  bounded by the 512 MiB file cap and a 256 MP pixel cap, and `catch_unwind`-safe.
+  Desktop and CLI forward the feature. Feature-gated tests cover garbage input,
+  the size bound, scanner acceptance and an opt-in real-file hook; the corpus is
+  Canon-only, so no real HEIC was validated. See `HEIC.md`.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

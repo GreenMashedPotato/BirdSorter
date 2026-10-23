@@ -39,6 +39,17 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "tif", "tiff",
 ];
 
+/// HEIC/HEIF extensions, accepted only when the optional decoder is compiled in.
+#[cfg(feature = "heic")]
+const HEIC_EXTENSIONS: &[&str] = &["heic", "heif", "hif"];
+#[cfg(not(feature = "heic"))]
+const HEIC_EXTENSIONS: &[&str] = &[];
+
+/// Whether the scanner accepts this lower-case extension.
+pub fn is_photo_extension(ext: &str) -> bool {
+    PHOTO_EXTENSIONS.contains(&ext) || HEIC_EXTENSIONS.contains(&ext)
+}
+
 /// The exact `files` columns read by [`row_to_file`].
 ///
 /// Queries list these explicitly rather than `f.*`, so adding a column to the
@@ -360,7 +371,7 @@ pub fn scan_folder_streaming(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !PHOTO_EXTENSIONS.contains(&ext.as_str()) {
+        if !is_photo_extension(&ext) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -1054,6 +1065,17 @@ mod tests {
         }
         for ext in ["txt", "json", "xmp", "on1"] {
             assert!(!PHOTO_EXTENSIONS.contains(&ext), "must ignore: {ext}");
+        }
+    }
+
+    #[test]
+    fn scanner_accepts_heic_only_when_the_feature_is_on() {
+        for ext in ["heic", "heif", "hif"] {
+            assert_eq!(
+                is_photo_extension(ext),
+                cfg!(feature = "heic"),
+                "{ext} acceptance must follow the `heic` feature"
+            );
         }
     }
 

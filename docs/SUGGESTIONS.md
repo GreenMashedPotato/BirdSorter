@@ -38,6 +38,13 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
   frequencies. A box/area average is more faithful, but it shifts every metric
   value, so it needs a scoring recalibration rather than a silent swap.
 
+## Formats
+
+- 🟡 **HEIC/HEIF** — shipped 2026-10-22 behind the off-by-default `heic` feature
+  (pure-Rust `heic-rs`; `docs/HEIC.md`). Still open: HEIC EXIF (capture time),
+  the macOS ImageIO alternative, and a real iPhone file to validate against (the
+  corpus is Canon-only).
+
 ## UX & features
 
 - ⬜ **Library-wide smart collections** — all/any/none rule sets, an inline
@@ -83,7 +90,7 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 - **Fine-tuned detector / eye model** — see above.
 - **macOS validation** — CoreML, `.app`/`.dmg`, notarization, Intel + Apple Silicon,
-  and HEIC via ImageIO still need a Mac (`MACOS_TODO.md`).
+  and the ImageIO HEIC path still need a Mac (`MACOS_TODO.md`).
 - **Signing** — Windows signing is wired and needs a certificate; macOS needs the
   Apple Developer Program. The auto-updater waits for this.
 

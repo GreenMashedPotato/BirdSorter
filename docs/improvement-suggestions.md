@@ -112,7 +112,7 @@ roughly describes the code surface.
 | 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
 | 11 | 🟡 Camera AF-point overlay (Sony shipped 2026-10-22; Canon/Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
-| 12 | HEIC/HEIF via pure-Rust `heic-rs` | LightCraft `crates/heif` | P2 | Small |
+| 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | Presets with amount, copy/paste/sync settings | LightCraft `develop/src/presets.rs` | P2 | Medium |
@@ -740,14 +740,17 @@ cherry-pick rather than adopt wholesale.
 
 ### 8.1 HEIC/HEIF
 
-The README/MACOS_TODO say HEIC needs `libheif`. LightCraft shows a pure-Rust
-route: `crates/heif` wraps `heic-rs = 0.1.4` (pure Rust, no unsafe), handles
-`irot`/`imir`/`clap` orientation, 8–16-bit, monochrome, alpha, ICC, EXIF, XMP,
-and runs every call under `catch_unwind` because the decoder is young.
-
-Known gaps to document if adopted: 4:2:2 and 4:4:4 HEVC (some Canon/Sony
-`.HIF`) fail. Make it an optional build feature, as LightCraft does, because
-HEVC patents are a distribution choice.
+~~The README/MACOS_TODO say HEIC needs `libheif`.~~ **Shipped (2026-10-22):**
+`birdsorter-core` depends on `heic-rs = 0.1.4` (pure Rust, no C, no `unsafe`,
+MIT OR Apache-2.0) behind the **off-by-default `heic` feature**; the scanner
+accepts `.heic`/`.heif`/`.hif` only when it is compiled in, decoding requests
+RGB8, the container's `irot`/`imir`/`clap` transforms are applied, the ordinary
+512 MiB file cap and `heic-rs`'s 256 MP pixel cap apply, and every call runs
+under `catch_unwind`. LightCraft's fuller colour handling (VUI range/matrix,
+libheif-matching chroma upsample) is not ported; `docs/HEIC.md` records the
+licensing, limits and evidence. 4:2:2 and 4:4:4 (some Canon/Sony `.HIF`) still
+fail in the decoder; HEIC EXIF (capture time) is not wired yet; the macOS
+ImageIO route in `MACOS_TODO.md` remains an alternative.
 
 ### 8.2 Sensor-path decoders (only if truly needed)
 

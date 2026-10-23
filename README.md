@@ -77,8 +77,11 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
   handled too. The extracted JPEG is the smallest one that covers the request
   and matches the largest preview's aspect ratio and component count. Analysis
   still decodes at 2400 px.
-- HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
-  ImageIO path).
+- **HEIC/HEIF** (`heic`/`heif`/`hif`) is available behind an **off-by-default
+  `heic` feature**: build with `--features heic` to enable the pure-Rust
+  `heic-rs` decoder. It is opt-in because HEVC is patent-encumbered (a
+  distributor's call), not a code one. See [`HEIC.md`](./docs/HEIC.md); a default
+  build ignores those files, and JPEG/TIFF/RAW are unaffected either way.
 
 ## Layout
 

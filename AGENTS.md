@@ -29,6 +29,7 @@ agents. Humans should start at [README.md](./README.md).
 | [docs/improvement-suggestions.md](./docs/improvement-suggestions.md) | Cross-project ideas worth borrowing (LightCraft, PhotoCraft) |
 | [docs/MODELS.md](./docs/MODELS.md) · [docs/EYE_MODEL.md](./docs/EYE_MODEL.md) | Model contracts, provenance, eye-model pipeline |
 | [docs/DENOISE_PLAN.md](./docs/DENOISE_PLAN.md) | Future denoise/export feature: model shortlist, licences, tiling, milestones |
+| [docs/HEIC.md](./docs/HEIC.md) | Optional HEIC/HEIF input: the `heic` feature, decoder, patents, limits, evidence |
 | [docs/SIGNING.md](./docs/SIGNING.md) · [docs/MACOS_TODO.md](./docs/MACOS_TODO.md) | Release/signing and the macOS validation brief |
 | [docs/rule.md](./docs/rule.md) | Engineering rules |
 | [docs/agent-brief.md](./docs/agent-brief.md) | Handoff brief for the next agent: current state, goals, queue, definition of done |
@@ -71,6 +72,9 @@ cd ui && npm test && npm run check && npm run build
   pending instead of showing stale results.
 - **No panics on user input.** Return typed `CoreError`s; no `unwrap`/`expect`
   in production paths. No `unsafe`.
+- **HEIC is opt-in.** The `heic` Cargo feature is off by default (HEVC patents
+  are a distributor's call) and its decoder runs under `catch_unwind`; see
+  `docs/HEIC.md`.
 - **Bound resources:** image byte caps, ZIP entry/expanded-size limits, network
   timeouts, pinned remote checksums.
 - **Async UI:** every load guards stale responses; every listener/timer has

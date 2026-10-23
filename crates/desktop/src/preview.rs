@@ -13,12 +13,10 @@ use tauri::State;
 use birdsorter_core::data::library;
 use birdsorter_core::io::adjust;
 use birdsorter_core::io::cache::{ThumbCache, RENDER_CACHE_VERSION};
-use birdsorter_core::io::decoder::{
-    dynamic_to_rgb, CompositeDecoder, ImageCrateDecoder, ImageDecoder,
-};
+use birdsorter_core::io::decoder::{dynamic_to_rgb, CompositeDecoder, ImageDecoder};
+use birdsorter_core::io::default_decoders;
 use birdsorter_core::io::develop::develop_preview;
 use birdsorter_core::io::export::ImageFormat;
-use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{
     cached_coalesced, encode_rgb_jpeg, encode_rgb_tiff, render_key, thumbnail_cached_with,
     RenderGates,
@@ -92,10 +90,7 @@ fn base_preview(
         "full" => (
             render_key(&hash, 0),
             Box::new(move || {
-                let decoder = CompositeDecoder::new(vec![
-                    Box::new(RawDecoder::new(None)),
-                    Box::new(ImageCrateDecoder::new(None)),
-                ]);
+                let decoder = CompositeDecoder::new(default_decoders(None));
                 let img = decoder.decode(&path)?;
                 encode_rgb_jpeg(&img.rgb, 92)
             }),
@@ -103,10 +98,7 @@ fn base_preview(
         _ => (
             render_key(&hash, ANALYSIS_LONG_SIDE),
             Box::new(move || {
-                let decoder = CompositeDecoder::new(vec![
-                    Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-                    Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-                ]);
+                let decoder = CompositeDecoder::new(default_decoders(Some(ANALYSIS_LONG_SIDE)));
                 let img = decoder.decode(&path)?;
                 encode_rgb_jpeg(&img.rgb, 85)
             }),

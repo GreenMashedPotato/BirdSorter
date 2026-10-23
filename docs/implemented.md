@@ -599,6 +599,17 @@ on a 28-core Windows box.
 
 ### Format coverage (done)
 
+- ✅ **Optional HEIC/HEIF input (2026-10-22)**: `birdsorter-core` has an
+  off-by-default `heic` feature that adds `heic-rs = 0.1.4` (pure Rust, no C, no
+  `unsafe`, MIT OR Apache-2.0, pinned exactly) as a decoder. The scanner accepts
+  `.heic`/`.heif`/`.hif` only when the feature is on; decoding requests RGB8,
+  applies the container's `irot`/`imir`/`clap`, and reuses the ordinary 512 MiB
+  file cap and `heic-rs`'s 256 MP pixel cap. Every call runs under
+  `catch_unwind`. The desktop and CLI both forward the feature. It is opt-in
+  because HEVC is patent-encumbered. Tests: garbage → typed error (no panic), the
+  file-size bound, scanner acceptance follows the feature, and an opt-in
+  `BIRDSORTER_TEST_HEIC` real-file hook (no real HEIC exists in the corpus). See
+  `HEIC.md`.
 - ✅ **TIFF-based RAW previews (2026-10-22)**: `embedded_preview` now walks the
   classic-TIFF/BigTIFF IFD chain and SubIFDs for NEF/ARW/DNG, reading only the
   IFD blocks and the chosen JPEG. It supports `JPEGInterchangeFormat` pointers
