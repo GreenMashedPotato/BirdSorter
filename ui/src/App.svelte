@@ -91,6 +91,8 @@
   /// Folders currently shown together. The primary (`activeFolder`) is the
   /// last clicked; folder-scoped actions target it.
   let selectedFolders = $state<Set<number>>(new Set());
+  /// "All photos" is on: the view spans every folder in the library.
+  let libraryWide = $state(false);
   const primaryFolder = $derived(folders.find((f) => f.id === activeFolder) ?? null);
   const primaryLabel = $derived(primaryFolder ? folderLabel(primaryFolder.path) : "");
   const folderNames = $derived(
@@ -626,9 +628,25 @@
     return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   }
 
+  /// Show every registered folder at once. The primary action target stays on
+  /// the folder it was, so Analyze/Export remain unambiguous.
+  async function showLibrary() {
+    if (folders.length === 0) return;
+    libraryWide = true;
+    selectedFolders = new Set(folders.map((folder) => folder.id));
+    if (activeFolder === null || !folders.some((folder) => folder.id === activeFolder)) {
+      activeFolder = folders[0].id;
+      rememberFolder(activeFolder);
+    }
+    setSelected(new Set());
+    resetThumbs();
+    await refreshFiles();
+  }
+
   /// Plain click shows one folder; Ctrl/Cmd-click adds or removes a folder.
   /// The last folder added becomes the primary action target.
   async function selectFolder(id: number, additive = false) {
+    libraryWide = false;
     if (additive) {
       const next = new Set(selectedFolders);
       if (next.has(id)) {
@@ -721,11 +739,16 @@
       // Reopen the folder from last session when it is still in the library.
       activeFolder = pickStartupFolder(folders, rememberedFolder());
     }
-    const next = new Set(
-      [...selectedFolders].filter((id) => available.has(id)),
-    );
-    if (activeFolder !== null) next.add(activeFolder);
-    selectedFolders = next;
+    if (libraryWide && folders.length > 0) {
+      selectedFolders = new Set(folders.map((folder) => folder.id));
+    } else {
+      libraryWide = false;
+      const next = new Set(
+        [...selectedFolders].filter((id) => available.has(id)),
+      );
+      if (activeFolder !== null) next.add(activeFolder);
+      selectedFolders = next;
+    }
     if (activeFolder !== null) rememberFolder(activeFolder);
   }
 
@@ -1314,6 +1337,22 @@
       Browse… (folder picker)
     </button>
 
+    <div
+      class="folder library"
+      class:selected={libraryWide}
+      role="button"
+      tabindex="0"
+      title="Show every folder in the library"
+      aria-label="All photos"
+      onclick={showLibrary}
+      onkeydown={(e) => e.key === "Enter" && showLibrary()}
+    >
+      <span class="path">All photos</span>
+      {#if libraryWide}
+        <span class="badge picked" title="The grid spans every folder">library</span>
+      {/if}
+    </div>
+
     {#each folders as folder (folder.id)}
       <div
         class="folder"
@@ -1337,8 +1376,13 @@
     {/if}
     {#if primaryFolder}
       <p class="status" title={primaryFolder.path}>
-        Actions target: <strong>{folderLabel(primaryFolder.path)}</strong>
-        {#if selectedFolders.size > 1}· {selectedFolders.size} folders shown{/if}
+        {#if libraryWide}
+          Library: <strong>{selectedFolders.size} folders</strong> · actions target
+          <strong>{folderLabel(primaryFolder.path)}</strong>
+        {:else}
+          Actions target: <strong>{folderLabel(primaryFolder.path)}</strong>
+          {#if selectedFolders.size > 1}· {selectedFolders.size} folders shown{/if}
+        {/if}
       </p>
     {/if}
   </aside>

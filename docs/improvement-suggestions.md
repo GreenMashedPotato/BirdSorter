@@ -108,7 +108,7 @@ roughly describes the code surface.
 | 5 | ✅ Windowed 1:1 rendering instead of whole-frame high-res (above native 1:1, shipped 2026-10-22) | LightCraft `ui-egui/src/region.rs` | P1 | Medium |
 | 6 | EXIF panel in grid/review | LightCraft `crates/meta` | P1 | Small |
 | 7 | Filmstrip, Survey/Compare/Reference, auto-advance, flags, colour labels | LightCraft `panels/compare.rs` | P1 | Medium |
-| 8 | ✅ Search token grammar and smart collections (client-side all/any/none shipped 2026-10-22) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
+| 8 | ✅ Search token grammar and smart collections (all/any/none 2026-10-22; library-wide 2026-10-23) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
 | 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
 | 11 | 🟡 Camera AF-point overlay (Sony 2026-10-22; Canon CR3 2026-10-23; Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
@@ -476,8 +476,13 @@ re-query with SQL or in-memory filtering.
 `all` / `any` / `none` rule groups (one search query per line), with a compiled
 evaluator, validated JSON in `localStorage`, an inline create/rename/delete
 editor and per-folder filtering. `any` empty means "no constraint" and empty
-collections are rejected. Still open: nested groups, server-side SQL
-evaluation, `describe()`/`check()` summaries and a library-wide view.
+collections are rejected.
+
+**Shipped (2026-10-23, library-wide):** the sidebar's **All photos** entry
+selects every registered folder, so collections run across the library; a
+folder click returns to folder scope and actions keep their primary target.
+Still open: nested groups, server-side SQL evaluation,
+`describe()`/`check()` summaries.
 
 ### 5.3 EXIF panel
 

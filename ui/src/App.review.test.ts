@@ -131,6 +131,7 @@ import {
   analysisDetail,
   getThumbnail,
   labelFiles,
+  queryFiles,
   rateFiles,
   setColor,
   setFlag,
@@ -156,6 +157,26 @@ describe("review view", () => {
     await fireEvent.click(getByText("D:\\shoot2"), { ctrlKey: true });
     await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(5));
     expect(container.querySelector(".folder.primary")?.textContent).toContain("shoot2");
+  });
+
+  it("shows every folder from All photos", async () => {
+    vi.mocked(queryFiles).mockClear();
+    const { container, getByLabelText } = render(App);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+
+    await fireEvent.click(getByLabelText("All photos"));
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(5));
+    expect(queryFiles).toHaveBeenLastCalledWith([1, 2]);
+    expect(container.querySelector(".folder.library")?.classList.contains("selected")).toBe(
+      true,
+    );
+
+    // Clicking a folder leaves the library view.
+    await fireEvent.click(container.querySelector(".folder:not(.library)") as HTMLElement);
+    await waitFor(() => expect(container.querySelectorAll(".tile").length).toBe(3));
+    expect(container.querySelector(".folder.library")?.classList.contains("selected")).toBe(
+      false,
+    );
   });
 
   it("filters the grid by colour", async () => {

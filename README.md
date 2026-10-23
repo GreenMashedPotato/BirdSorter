@@ -232,15 +232,16 @@ pick one from **Smart collection…** to filter the grid, or **Edit…** to crea
 rename, delete or clear one. They are stored locally with the rest of the UI
 state.
 
-**Ctrl/Cmd-click folders** in the sidebar to view several at once. The last one
-clicked is the **primary**: Analyze, Re-score, Keep burst winners, Auto-star,
-Reset stars and Export keepers target it, and the sidebar shows
-"Actions target: …". Labels, ratings and flags act on the selected files across
-folders. Scanning a folder includes all of its child folders. The toolbar's
-**Contact sheet…** exports the selected (or visible) photos as a JPEG grid with
-filename/verdict captions. For print-ready pages, `birdsorter contact <folder>
-<out.jpg> --print a4|letter [--rows N] [--dpi N]` writes 150 dpi page images
-(numbered when there is more than one).
+**Ctrl/Cmd-click folders** in the sidebar to view several at once, or click
+**All photos** to see the whole library (smart collections and search then span
+every folder). The last folder clicked is the **primary**: Analyze, Re-score,
+Keep burst winners, Auto-star, Reset stars and Export keepers target it, and the
+sidebar shows "Actions target: …". Labels, ratings and flags act on the
+selected files across folders. Scanning a folder includes all of its child
+folders. The toolbar's **Contact sheet…** exports the selected (or visible)
+photos as a JPEG grid with filename/verdict captions. For print-ready pages,
+`birdsorter contact <folder> <out.jpg> --print a4|letter [--rows N] [--dpi N]`
+writes 150 dpi page images (numbered when there is more than one).
 
 **XMP sidecars** stay in sync: ratings (`xmp:Rating`), colour labels
 (`xmp:Label`), and the verdict label plus effective species as `dc:subject`

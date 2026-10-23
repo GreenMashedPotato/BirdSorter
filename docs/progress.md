@@ -12,7 +12,7 @@ Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
 - **360 core unit tests** (367 Rust tests including the integration/desktop
-  suites, +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
+  suites, +129 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
   optional `heic` feature the core suite is 365
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -137,8 +137,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   rule groups, with an inline editor (create/rename/delete/clear) and
   per-folder filtering. Verified JSON persistence in `localStorage` (validated,
   capped, deduped) and the compiled evaluator are covered by 8 pure tests; a
-  FilterBar test covers applying a collection and saving a draft. Remaining: a
-  library-wide view and server-side SQL evaluation.
+  FilterBar test covers applying a collection and saving a draft.
+- **Library-wide collections (2026-10-23)**: the sidebar's **All photos** entry
+  selects every registered folder, so collections, search, chips and colour
+  filters run across the whole library; clicking a folder returns to folder
+  scope, and folder-scoped actions still name their primary target. Reuses the
+  existing multi-folder query and client evaluator; server-side SQL evaluation
+  remains open (the evaluator is shared with saved searches, so translating it
+  would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
+  then a folder click returns to 3.
 - **Windowed 1:1 preview (2026-10-22)**: above native 1:1 the review fetches
   only the visible source window through `preview_region`, snapped to a 256 px
   grid with a 256 px margin and reused while panning. The backend keeps one
