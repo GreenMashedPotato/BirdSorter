@@ -3,7 +3,7 @@
 //! Doubles as a power-user tool, a CI smoke-tester and (later) the benchmark
 //! harness. Kept dependency-light on purpose.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use birdsorter_core::analysis::detector::{BBox, NullDetector, SubjectDetector};
@@ -19,6 +19,7 @@ use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{
     analysis_store, db, diagnostics, eye_labels, library::ScanReport, paths,
 };
+use birdsorter_core::io::contact_sheet::PageSize;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageDecoder};
 use birdsorter_core::io::exif;
 use birdsorter_core::io::hash::hash_file;
@@ -46,7 +47,9 @@ Commands:
   list <folder> [--db <path>] Print each file's verdict (worst first)
   bursts <folder> [--db <path>]  Print burst groups (capture time + similarity)
   contact <folder> <out.jpg> [--cols N] [--size N] [--limit N] [--db <path>]
+  contact <folder> <out.jpg> --print a4|letter [--rows N] [--dpi N]
                               Contact sheet of the folder's thumbnails
+                              (--print writes print-sized page images)
   export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
       --label <name>            Which label to export (default: sharp)
       --move                    Move instead of copy
@@ -561,6 +564,9 @@ fn cmd_contact(args: &[String]) -> ExitCode {
     let mut cols = 4usize;
     let mut size = 360usize;
     let mut limit = 48usize;
+    let mut print = None;
+    let mut rows = 5usize;
+    let mut dpi = 150u32;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -583,6 +589,28 @@ fn cmd_contact(args: &[String]) -> ExitCode {
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(limit)
             }
+            "--print" => {
+                print = match it.next().map(|value| value.to_ascii_lowercase()).as_deref() {
+                    Some("a4") => Some(PageSize::A4),
+                    Some("letter") => Some(PageSize::Letter),
+                    _ => {
+                        eprintln!("contact: --print expects a4 or letter");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            "--rows" => {
+                rows = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(rows)
+            }
+            "--dpi" => {
+                dpi = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(dpi)
+            }
             other if other.starts_with("--") => {
                 eprintln!("contact: unknown option {other}");
                 return ExitCode::FAILURE;
@@ -594,11 +622,21 @@ fn cmd_contact(args: &[String]) -> ExitCode {
     }
     let (Some(folder), Some(out)) = (folder, out) else {
         eprintln!(
-            "contact: usage: contact <folder> <out.jpg> [--cols N] [--size N] [--limit N] [--db <path>]"
+            "contact: usage: contact <folder> <out.jpg> [--cols N] [--size N] [--limit N] [--db <path>]\n\
+             \x20                contact <folder> <out.jpg> --print a4|letter [--rows N] [--dpi N]"
         );
         return ExitCode::FAILURE;
     };
-    match run_contact(&folder, &out, cols, size, limit, db_path.as_deref()) {
+    let request = ContactRequest {
+        cols,
+        size,
+        limit,
+        db_path,
+        print,
+        rows,
+        dpi,
+    };
+    match run_contact(&folder, &out, &request) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("contact failed: {e}");
@@ -607,18 +645,24 @@ fn cmd_contact(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_contact(
-    folder: &str,
-    out: &str,
+/// Parsed options for one `contact` run.
+struct ContactRequest {
     cols: usize,
     size: usize,
     limit: usize,
-    db_path: Option<&str>,
-) -> birdsorter_core::Result<()> {
-    use birdsorter_core::io::contact_sheet::{render, ContactCell, ContactOptions};
+    db_path: Option<String>,
+    print: Option<PageSize>,
+    rows: usize,
+    dpi: u32,
+}
+
+fn run_contact(folder: &str, out: &str, request: &ContactRequest) -> birdsorter_core::Result<()> {
+    use birdsorter_core::io::contact_sheet::{
+        render, render_pages, ContactCell, ContactOptions, PrintOptions,
+    };
     use birdsorter_core::io::thumb::thumbnail_bytes;
 
-    let db_path = match db_path {
+    let db_path = match request.db_path.as_deref() {
         Some(path) => std::path::PathBuf::from(path),
         None => db::default_db_path()?,
     };
@@ -627,21 +671,23 @@ fn run_contact(
     let folder_id = library::add_folder(&conn, Path::new(folder))?;
     library::scan_folder(&conn, folder_id)?;
     let mut rows = library::list_files_with_details(&conn, folder_id, false, false)?;
-    // A previous sheet may live in the scanned folder; never include it in the
-    // next sheet.
+    // A previous sheet (or its numbered print pages) may live in the scanned
+    // folder; never include it in the next sheet.
     if let Ok(output) = std::fs::canonicalize(out) {
-        rows.retain(|row| row.file.absolute_path != output);
+        rows.retain(|row| {
+            row.file.absolute_path != output && !is_contact_page(&row.file.absolute_path, &output)
+        });
     }
-    rows.truncate(limit.clamp(1, 200));
+    rows.truncate(request.limit.clamp(1, 200));
     if rows.is_empty() {
         return Err(birdsorter_core::CoreError::invalid_input(format!(
             "no supported photos in {folder}"
         )));
     }
 
-    let cell_width = size.clamp(160, 800);
+    let cell_width = request.size.clamp(160, 800);
     let options = ContactOptions {
-        cols: cols.clamp(1, 8),
+        cols: request.cols.clamp(1, 8),
         cell_width,
         cell_height: (cell_width * 3 / 4) + 34,
         margin: 12,
@@ -650,8 +696,9 @@ fn run_contact(
     };
     let mut cells = Vec::with_capacity(rows.len());
     let mut skipped = 0usize;
+    let thumb_side = if request.print.is_some() { 1024 } else { 512 };
     for row in &rows {
-        let Ok(bytes) = thumbnail_bytes(&row.file.absolute_path, 512) else {
+        let Ok(bytes) = thumbnail_bytes(&row.file.absolute_path, thumb_side) else {
             skipped += 1;
             continue;
         };
@@ -677,22 +724,96 @@ fn run_contact(
             "no thumbnails could be rendered",
         ));
     }
-    let sheet = render(&cells, &options)?;
-    let bytes = birdsorter_core::io::thumb::encode_rgb_jpeg(&sheet, 90)?;
-    std::fs::write(out, &bytes)
-        .map_err(|error| birdsorter_core::CoreError::io(Path::new(out), error))?;
-    let (height, width, _) = sheet.dim();
     let skipped = if skipped > 0 {
         format!(", {skipped} skipped")
     } else {
         String::new()
     };
+    if let Some(page) = request.print {
+        let options = PrintOptions {
+            page,
+            cols: request.cols.clamp(1, 8),
+            rows: request.rows.clamp(1, 20),
+            dpi: request.dpi.clamp(72, 600),
+            margin_mm: 10.0,
+            caption_height: 34,
+            font_scale: 2,
+        };
+        let pages = render_pages(&cells, &options)?;
+        let total = pages.len();
+        let mut total_bytes = 0usize;
+        for (index, sheet) in pages.iter().enumerate() {
+            let path = contact_page_path(out, index + 1, total);
+            let bytes = birdsorter_core::io::thumb::encode_rgb_jpeg(sheet, 90)?;
+            std::fs::write(&path, &bytes)
+                .map_err(|error| birdsorter_core::CoreError::io(&path, error))?;
+            total_bytes += bytes.len();
+            let (height, width, _) = sheet.dim();
+            println!(
+                "wrote {} ({width}x{height}, page {}/{})",
+                path.display(),
+                index + 1,
+                total
+            );
+        }
+        println!(
+            "{total} page(s), {} cells{skipped}, {} KB total",
+            cells.len(),
+            total_bytes / 1024
+        );
+        return Ok(());
+    }
+    let sheet = render(&cells, &options)?;
+    let bytes = birdsorter_core::io::thumb::encode_rgb_jpeg(&sheet, 90)?;
+    std::fs::write(out, &bytes)
+        .map_err(|error| birdsorter_core::CoreError::io(Path::new(out), error))?;
+    let (height, width, _) = sheet.dim();
     println!(
         "wrote {out} ({width}x{height}, {} cells{skipped}, {} KB)",
         cells.len(),
         bytes.len() / 1024
     );
     Ok(())
+}
+
+/// The output path for one print page: `out` for a single page, otherwise
+/// `{stem}-{page}.{ext}`.
+fn contact_page_path(out: &str, page: usize, total: usize) -> PathBuf {
+    if total <= 1 {
+        return PathBuf::from(out);
+    }
+    let path = Path::new(out);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("contact");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("jpg");
+    path.with_file_name(format!("{stem}-{page}.{extension}"))
+}
+
+/// True when `candidate` is one of the numbered pages a previous run wrote next
+/// to `output`, so a rescan never feeds the sheet back into itself.
+fn is_contact_page(candidate: &Path, output: &Path) -> bool {
+    if candidate.parent() != output.parent() {
+        return false;
+    }
+    let (Some(name), Some(stem), Some(extension)) = (
+        candidate.file_name().and_then(|value| value.to_str()),
+        output.file_stem().and_then(|value| value.to_str()),
+        output.extension().and_then(|value| value.to_str()),
+    ) else {
+        return false;
+    };
+    let prefix = format!("{stem}-");
+    let suffix = format!(".{extension}");
+    name.strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(&suffix))
+        .is_some_and(|digits| {
+            !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+        })
 }
 
 fn accent_for(label: Option<&str>) -> Option<[u8; 3]> {
