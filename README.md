@@ -309,7 +309,9 @@ coalesced into one render). Edits are **saved per photo** in the library
 and restored when you come back, **Copy**/**Paste** carry a look from one photo to
 another (the clipboard survives closing the review), and **Export image…** writes
 the adjusted preview as JPEG or lossless TIFF (by the chosen extension) at the
-current resolution. Everything stays
+current resolution. **Named presets** store a look and reapply it at 0–200 %
+(use the **Amount** slider); **Sync** also saves it to the selected photos.
+Everything stays
 **non-destructive** — stored scores,
 labels, XMP sidecars and the original file are untouched.
 

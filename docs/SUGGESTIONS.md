@@ -29,8 +29,9 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 ## Preview adjustments (next)
 
 - ⬜ **Tone curve** and **local masks** (brush/gradient/luminance range).
-- ⬜ **Named presets with amounts and group sync** — Copy/Paste is in place; a
-  preset library, partial groups and an amount slider remain.
+- 🟡 **Named presets with amounts and group sync** — shipped 2026-10-23:
+  16 named presets, 0–200 % amount with per-control clamping, and Sync to the
+  grid selection. Partial preset groups and one undo step per sync remain.
 
 ## Correctness & robustness
 

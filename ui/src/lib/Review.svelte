@@ -34,6 +34,15 @@
   import { lumaHistogram } from "./histogram";
   import { neighborIds } from "./navigation";
   import { loadAdjustmentClipboard, saveAdjustmentClipboard } from "./adjustments";
+  import {
+    isNeutral,
+    loadPresets,
+    removePreset,
+    savePresets,
+    scaleAdjustments,
+    upsertPreset,
+    type DevelopPreset,
+  } from "./presets";
   import { loadAutoAdvance, saveAutoAdvance } from "./workflow";
   import Filmstrip from "./Filmstrip.svelte";
 
@@ -43,6 +52,7 @@
   let {
     fileId,
     ids,
+    selectedIds = [],
     burstGroups,
     rating,
     flag = null,
@@ -66,6 +76,8 @@
     fileId: number;
     /** Visible file ids, in display order (for navigation). */
     ids: number[];
+    /** Grid selection, for applying a preset to several photos at once. */
+    selectedIds?: number[];
     burstGroups: {
       frames: number[];
       best: number;
@@ -126,6 +138,11 @@
   let adjustOpen = $state(false);
   let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
   let adjustmentClipboard = $state<Adjustments | null>(loadAdjustmentClipboard());
+  let presets = $state<DevelopPreset[]>(loadPresets());
+  let activePreset = $state("");
+  let presetName = $state("");
+  let presetAmount = $state(1);
+  let presetSync = $state(false);
   let autoAdvance = $state(loadAutoAdvance());
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -993,6 +1010,65 @@
     void renderPreview();
   }
 
+  /// Stop a pending debounce so a preset application wins immediately.
+  function settleAdjustTimers() {
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+  }
+
+  function saveCurrentPreset() {
+    const name = presetName.trim();
+    if (!name) {
+      status = "preset needs a name";
+      return;
+    }
+    if (isNeutral(adjustments)) {
+      status = "adjust something before saving a preset";
+      return;
+    }
+    presets = upsertPreset(presets, { name, adjustments: { ...adjustments } });
+    savePresets(presets);
+    activePreset = name;
+    presetName = "";
+    status = `saved preset: ${name}`;
+  }
+
+  function applyPreset(preset: DevelopPreset) {
+    adjustments = scaleAdjustments(preset.adjustments, presetAmount);
+    settleAdjustTimers();
+    clearRegion();
+    const targets = presetSync ? selectedIds.filter((id) => id !== fileId) : [];
+    void saveEdits(fileId, adjustments).catch(() => {});
+    for (const id of targets) void saveEdits(id, adjustments).catch(() => {});
+    void renderPreview();
+    if (targets.length > 0) {
+      void onFilesChanged();
+      status = `preset "${preset.name}" applied to ${targets.length + 1} photos`;
+    } else {
+      status = `applied preset: ${preset.name}`;
+    }
+  }
+
+  function applyNamedPreset(name: string) {
+    activePreset = name;
+    const preset = presets.find((entry) => entry.name === name);
+    if (preset) applyPreset(preset);
+  }
+
+  function deleteActivePreset() {
+    if (!activePreset) return;
+    presets = removePreset(presets, activePreset);
+    savePresets(presets);
+    status = `removed preset: ${activePreset}`;
+    activePreset = "";
+  }
+
   /// Write an image (JPEG, or lossless TIFF when the name ends in .tif/.tiff)
   /// of the current preview with the adjustments applied. The original and its
   /// sidecars are never touched.
@@ -1463,6 +1539,55 @@
               <span class="val">{adjustments[c.key].toFixed(2)}</span>
             </div>
           {/each}
+          <div class="row">
+            <label for="adj-preset">Preset</label>
+            <select
+              id="adj-preset"
+              bind:value={activePreset}
+              onchange={(e) => applyNamedPreset(e.currentTarget.value)}
+            >
+              <option value="">Preset…</option>
+              {#each presets as preset (preset.name)}
+                <option value={preset.name}>{preset.name}</option>
+              {/each}
+            </select>
+            <button
+              class="mini"
+              onclick={deleteActivePreset}
+              disabled={!activePreset}
+              title="Delete the selected preset"
+            >
+              Del
+            </button>
+          </div>
+          <div class="row">
+            <label for="adj-amount">Amount</label>
+            <input id="adj-amount" type="range" min="0" max="2" step="0.05" bind:value={presetAmount} />
+            <span class="val">{Math.round(presetAmount * 100)}%</span>
+          </div>
+          <div class="row">
+            <label for="adj-sync">Sync</label>
+            <input
+              id="adj-sync"
+              type="checkbox"
+              bind:checked={presetSync}
+              disabled={selectedIds.length < 2}
+              title="Also save the preset to the grid selection"
+            />
+            <span class="val">{selectedIds.length}</span>
+          </div>
+          <div class="row">
+            <label for="adj-preset-name">Save as</label>
+            <input
+              id="adj-preset-name"
+              placeholder="preset name"
+              bind:value={presetName}
+              onkeydown={(e) => e.key === "Enter" && saveCurrentPreset()}
+            />
+            <button class="mini" onclick={saveCurrentPreset} disabled={!presetName.trim()}>
+              Save
+            </button>
+          </div>
           <p class="status">Saved per photo — originals and sidecars are untouched.</p>
           <div class="row end">
             <button class="mini" onclick={exportEditedImage}>Export image…</button>

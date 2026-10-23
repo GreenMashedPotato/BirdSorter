@@ -115,7 +115,7 @@ roughly describes the code surface.
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
-| 15 | Presets with amount, copy/paste/sync settings | LightCraft `develop/src/presets.rs` | P2 | Medium |
+| 15 | 🟡 Presets with amount and selection sync (0–200 % shipped 2026-10-23; partial groups open) | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
 | 18 | Export: richer tokens, resize modes, output sharpening, watermark, metadata policy | LightCraft `engine/src/export.rs`, `rename.rs` | P2 | Small |
@@ -684,6 +684,13 @@ LightCraft `develop/src/presets.rs`:
 - One undo step per paste/sync.
 
 For culling, "apply this look to the burst/shoot" is the practical use.
+
+**Shipped (2026-10-23):** the Adjust panel saves named presets locally
+(validated JSON, values clamped to the slider ranges, 16 presets), applies
+them at **0–200 %** with every control clamped, and **Sync** writes the applied
+look to the grid selection as well as the open photo (one `save_edits` per
+file). Copy/paste and reset already existed. Still open: partial preset groups
+(e.g. tone only) and one undo step per sync.
 
 ### 6.7 Other adjustments, lower priority
 

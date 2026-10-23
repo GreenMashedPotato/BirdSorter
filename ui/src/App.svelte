@@ -1494,6 +1494,7 @@
     <Review
       fileId={reviewFile}
       ids={visible.map((f) => f.id)}
+      selectedIds={[...selected]}
       {burstGroups}
       rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
       flag={files.find((f) => f.id === reviewFile)?.flag ?? null}
