@@ -560,6 +560,7 @@ on a 28-core Windows box.
 | ✅ **Grid keyboard navigation** — arrows move a visible cursor (scrolling the virtualized grid to follow), Space toggles selection, Enter opens the review, Home/End jump to row ends | new |
 | ✅ **Label-based filters** — *My keepers*, *My rejects*, *Unlabelled* chips (the existing chips filter by *predicted* verdict) | new |
 | ✅ **1:1 zoom** — a button that scales the preview to actual pixels (`ZOOM_MAX` raised to 16×) | new |
+| ✅ **Windowed 1:1 (2026-10-22)** — above native pixels the review requests only the visible source window via `preview_region` (256 px grid + 256 px margin), reuses it while panning, and overlays the sharp crop on the base preview. The backend caches one decoded preview (content hash + mode + cache version), crops, applies the current adjustments and encodes JPEG; the thumbnail stand-in never triggers a window. Unit tests: 20×15 crop from a 64×48 source, a 4×8 clamp past the edge, and an opt-in real-CR3 run (`BIRDSORTER_TEST_RAW`, copy only) returning 512×512. | new |
 
 ### Blocked / partial
 

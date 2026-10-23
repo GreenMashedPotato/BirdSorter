@@ -242,6 +242,9 @@ folders. Scanning a folder includes all of its child folders.
 - an **EXIF strip** with camera, lens, ISO, shutter, aperture and focal length
   (missing fields are hidden),
 - the cached grid thumbnail appears instantly while the full preview renders,
+- **windowed 1:1**: once the image is drawn above actual pixels, only the
+  visible native window (snapped to a 256 px grid, with a 256 px margin) is
+  fetched and reused while panning, instead of shipping a whole high-res frame,
 - a **filmstrip** of nearby frames under the image — click one to open it,
 - **Auto-advance** (toggle in the review bar) opens the next photo after a label
   or rating; `S`/`B`/`R`/`O` label Sharp / Blurry / Reject / Bokeh OK;

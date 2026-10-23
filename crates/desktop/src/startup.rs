@@ -168,6 +168,7 @@ pub(crate) fn run() {
             cancel: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             open_request: Mutex::new(open_request),
+            region: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             library::list_folders,
@@ -178,6 +179,7 @@ pub(crate) fn run() {
             preview::thumbnail,
             preview::preview_image,
             preview::preview_adjusted,
+            preview::preview_region,
             preview::export_edited,
             analysis::analysis_detail,
             analysis::score_breakdown,

@@ -19,6 +19,7 @@
     labelFiles,
     previewImage,
     previewAdjusted,
+    previewRegion,
     removeSubject,
     setBurstWinner,
     setSpecies,
@@ -109,6 +110,8 @@
 
   let detail = $state<AnalysisDetail | null>(null);
   let previewUrl = $state("");
+  /// True once `previewUrl` is the base preview (not the thumbnail stand-in).
+  let previewIsBase = $state(false);
   let previewEl = $state<HTMLImageElement | undefined>(undefined);
   let natural = $state({ w: 1, h: 1 });
   let selectedBox = $state(0);
@@ -141,6 +144,93 @@
 
   const ZOOM_MIN = 1;
   const ZOOM_MAX = 16;
+
+  // --- windowed 1:1 rendering (only above native 1:1) ---------------------
+  const REGION_TILE = 256;
+  const REGION_MARGIN = 256;
+  const REGION_DEBOUNCE_MS = 80;
+  let regionUrl = $state("");
+  /// The source rectangle currently fetched.
+  let regionWindow = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  let regionTimer: ReturnType<typeof setTimeout> | undefined;
+  let regionRequest = 0;
+  /// Screen pixels per source pixel; > 1 means the preview is upscaled.
+  const sourceScale = $derived(
+    natural.w > 1 && fit.w > 0 ? (fit.w * zoom) / natural.w : 1,
+  );
+
+  function clearRegion() {
+    regionUrl = "";
+    regionWindow = null;
+    if (regionTimer) {
+      clearTimeout(regionTimer);
+      regionTimer = undefined;
+    }
+  }
+
+  /** Fetch the visible source rectangle (snapped to 256 px) when zoomed past 1:1. */
+  function updateRegion() {
+    if (!stageEl || !previewIsBase || !previewUrl || natural.w <= 1 || sourceScale <= 1.0001) {
+      clearRegion();
+      return;
+    }
+    const rect = stageEl.getBoundingClientRect();
+    const k = sourceScale;
+    const x0 = Math.max(0, -tx / k);
+    const y0 = Math.max(0, -ty / k);
+    const x1 = Math.min(natural.w, (rect.width - tx) / k);
+    const y1 = Math.min(natural.h, (rect.height - ty) / k);
+    if (x1 <= x0 || y1 <= y0) return;
+    // Reuse the fetched window while panning inside it.
+    if (
+      regionWindow &&
+      regionWindow.x <= x0 &&
+      regionWindow.y <= y0 &&
+      regionWindow.x + regionWindow.w >= x1 &&
+      regionWindow.y + regionWindow.h >= y1
+    ) {
+      return;
+    }
+    const x = Math.max(0, Math.floor(x0 / REGION_TILE) * REGION_TILE - REGION_MARGIN);
+    const y = Math.max(0, Math.floor(y0 / REGION_TILE) * REGION_TILE - REGION_MARGIN);
+    const right = Math.min(natural.w, Math.ceil(x1 / REGION_TILE) * REGION_TILE + REGION_MARGIN);
+    const bottom = Math.min(natural.h, Math.ceil(y1 / REGION_TILE) * REGION_TILE + REGION_MARGIN);
+    const w = right - x;
+    const h = bottom - y;
+    if (w <= 0 || h <= 0) return;
+    if (regionTimer) clearTimeout(regionTimer);
+    const request = ++regionRequest;
+    const id = fileId;
+    const mode = previewMode;
+    const snapshot = adjustments;
+    regionTimer = setTimeout(() => {
+      regionTimer = undefined;
+      void previewRegion(id, mode, x, y, w, h, snapshot)
+        .then((url) => {
+          if (request !== regionRequest || fileId !== id) return;
+          regionUrl = url;
+          regionWindow = { x, y, w, h };
+        })
+        .catch(() => {
+          /* the base preview stays as the fallback */
+        });
+    }, REGION_DEBOUNCE_MS);
+  }
+
+  $effect(() => {
+    // Track every input; updateRegion debounces and reuses the fetched window.
+    void zoom;
+    void tx;
+    void ty;
+    void fit;
+    void natural;
+    void previewUrl;
+    void previewIsBase;
+    void previewLoading;
+    void previewMode;
+    void adjustments;
+    updateRegion();
+  });
 
   /** Fit the image inside the stage (centred, scale 1) and optionally reset. */
   function computeFit(reset = true) {
@@ -717,6 +807,8 @@
     const request = ++reviewRequest;
     detail = null;
     previewUrl = "";
+    previewIsBase = false;
+    clearRegion();
     // Show the cached grid thumbnail immediately; the full render replaces it.
     void getThumbnail(id)
       .then((url) => {
@@ -841,6 +933,7 @@
 
   function setAdjustment(key: keyof Adjustments, value: number) {
     adjustments = { ...adjustments, [key]: value };
+    clearRegion();
     if (adjustTimer) clearTimeout(adjustTimer);
     // Coalesce slider drags into one render.
     adjustTimer = setTimeout(() => {
@@ -866,6 +959,7 @@
   function pasteAdjustments() {
     if (!adjustmentClipboard) return;
     adjustments = { ...adjustmentClipboard };
+    clearRegion();
     if (adjustTimer) {
       clearTimeout(adjustTimer);
       adjustTimer = undefined;
@@ -881,6 +975,7 @@
 
   function resetAdjustments() {
     adjustments = { ...DEFAULT_ADJUSTMENTS };
+    clearRegion();
     if (adjustTimer) {
       clearTimeout(adjustTimer);
       adjustTimer = undefined;
@@ -926,6 +1021,8 @@
         : await previewImage(id, previewMode);
       if (request !== reviewRequest || fileId !== id || render !== previewRender) return;
       previewUrl = nextPreview;
+      previewIsBase = true;
+      clearRegion();
     } catch (e) {
       if (request !== reviewRequest) return;
       status = `error: ${e}`;
@@ -1158,6 +1255,7 @@
     return () => {
       window.removeEventListener("keydown", onKeydown);
       if (adjustTimer) clearTimeout(adjustTimer);
+      if (regionTimer) clearTimeout(regionTimer);
       if (editSaveTimer) {
         // Closing within the debounce must not drop the last slider move.
         clearTimeout(editSaveTimer);
@@ -1412,6 +1510,15 @@
                 if (showHistogram) buildHistogram();
               }}
             />
+            {#if regionUrl && regionWindow}
+              <img
+                class="region"
+                src={regionUrl}
+                alt=""
+                draggable="false"
+                style="left:{regionWindow.x * sourceScale}px; top:{regionWindow.y * sourceScale}px; width:{regionWindow.w * sourceScale}px; height:{regionWindow.h * sourceScale}px"
+              />
+            {/if}
             {#if peakingOn}
               <canvas class="peaking" bind:this={peakingCanvas}></canvas>
             {/if}

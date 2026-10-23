@@ -18,16 +18,17 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v18**; **336 Rust + 126 UI tests**; clippy clean.
+- SQLite schema **v18**; **338 Rust + 126 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches + all/any/none smart collections,
   ratings/flags/colours + Ctrl+Z undo,
-  auto-advance, similarity-aware burst grouping + bracket detection, preview
-  adjustments (exposure/contrast/shadows/highlights/WB/vibrance/saturation/
-  clarity/dehaze/denoise), copy/paste, JPEG/TIFF export.
+  auto-advance, similarity-aware burst grouping + bracket detection, windowed
+  1:1 preview above native pixels, preview adjustments (exposure/contrast/
+  shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
+  JPEG/TIFF export.
 - Guided-filter clarity and dehaze shipped 2026-10-22 (see `implemented.md`).
 - The main product decision for multi-folder is settled: the **last-clicked
   folder is primary**; Analyze/Re-score/Keep burst winners/Auto-star/Reset
@@ -100,9 +101,12 @@ each slice end-to-end.
 ~~1. Guided-filter clarity/dehaze~~ — **shipped 2026-10-22** (clarity base and
    dehaze transmission refinement; flat-field and step-edge tests; the base
    render is unchanged, so no cache-version bump).
-2. **Windowed 1:1 rendering.** Design first: fetch/render only the visible
-   region at 100% when zoomed, snap to a 256 px grid, reuse the window while
-   panning. Needs a region command + cache key; ask if the UX fork is unclear.
+~~2. Windowed 1:1 rendering~~ — **shipped 2026-10-22** (decision: only above
+   native 1:1). `preview_region` crops the visible window from one cached
+   decoded base preview (256 px grid + 256 px margin), reuses it while panning
+   and applies the current adjustments; the review overlays it on the base
+   preview. Still open: a max window/GPU texture cap and a dedicated develop
+   source.
 ~~3. RAW preview extraction~~ — **shipped 2026-10-22** (classic TIFF + BigTIFF
    IFD/SubIFD walk, `JPEGInterchangeFormat`, JPEG strips, `JpgFromRaw` blobs,
    Fuji RAF fixed header, Nikon PreviewIFD and Olympus CameraSettings maker
