@@ -220,7 +220,11 @@ analysis progress.
 A search box accepts free text (filename or species) and tokens such as
 `rating:>3`, `flag:pick`, `label:sharp`, `verdict:uncertain`, `species:egret`
 and `name:5260`. **Save** keeps the current query; pick it from **Saved
-searches** to reapply it, and **Forget** removes it.
+searches** to reapply it, and **Forget** removes it. **Smart collections**
+combine rules into **All** / **Any** / **None** groups (one rule per line):
+pick one from **Smart collection…** to filter the grid, or **Edit…** to create,
+rename, delete or clear one. They are stored locally with the rest of the UI
+state.
 
 **Ctrl/Cmd-click folders** in the sidebar to view several at once. The last one
 clicked is the **primary**: Analyze, Re-score, Keep burst winners, Auto-star,

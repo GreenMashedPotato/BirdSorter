@@ -40,8 +40,9 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 ## UX & features
 
-- ⬜ **Smart collections** — saved searches are in place; nested all/any/none
-  rule sets and a library-wide view remain.
+- ⬜ **Library-wide smart collections** — all/any/none rule sets, an inline
+  editor and per-folder filtering are in place; a library-wide view (and
+  server-side SQL evaluation) remains.
 
 ## Packaging & distribution
 

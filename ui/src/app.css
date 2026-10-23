@@ -209,6 +209,25 @@ input {
   color: var(--text);
   font-size: 12px;
 }
+.collection-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  align-items: flex-start;
+}
+.collection-editor textarea {
+  flex: 1 1 180px;
+  min-height: 36px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
 .sortsel {
   padding: 3px 8px;
   border-radius: 6px;

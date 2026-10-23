@@ -18,12 +18,13 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v18**; **336 Rust + 120 UI tests**; clippy clean.
+- SQLite schema **v18**; **336 Rust + 126 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
-  token search + saved searches, ratings/flags/colours + Ctrl+Z undo,
+  token search + saved searches + all/any/none smart collections,
+  ratings/flags/colours + Ctrl+Z undo,
   auto-advance, similarity-aware burst grouping + bracket detection, preview
   adjustments (exposure/contrast/shadows/highlights/WB/vibrance/saturation/
   clarity/dehaze/denoise), copy/paste, JPEG/TIFF export.
@@ -114,8 +115,10 @@ each slice end-to-end.
    mean-subtracted luminance signature + mean luma per analysis (schema v18),
    time + 0.75-correlation grouping with time-only fallback for old rows, and a
    ≥3-frame / ≥1 EV bracket flag with the EV span exposed in the UI and CLI.
-5. **Smart-collection rule groups.** Extend saved searches into `all`/`any`/
-   `none` rule sets; pure evaluator + tests; persist JSON; add an editor.
+~~5. Smart-collection rule groups~~ — **shipped 2026-10-22** (client-side):
+   saved searches extend into all/any/none groups with a compiled evaluator,
+   validated JSON in `localStorage`, an inline create/rename/delete editor and
+   per-folder filtering. Still open: a library-wide view and SQL evaluation.
 6. **XMP keywords/labels + import existing ratings at scan.** Byte-preserving
    merge, back up unreadable sidecars, resolve stem-vs-full naming.
 7. **Model identity per analysis.** Store detector/species identity/hash; mark

@@ -20,9 +20,10 @@ _Snapshot taken 2026-10-22 against the current `raw-sorter-app` tree (schema v18
 > saved searches, shows several folders together with the last-clicked one as the
 > action target, stores previews in a sharded cache, opens the already-migrated DB
 > for read-only commands, supports colour labels (`6`–`9`), undoes labels,
-> ratings, flags and colours with Ctrl+Z, and groups bursts by an 8×8 luminance
-> signature as well as time, flagging exposure brackets. The analysis below still
-> describes the rest of the snapshot.
+> ratings, flags and colours with Ctrl+Z, groups bursts by an 8×8 luminance
+> signature as well as time (flagging exposure brackets), and extends saved
+> searches into all/any/none smart collections with an inline editor. The
+> analysis below still describes the rest of the snapshot.
 
 This document compares BirdSorter with the other Rust projects in
 `C:\Users\PC\Documents\Projects\Rust` and lists concrete improvements worth
@@ -104,7 +105,7 @@ roughly describes the code surface.
 | 5 | Windowed 1:1 rendering instead of whole-frame high-res | LightCraft `ui-egui/src/region.rs` | P1 | Medium |
 | 6 | EXIF panel in grid/review | LightCraft `crates/meta` | P1 | Small |
 | 7 | Filmstrip, Survey/Compare/Reference, auto-advance, flags, colour labels | LightCraft `panels/compare.rs` | P1 | Medium |
-| 8 | Search token grammar and smart collections | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
+| 8 | ✅ Search token grammar and smart collections (client-side all/any/none shipped 2026-10-22) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
 | 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
 | 11 | Camera AF-point overlay (start Sony, then Canon/Nikon) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
@@ -455,6 +456,13 @@ LightCraft `catalog/src/rules.rs` is a complete smart-album model:
 For birds, the highest-value rules are species, rating, verdict, ISO, camera,
 lens, date, burst membership, and label. Store them in SQLite as JSON and
 re-query with SQL or in-memory filtering.
+
+**Shipped (2026-10-22, client-side):** saved searches now extend into
+`all` / `any` / `none` rule groups (one search query per line), with a compiled
+evaluator, validated JSON in `localStorage`, an inline create/rename/delete
+editor and per-folder filtering. `any` empty means "no constraint" and empty
+collections are rejected. Still open: nested groups, server-side SQL
+evaluation, `describe()`/`check()` summaries and a library-wide view.
 
 ### 5.3 EXIF panel
 

@@ -144,6 +144,16 @@ state and open work, see [progress.md](./progress.md) and
 - **Saved searches**: the search box can save the current query (persisted,
   newest first, capped at 12) and reapply it from the Saved searches menu;
   Forget removes it.
+- **Smart collections (2026-10-22)**: saved searches extend into
+  **All** / **Any** / **None** rule groups (one search query per line). An inline
+  editor creates, renames, deletes and clears them; the selection filters the
+  grid on top of the normal search/chips, and the set is persisted as validated
+  JSON in `localStorage` (newest first, capped at 12, 16 rules per group, empty
+  collections rejected). The evaluator compiles each rule once and applies
+  `all.every && (any.empty || any.some) && none.every(!)`. Unit tests cover the
+  semantics, persistence, sanitising, caps, replace/rename and removal; a
+  FilterBar test covers applying a collection and saving an editor draft.
+  Library-wide evaluation remains open.
 - **Multi-folder view**: Ctrl/Cmd-click folders to show them together; the last
   clicked is the primary action target (sidebar badge + "Actions target" note +
   folder-named status text). Queries merge folders into one global worst-first

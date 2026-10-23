@@ -58,9 +58,15 @@
   import { parseSearch } from "./lib/search";
   import {
     addSavedSearch,
+    compileCollection,
     loadSavedSearches,
+    loadSmartCollections,
     removeSavedSearch,
+    removeSmartCollection,
     saveSavedSearches,
+    saveSmartCollections,
+    upsertSmartCollection,
+    type SmartCollection,
   } from "./lib/collections";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
@@ -97,6 +103,8 @@
   let search = $state("");
   let colorFilter = $state("");
   let savedSearches = $state<string[]>(loadSavedSearches());
+  let smartCollections = $state<SmartCollection[]>(loadSmartCollections());
+  let activeCollection = $state<SmartCollection | null>(null);
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -152,13 +160,17 @@
   let model = $state("");
 
   const searchMatches = $derived(parseSearch(search));
+  const collectionMatches = $derived(
+    activeCollection ? compileCollection(activeCollection) : () => true,
+  );
   const visible = $derived(
     sortFiles(
       files.filter(
         (f) =>
           (filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter)) &&
           (!colorFilter || f.color === colorFilter) &&
-          searchMatches(f),
+          searchMatches(f) &&
+          collectionMatches(f),
       ),
       sort,
     ),
@@ -1005,6 +1017,25 @@
     status = `removed saved search: ${query}`;
   }
 
+  function applyCollection(collection: SmartCollection | null) {
+    activeCollection = collection;
+    status = collection ? `collection: ${collection.name}` : "collection cleared";
+  }
+
+  function saveCollection(collection: SmartCollection) {
+    smartCollections = upsertSmartCollection(smartCollections, collection);
+    saveSmartCollections(smartCollections);
+    if (activeCollection?.name === collection.name) activeCollection = collection;
+    status = `saved collection: ${collection.name}`;
+  }
+
+  function deleteCollection(name: string) {
+    smartCollections = removeSmartCollection(smartCollections, name);
+    saveSmartCollections(smartCollections);
+    if (activeCollection?.name === name) activeCollection = null;
+    status = `removed collection: ${name}`;
+  }
+
   // A new search changes the virtualized list; return to the top.
   let lastSearch = "";
   $effect(() => {
@@ -1331,11 +1362,16 @@
       {sort}
       bind:search
       {savedSearches}
+      collections={smartCollections}
+      {activeCollection}
       bind:colorFilter
       onSort={changeSort}
       onSaveSearch={saveSearch}
       onApplySearch={applySavedSearch}
       onDeleteSearch={deleteSavedSearch}
+      onApplyCollection={applyCollection}
+      onSaveCollection={saveCollection}
+      onDeleteCollection={deleteCollection}
       shown={visible.length}
       selectedCount={selected.size}
       onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
