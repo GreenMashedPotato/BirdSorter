@@ -100,7 +100,7 @@ docs/             Long-form documentation (architecture, rules, status, models)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 309 unit tests
+cargo test --workspace          # 350 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -109,6 +109,7 @@ cargo run -p birdsorter-cli -- hash shot.cr3
 cargo run -p birdsorter-cli -- genimage /tmp/shoot/shot1.jpg
 cargo run -p birdsorter-cli -- analyze /tmp/shoot --no-detect
 cargo run -p birdsorter-cli -- list /tmp/shoot
+cargo run -p birdsorter-cli -- contact /tmp/shoot /tmp/sheet.jpg --cols 4 --size 360
 
 # with a real detector (needs a YOLO ONNX export):
 cargo run -p birdsorter-cli -- analyze /tmp/shoot --model yolo11n.onnx

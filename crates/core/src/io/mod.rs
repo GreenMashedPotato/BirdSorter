@@ -2,6 +2,7 @@
 
 pub mod adjust;
 pub mod cache;
+pub mod contact_sheet;
 pub mod decoder;
 pub mod develop;
 pub mod disk;
