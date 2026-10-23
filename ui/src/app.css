@@ -858,6 +858,17 @@ input {
   border-radius: 4px;
   color: var(--muted);
 }
+.adjust .group-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 11px;
+}
+.adjust .group-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 
 /* Luminance histogram: a small overlay in the preview's corner. */
 .histogram {

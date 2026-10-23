@@ -311,10 +311,10 @@ and restored when you come back, **Copy**/**Paste** carry a look from one photo 
 another (the clipboard survives closing the review), and **Export image…** writes
 the adjusted preview as JPEG or lossless TIFF (by the chosen extension) at the
 current resolution. **Named presets** store a look and reapply it at 0–200 %
-(use the **Amount** slider); **Sync** also saves it to the selected photos.
-Everything stays
-**non-destructive** — stored scores,
-labels, XMP sidecars and the original file are untouched.
+(use the **Amount** slider); choose which groups (tone / colour / detail /
+dehaze) a preset carries, and **Sync** also saves it to the selected photos.
+Everything stays **non-destructive** — stored scores, labels, XMP sidecars and
+the original file are untouched.
 
 The first-run setup asks whether you want **Fast** (analysis resolution) or
 **Detailed** (native camera preview) previews. The choice is remembered, and the

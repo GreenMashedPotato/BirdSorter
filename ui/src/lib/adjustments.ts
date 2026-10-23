@@ -91,6 +91,50 @@ export function scaleAdjustments(adjustments: Adjustments, amount: number): Adju
   return out;
 }
 
+/** The settings groups a preset can carry. */
+export const PRESET_GROUPS = ["tone", "colour", "detail", "dehaze"] as const;
+export type PresetGroup = (typeof PRESET_GROUPS)[number];
+
+/**
+ * Merge only `groups` from `preset` (scaled by `amount`) into `current`, leaving
+ * the other groups untouched. This is what makes a "tone only" look possible.
+ */
+export function applyGroups(
+  current: Adjustments,
+  preset: Adjustments,
+  groups: PresetGroup[],
+  amount: number,
+): Adjustments {
+  const scaled = scaleAdjustments(preset, amount);
+  const out = clampAdjustments(current);
+  for (const group of groups) {
+    switch (group) {
+      case "tone":
+        out.exposure = scaled.exposure;
+        out.contrast = scaled.contrast;
+        out.shadows = scaled.shadows;
+        out.highlights = scaled.highlights;
+        out.curve = [...scaled.curve];
+        break;
+      case "colour":
+        out.temperature = scaled.temperature;
+        out.tint = scaled.tint;
+        out.vibrance = scaled.vibrance;
+        out.saturation = scaled.saturation;
+        break;
+      case "detail":
+        out.clarity = scaled.clarity;
+        out.denoise = scaled.denoise;
+        out.defringe = scaled.defringe;
+        break;
+      case "dehaze":
+        out.dehaze = scaled.dehaze;
+        break;
+    }
+  }
+  return out;
+}
+
 /**
  * The last copied adjustment set, persisted in the webview so it survives
  * closing the review. Old clips may predate a control (e.g. dehaze or the

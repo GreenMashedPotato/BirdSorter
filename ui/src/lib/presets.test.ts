@@ -12,10 +12,12 @@ import {
   upsertPreset,
   type DevelopPreset,
 } from "./presets";
+import { applyGroups, PRESET_GROUPS } from "./adjustments";
 
 const warm: DevelopPreset = {
   name: "Warm",
   adjustments: { ...DEFAULT_ADJUSTMENTS, exposure: 0.4, temperature: 0.3, shadows: 0.2 },
+  groups: ["tone", "colour"],
 };
 
 beforeEach(() => localStorage.clear());
@@ -39,10 +41,16 @@ describe("develop presets", () => {
     expect(loadPresets()).toEqual([]);
   });
 
+  it("gives legacy presets every group", () => {
+    savePresets([{ name: "Legacy", adjustments: warm.adjustments }]);
+    expect(loadPresets()[0].groups).toEqual([...PRESET_GROUPS]);
+  });
+
   it("caps the number of presets and keeps the newest", () => {
     const many = Array.from({ length: MAX_PRESETS + 4 }, (_, i) => ({
       name: `P${i}`,
       adjustments: { ...DEFAULT_ADJUSTMENTS, contrast: 0.1 * (i + 1) },
+      groups: [...PRESET_GROUPS],
     }));
     savePresets(many);
     const loaded = loadPresets();
@@ -98,6 +106,29 @@ describe("develop presets", () => {
     // A stored non-monotonic curve is clamped, never inverted.
     expect(clampCurve([0, 0.9, 0.4, 0.8, 1])).toEqual([0, 0.9, 0.9, 0.9, 1]);
     expect(isNeutral(lifted)).toBe(false);
+  });
+
+  it("applies only a preset's groups", () => {
+    const current = {
+      ...DEFAULT_ADJUSTMENTS,
+      exposure: 0.2,
+      temperature: -0.4,
+      clarity: 0.5,
+    };
+    const preset = {
+      ...DEFAULT_ADJUSTMENTS,
+      exposure: 1,
+      temperature: 0.8,
+      clarity: -0.6,
+    };
+    const toneOnly = applyGroups(current, preset, ["tone"], 1);
+    expect(toneOnly.exposure).toBe(1);
+    expect(toneOnly.temperature).toBe(-0.4);
+    expect(toneOnly.clarity).toBe(0.5);
+    const detail = applyGroups(current, preset, ["detail"], 0.5);
+    expect(detail.clarity).toBe(-0.3);
+    expect(detail.exposure).toBe(0.2);
+    expect(detail.temperature).toBe(-0.4);
   });
 
   it("clamps stored values to slider ranges", () => {

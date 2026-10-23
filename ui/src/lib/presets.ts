@@ -1,5 +1,10 @@
 import type { Adjustments } from "./api";
-import { clampAdjustments, isNeutral } from "./adjustments";
+import {
+  clampAdjustments,
+  isNeutral,
+  PRESET_GROUPS,
+  type PresetGroup,
+} from "./adjustments";
 
 export {
   clampAdjustments,
@@ -15,6 +20,24 @@ export const MAX_PRESETS = 16;
 export interface DevelopPreset {
   name: string;
   adjustments: Adjustments;
+  /** Which settings groups this preset carries (legacy presets: all). */
+  groups: PresetGroup[];
+}
+
+/** Keep known, unique groups; missing or empty means the legacy "all". */
+function cleanGroups(value: unknown): PresetGroup[] {
+  if (!Array.isArray(value)) return [...PRESET_GROUPS];
+  const out: PresetGroup[] = [];
+  for (const item of value) {
+    if (
+      typeof item === "string" &&
+      (PRESET_GROUPS as readonly string[]).includes(item) &&
+      !out.includes(item as PresetGroup)
+    ) {
+      out.push(item as PresetGroup);
+    }
+  }
+  return out.length > 0 ? out : [...PRESET_GROUPS];
 }
 
 function cleanPreset(value: unknown): DevelopPreset | null {
@@ -25,7 +48,7 @@ function cleanPreset(value: unknown): DevelopPreset | null {
   const adjustments = clampAdjustments(record.adjustments as Partial<Adjustments>);
   // A neutral preset does nothing; do not keep one.
   if (isNeutral(adjustments)) return null;
-  return { name, adjustments };
+  return { name, adjustments, groups: cleanGroups(record.groups) };
 }
 
 function dedupe(values: unknown[]): DevelopPreset[] {
@@ -50,7 +73,7 @@ export function loadPresets(): DevelopPreset[] {
   }
 }
 
-export function savePresets(presets: DevelopPreset[]): void {
+export function savePresets(presets: unknown[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(dedupe(presets)));
   } catch {
