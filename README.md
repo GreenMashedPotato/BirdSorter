@@ -71,9 +71,11 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
 - **Grid thumbnails** use the camera's embedded preview. For CR3 the compact
   `PRVW` JPEG (≈1620×1080, 77 KB on an R5) is read from the first 2 MiB instead
   of decoding the ≈24 MB full-size JPEG track; for TIFF-based RAWs (NEF/ARW/DNG)
-  the IFD chain and SubIFDs are walked with bounded random-access reads and the
-  smallest embedded JPEG that covers the request is extracted. Analysis still
-  decodes at 2400 px.
+  the IFD chain and SubIFDs are walked with bounded random-access reads, and
+  Fuji RAF, Nikon PreviewIFD, Olympus CameraSettings and `JpgFromRaw` blobs are
+  handled too. The extracted JPEG is the smallest one that covers the request
+  and matches the largest preview's aspect ratio and component count. Analysis
+  still decodes at 2400 px.
 - HEIC is not supported yet (needs libheif; see `MACOS_TODO.md` for the macOS
   ImageIO path).
 

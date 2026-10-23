@@ -168,13 +168,16 @@ At minimum, wire this for Canon/Nikon/Sony/Fuji previews (the formats most bird
 photographers use) and make the fallback explicit instead of a failed call.
 
 **Status (2026-10-22):** CR3 reads the compact `PRVW`/`THMB` boxes from the first
-2 MiB, and TIFF-based RAWs (NEF/ARW/DNG) now use a bounded IFD/SubIFD walk that
-picks the smallest embedded JPEG covering the request, validates SOI/EOI and
-falls through to the next candidate (`RENDER_CACHE_VERSION` 3). Still open:
-Nikon MakerNote PreviewIFD, Olympus camera-settings previews, RAF fixed-header
-pointers, choosing after aspect-ratio checks, and colour-space handling
-(Adobe RGB). The working corpus has no NEF/ARW/DNG samples, so those formats are
-covered by synthetic containers rather than real files.
+2 MiB; TIFF-based RAWs (NEF/ARW/DNG) use a bounded IFD/SubIFD walk; Fuji RAF
+uses its fixed header; and `JpgFromRaw` blobs plus Nikon PreviewIFD and Olympus
+CameraSettings maker-note IFDs are handled (base-relative offsets). Candidates
+are validated by their DCT frame header, and the stand-in must match the largest
+preview's aspect (1 %) and component count (`RENDER_CACHE_VERSION` 4). Still
+open: colour-space handling (Nikon maker note / Exif / Adobe RGB interop),
+Sony's dynamic-range-optimizer flag, Fuji maker-note previews, and the
+Hasselblad uncompressed RGB preview. The working corpus has no NEF/ARW/DNG/RAF
+samples, so those formats are covered by synthetic containers rather than real
+files.
 
 **Why it matters:** faster grid/review opens, far less CPU per thumbnail, and
 correct colour when the camera preview is Adobe RGB.

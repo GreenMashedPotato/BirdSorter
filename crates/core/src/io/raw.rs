@@ -129,21 +129,20 @@ const TIFF_MAX_IFD_BYTES: u64 = 512 * 1024;
 const TIFF_MAX_VALUES: u64 = 4096;
 const TIFF_MAX_IFD_VISITS: usize = 64;
 const TIFF_MAX_SUBIFD_DEPTH: u8 = 3;
+/// Enough of a JPEG to reach its frame header (SOF) for validation and size.
+const JPEG_HEADER_BYTES: usize = 4096;
+/// Whole JPEGs can be stored as undefined-type tag values (`JpgFromRaw`).
+const UNDEFINED_JPEG_MIN: u64 = 1024;
 
 /// One embedded JPEG candidate: one or more byte ranges that reassemble into a
-/// JPEG, plus the dimensions the IFD declares.
+/// JPEG. Dimensions come from the JPEG frame header, not from the IFD (a
+/// `JpgFromRaw` blob's IFD dimensions describe the sensor image).
 #[derive(Debug, Clone)]
 struct PreviewCandidate {
     segments: Vec<(u64, u64)>,
-    width: u32,
-    height: u32,
 }
 
 impl PreviewCandidate {
-    fn long_edge(&self) -> u32 {
-        self.width.max(self.height)
-    }
-
     fn total(&self) -> u64 {
         self.segments
             .iter()
@@ -162,6 +161,16 @@ struct IfdFields {
     strip_offsets: Vec<u64>,
     strip_counts: Vec<u64>,
     sub_ifds: Vec<u64>,
+    /// Undefined-type values large enough to be a whole embedded JPEG.
+    raw_jpegs: Vec<(u64, u64)>,
+    /// The Exif MakerNote blob (offset, length), for maker-note previews.
+    maker_note: Option<(u64, u64)>,
+    /// Exif IFD pointer (0x8769), absolute.
+    exif_ifd: Option<u64>,
+    /// Nikon PreviewIFD pointer (0x0011), absolute.
+    preview_ifd: Option<u64>,
+    /// Olympus CameraSettings IFD pointer (0x2020), absolute.
+    camera_settings_ifd: Option<u64>,
 }
 
 /// Bounded random-access TIFF reader. Every read is size-checked before it
@@ -171,17 +180,30 @@ struct TiffReader<R> {
     len: u64,
     little: bool,
     big: bool,
+    /// Absolute offset that stored value offsets are relative to. Zero for a
+    /// TIFF file; a maker note's base when parsing its embedded IFD.
+    base: u64,
+}
+
+/// Read exactly `len` bytes at `offset`, refusing any range past the file end.
+fn read_exact_at<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+    offset: u64,
+    len: usize,
+) -> Option<Vec<u8>> {
+    if len == 0 || offset.checked_add(len as u64)? > file_len {
+        return None;
+    }
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).ok()?;
+    Some(buf)
 }
 
 impl<R: Read + Seek> TiffReader<R> {
     fn read_at(&mut self, offset: u64, len: usize) -> Option<Vec<u8>> {
-        if len == 0 || offset.checked_add(len as u64)? > self.len {
-            return None;
-        }
-        self.reader.seek(SeekFrom::Start(offset)).ok()?;
-        let mut buf = vec![0u8; len];
-        self.reader.read_exact(&mut buf).ok()?;
-        Some(buf)
+        read_exact_at(&mut self.reader, self.len, offset, len)
     }
 
     fn u16(&self, bytes: &[u8]) -> Option<u16> {
@@ -233,7 +255,7 @@ impl<R: Read + Seek> TiffReader<R> {
             } else {
                 self.u32(inline)? as u64
             };
-            self.read_at(offset, total as usize)?
+            self.read_at(offset.saturating_add(self.base), total as usize)?
         };
         let mut values = Vec::with_capacity(count as usize);
         for i in 0..count as usize {
@@ -250,8 +272,24 @@ impl<R: Read + Seek> TiffReader<R> {
         Some(values)
     }
 
-    /// Parse one IFD, returning its fields and the next-IFD offset.
-    fn read_ifd(&mut self, offset: u64) -> Option<(IfdFields, u64)> {
+    /// The byte range of a large BYTE/UNDEFINED value (a blob, not inline
+    /// numbers), without reading the blob itself.
+    fn entry_data(&self, typ: u16, count: u64, inline: &[u8]) -> Option<(u64, u64)> {
+        if !matches!(typ, 1 | 7) || count <= inline.len() as u64 {
+            return None;
+        }
+        let offset = if self.big {
+            self.u64(inline)?
+        } else {
+            self.u32(inline)? as u64
+        };
+        Some((offset.saturating_add(self.base), count))
+    }
+
+    /// Parse one IFD, returning its fields and the next-IFD offset. With
+    /// `olympus_settings`, tags 0x0101/0x0102 mean the CameraSettings preview
+    /// start/length rather than ImageLength/rows-per-strip.
+    fn read_ifd(&mut self, offset: u64, olympus_settings: bool) -> Option<(IfdFields, u64)> {
         let (count_size, entry_size, next_size) = if self.big {
             (8usize, 20usize, 8usize)
         } else {
@@ -285,15 +323,25 @@ impl<R: Read + Seek> TiffReader<R> {
             let inline = block.get(value_at..value_at + inline_size)?;
             match tag {
                 0x0100 => fields.width = first_u32(self.entry_values(typ, values_count, inline)),
+                0x0101 if olympus_settings => {
+                    fields.jpeg_offset = first_u64(self.entry_values(typ, values_count, inline))
+                        .map(|v| v.saturating_add(self.base));
+                }
                 0x0101 => {
                     fields.height = first_u32(self.entry_values(typ, values_count, inline));
+                }
+                0x0102 if olympus_settings => {
+                    fields.jpeg_len = first_u64(self.entry_values(typ, values_count, inline));
                 }
                 0x0103 => {
                     fields.compression = first_u32(self.entry_values(typ, values_count, inline));
                 }
                 0x0111 => {
                     if let Some(values) = self.entry_values(typ, values_count, inline) {
-                        fields.strip_offsets = values;
+                        fields.strip_offsets = values
+                            .into_iter()
+                            .map(|v| v.saturating_add(self.base))
+                            .collect();
                     }
                 }
                 0x0117 => {
@@ -303,16 +351,40 @@ impl<R: Read + Seek> TiffReader<R> {
                 }
                 0x014A => {
                     if let Some(values) = self.entry_values(typ, values_count, inline) {
-                        fields.sub_ifds = values;
+                        fields.sub_ifds = values
+                            .into_iter()
+                            .map(|v| v.saturating_add(self.base))
+                            .collect();
                     }
                 }
                 0x0201 => {
-                    fields.jpeg_offset = first_u64(self.entry_values(typ, values_count, inline));
+                    fields.jpeg_offset = first_u64(self.entry_values(typ, values_count, inline))
+                        .map(|v| v.saturating_add(self.base));
                 }
                 0x0202 => {
                     fields.jpeg_len = first_u64(self.entry_values(typ, values_count, inline));
                 }
-                _ => {}
+                0x8769 => {
+                    fields.exif_ifd = first_u64(self.entry_values(typ, values_count, inline))
+                        .map(|v| v.saturating_add(self.base));
+                }
+                0x0011 => {
+                    fields.preview_ifd = first_u64(self.entry_values(typ, values_count, inline))
+                        .map(|v| v.saturating_add(self.base));
+                }
+                0x2020 => {
+                    fields.camera_settings_ifd =
+                        first_u64(self.entry_values(typ, values_count, inline))
+                            .map(|v| v.saturating_add(self.base));
+                }
+                0x927C => fields.maker_note = self.entry_data(typ, values_count, inline),
+                _ => {
+                    if values_count > UNDEFINED_JPEG_MIN {
+                        if let Some(blob) = self.entry_data(typ, values_count, inline) {
+                            fields.raw_jpegs.push(blob);
+                        }
+                    }
+                }
             }
         }
         let next_at = count_size + count as usize * entry_size;
@@ -336,6 +408,177 @@ impl<R: Read + Seek> TiffReader<R> {
         }
         Some(bytes)
     }
+
+    /// Read just enough of a candidate to reach its JPEG frame header.
+    fn read_candidate_prefix(
+        &mut self,
+        candidate: &PreviewCandidate,
+        max: usize,
+    ) -> Option<Vec<u8>> {
+        let want = usize::try_from(candidate.total().min(max as u64)).ok()?;
+        let mut bytes = Vec::with_capacity(want);
+        for (offset, len) in &candidate.segments {
+            if bytes.len() >= want {
+                break;
+            }
+            let take = usize::try_from(*len).ok()?.min(want - bytes.len());
+            bytes.extend_from_slice(&self.read_at(*offset, take)?);
+        }
+        (bytes.len() == want).then_some(bytes)
+    }
+
+    /// Append preview candidates from a MakerNote. Nikon's PreviewIFD (0x0011)
+    /// and Olympus's CameraSettings (0x2020) hold their JPEG pointer relative to
+    /// the note's base, not the TIFF header.
+    fn collect_maker_note_previews(
+        &mut self,
+        offset: u64,
+        length: u64,
+        candidates: &mut Vec<PreviewCandidate>,
+    ) {
+        const MAX_MAKER_NOTE_BYTES: u64 = 2 * 1024 * 1024;
+        let Ok(read_len) = usize::try_from(length.min(MAX_MAKER_NOTE_BYTES)) else {
+            return;
+        };
+        let Some(note) = self.read_at(offset, read_len) else {
+            return;
+        };
+        let order_at = |at: usize| -> Option<bool> {
+            match note.get(at..at + 2)? {
+                b"II" => Some(true),
+                b"MM" => Some(false),
+                _ => None,
+            }
+        };
+        let read_u32 = |at: usize, little: bool| -> Option<u32> {
+            let bytes: [u8; 4] = note.get(at..at + 4)?.try_into().ok()?;
+            Some(if little {
+                u32::from_le_bytes(bytes)
+            } else {
+                u32::from_be_bytes(bytes)
+            })
+        };
+        let (little, base, ifd_at) = if note.starts_with(b"Nikon\0") {
+            if note.get(6) == Some(&1) {
+                (self.little, 0, offset + 8)
+            } else {
+                let Some(little) = order_at(10) else {
+                    return;
+                };
+                let Some(relative) = read_u32(14, little) else {
+                    return;
+                };
+                let base = offset + 10;
+                (little, base, base + u64::from(relative))
+            }
+        } else if note.starts_with(b"OLYMPUS\0") {
+            let little = order_at(8).unwrap_or(self.little);
+            (little, offset, offset + 12)
+        } else if note.starts_with(b"OM SYSTEM\0") {
+            let little = order_at(12).unwrap_or(self.little);
+            (little, offset, offset + 16)
+        } else if note.starts_with(b"OLYMP\0")
+            || note.starts_with(b"EPSON\0")
+            || note.starts_with(b"MINOL\0")
+            || note.starts_with(b"CAMER\0")
+            || note.starts_with(b"SANYO\0")
+        {
+            (self.little, 0, offset + 8)
+        } else if note.starts_with(b"Panasonic\0") {
+            (self.little, 0, offset + 12)
+        } else {
+            (self.little, 0, offset)
+        };
+
+        let mut note_reader = TiffReader {
+            reader: &mut self.reader,
+            len: self.len,
+            little,
+            big: false,
+            base,
+        };
+        let Some((fields, _)) = note_reader.read_ifd(ifd_at, false) else {
+            return;
+        };
+        if let Some(candidate) = preview_candidate(&fields, note_reader.len) {
+            candidates.push(candidate);
+        }
+        if let Some(preview_ifd) = fields.preview_ifd {
+            if let Some((preview, _)) = note_reader.read_ifd(preview_ifd, false) {
+                if let Some(candidate) = preview_candidate(&preview, note_reader.len) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        if let Some(settings_ifd) = fields.camera_settings_ifd {
+            if let Some((settings, _)) = note_reader.read_ifd(settings_ifd, true) {
+                if let Some(candidate) = preview_candidate(&settings, note_reader.len) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+}
+
+/// Parse the frame header of a baseline/progressive DCT JPEG: `(width, height,
+/// components)`. Lossless, arithmetic and hierarchical JPEGs are rejected, so a
+/// stray `FF D8` in other data is not mistaken for a preview.
+fn jpeg_frame(bytes: &[u8]) -> Option<(u32, u32, u8)> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2usize;
+    for _ in 0..4096 {
+        if *bytes.get(i)? != 0xFF {
+            return None;
+        }
+        while *bytes.get(i)? == 0xFF {
+            i += 1;
+        }
+        let marker = *bytes.get(i)?;
+        i += 1;
+        match marker {
+            0x01 | 0xD0..=0xD8 => continue,
+            0xD9 | 0xDA => return None,
+            0xC0..=0xC2 => {
+                let len = usize::from(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]));
+                if len < 8 {
+                    return None;
+                }
+                let precision = *bytes.get(i + 2)?;
+                let height = u16::from_be_bytes([*bytes.get(i + 3)?, *bytes.get(i + 4)?]) as u32;
+                let width = u16::from_be_bytes([*bytes.get(i + 5)?, *bytes.get(i + 6)?]) as u32;
+                let components = *bytes.get(i + 7)?;
+                if precision != 8 || width == 0 || height == 0 || components == 0 {
+                    return None;
+                }
+                return Some((width, height, components));
+            }
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
+            _ => {
+                let len = usize::from(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]));
+                if len < 2 {
+                    return None;
+                }
+                i = i.checked_add(len)?;
+            }
+        }
+    }
+    None
+}
+
+/// Whether `frame` looks like a copy of `reference`: same component count and an
+/// aspect ratio within 1 % (so a cropped or letterboxed thumbnail is not used as
+/// a stand-in for the full preview).
+fn similar_frame(frame: (u32, u32, u8), reference: (u32, u32, u8)) -> bool {
+    let (width, height, components) = frame;
+    let (ref_width, ref_height, ref_components) = reference;
+    if components != ref_components || width == 0 || height == 0 {
+        return false;
+    }
+    let lhs = u64::from(width) * u64::from(ref_height);
+    let rhs = u64::from(height) * u64::from(ref_width);
+    lhs.abs_diff(rhs) * 100 <= lhs
 }
 
 fn first_u32(values: Option<Vec<u64>>) -> Option<u32> {
@@ -347,14 +590,9 @@ fn first_u64(values: Option<Vec<u64>>) -> Option<u64> {
 }
 
 fn preview_candidate(fields: &IfdFields, file_len: u64) -> Option<PreviewCandidate> {
-    let width = fields.width?;
-    let height = fields.height?;
-    if width == 0 || height == 0 {
-        return None;
-    }
     let mut segments = Vec::new();
     if let (Some(offset), Some(length)) = (fields.jpeg_offset, fields.jpeg_len) {
-        if length >= 4 && offset.checked_add(length)? <= file_len {
+        if (4..=MAX_PREVIEW_BYTES).contains(&length) && offset.checked_add(length)? <= file_len {
             segments.push((offset, length));
         }
     }
@@ -372,14 +610,19 @@ fn preview_candidate(fields: &IfdFields, file_len: u64) -> Option<PreviewCandida
             segments.push((*offset, *length));
         }
     }
+    // Whole JPEGs stored as undefined-type tag values (`JpgFromRaw`).
+    if segments.is_empty() {
+        for (offset, length) in &fields.raw_jpegs {
+            if (4..=MAX_PREVIEW_BYTES).contains(length) && offset.checked_add(*length)? <= file_len
+            {
+                segments.push((*offset, *length));
+            }
+        }
+    }
     if segments.is_empty() {
         return None;
     }
-    let candidate = PreviewCandidate {
-        segments,
-        width,
-        height,
-    };
+    let candidate = PreviewCandidate { segments };
     let total = candidate.total();
     if !(4..=MAX_PREVIEW_BYTES).contains(&total) {
         return None;
@@ -440,8 +683,10 @@ fn tiff_preview_bytes<R: Read + Seek>(
         len,
         little,
         big,
+        base: 0,
     };
     let mut candidates = Vec::new();
+    let mut maker_note = None;
     let mut pending = vec![(first_ifd, 0u8)];
     let mut visited: Vec<u64> = Vec::new();
     while let Some((offset, depth)) = pending.pop() {
@@ -453,11 +698,17 @@ fn tiff_preview_bytes<R: Read + Seek>(
             continue;
         }
         visited.push(offset);
-        let Some((fields, next)) = tiff.read_ifd(offset) else {
+        let Some((fields, next)) = tiff.read_ifd(offset, false) else {
             continue;
         };
         if let Some(candidate) = preview_candidate(&fields, len) {
             candidates.push(candidate);
+        }
+        if maker_note.is_none() {
+            maker_note = fields.maker_note;
+        }
+        if let Some(exif) = fields.exif_ifd {
+            pending.push((exif, depth + 1));
         }
         if next != 0 {
             pending.push((next, depth));
@@ -466,38 +717,96 @@ fn tiff_preview_bytes<R: Read + Seek>(
             pending.push((sub, depth + 1));
         }
     }
+    if let Some((offset, length)) = maker_note {
+        tiff.collect_maker_note_previews(offset, length, &mut candidates);
+    }
     if candidates.is_empty() {
         return None;
     }
-    candidates.sort_by(|a, b| {
-        if request_long > 0 {
-            match (a.long_edge() >= request_long, b.long_edge() >= request_long) {
-                (true, true) => a
-                    .long_edge()
-                    .cmp(&b.long_edge())
-                    .then_with(|| a.total().cmp(&b.total())),
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (false, false) => b
-                    .long_edge()
-                    .cmp(&a.long_edge())
-                    .then_with(|| a.total().cmp(&b.total())),
-            }
-        } else {
-            b.long_edge()
-                .cmp(&a.long_edge())
-                .then_with(|| a.total().cmp(&b.total()))
-        }
-    });
+    // Validate each candidate's JPEG frame before choosing. This rejects
+    // non-JPEG blobs and gives the real dimensions (an IFD's width/height
+    // describe the sensor image, not a `JpgFromRaw` blob).
+    let mut framed: Vec<(PreviewCandidate, (u32, u32, u8))> = Vec::new();
     for candidate in candidates {
-        let Some(bytes) = tiff.read_candidate(&candidate) else {
+        if let Some(prefix) = tiff.read_candidate_prefix(&candidate, JPEG_HEADER_BYTES) {
+            if let Some(frame) = jpeg_frame(&prefix) {
+                framed.push((candidate, frame));
+            }
+        }
+    }
+    if framed.is_empty() {
+        return None;
+    }
+    // The largest JPEG is the reference. A stand-in must look like a copy of it
+    // (same aspect within 1 %, same component count), so a cropped thumbnail, a
+    // grey mask or a depth map is not picked just because it is smaller.
+    let reference = framed
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (candidate, _))| candidate.total())
+        .map(|(i, _)| i)?;
+    let reference_frame = framed[reference].1;
+    let mut order: Vec<usize> = if request_long > 0 {
+        let mut covering: Vec<usize> = framed
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, frame))| {
+                frame.0.max(frame.1) >= request_long && similar_frame(*frame, reference_frame)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        covering.sort_by_key(|&i| {
+            let (candidate, frame) = &framed[i];
+            (frame.0.max(frame.1), candidate.total())
+        });
+        if covering.is_empty() {
+            vec![reference]
+        } else {
+            covering
+        }
+    } else {
+        vec![reference]
+    };
+    if !order.contains(&reference) {
+        order.push(reference);
+    }
+    for index in order {
+        let Some(bytes) = tiff.read_candidate(&framed[index].0) else {
             continue;
         };
-        if is_jpeg(&bytes) {
+        if is_jpeg(&bytes) && jpeg_frame(&bytes).is_some() {
             return Some(trim_eoi(&bytes).to_vec());
         }
     }
     None
+}
+
+/// Fujifilm RAF: the embedded JPEG is located by two big-endian `u32`s at byte
+/// 84 (offset) and 88 (length) of the fixed header, independent of the raw IFD.
+fn raf_preview_bytes<R: Read + Seek>(reader: &mut R, len: u64) -> Option<Vec<u8>> {
+    const RAF_HEADER_BYTES: usize = 108;
+    if len < RAF_HEADER_BYTES as u64 {
+        return None;
+    }
+    let header = read_exact_at(reader, len, 0, RAF_HEADER_BYTES)?;
+    if !header.starts_with(b"FUJIFILMCCD-RAW") {
+        return None;
+    }
+    let be32 = |at: usize| -> Option<u64> {
+        let bytes: [u8; 4] = header.get(at..at + 4)?.try_into().ok()?;
+        Some(u32::from_be_bytes(bytes) as u64)
+    };
+    let offset = be32(84)?;
+    let length = be32(88)?;
+    if !(4..=MAX_PREVIEW_BYTES).contains(&length) || offset.checked_add(length)? > len {
+        return None;
+    }
+    let bytes = read_exact_at(reader, len, offset, usize::try_from(length).ok()?)?;
+    if is_jpeg(&bytes) && jpeg_frame(&bytes).is_some() {
+        Some(trim_eoi(&bytes).to_vec())
+    } else {
+        None
+    }
 }
 
 fn is_tiff_header(bytes: &[u8]) -> bool {
@@ -525,6 +834,10 @@ pub fn embedded_preview(path: &Path, request_long: u32) -> Option<DynamicImage> 
             .ok()?;
         let jpeg = cr3_preview_jpeg(&prefix)?;
         return image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok();
+    }
+    if header.starts_with(b"FUJIFILMCCD-RAW") {
+        let jpeg = raf_preview_bytes(&mut file, len)?;
+        return image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).ok();
     }
     if !is_tiff_header(header) {
         return None;
@@ -599,6 +912,17 @@ mod tests {
         });
         let mut out = Vec::new();
         image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), ImageOutputFormat::Jpeg(85))
+            .unwrap();
+        out
+    }
+
+    fn tiny_gray_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let img = image::GrayImage::from_fn(width, height, |x, y| {
+            image::Luma([((x * 7 + y * 13) % 256) as u8])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageLuma8(img)
             .write_to(&mut Cursor::new(&mut out), ImageOutputFormat::Jpeg(85))
             .unwrap();
         out
@@ -683,6 +1007,12 @@ mod tests {
         compression: Option<u16>,
         jpeg: Option<Vec<u8>>,
         strip: Option<Vec<u8>>,
+        /// A whole JPEG stored as an undefined-type tag (`JpgFromRaw`).
+        blob: Option<Vec<u8>>,
+        /// Exif IFD pointer.
+        exif: Option<usize>,
+        /// A MakerNote blob.
+        maker_note: Option<Vec<u8>>,
         subs: Vec<usize>,
         next: Option<usize>,
     }
@@ -829,6 +1159,9 @@ mod tests {
             2 + ifd.compression.is_some() as usize
                 + if ifd.jpeg.is_some() { 2 } else { 0 }
                 + if ifd.strip.is_some() { 2 } else { 0 }
+                + if ifd.blob.is_some() { 1 } else { 0 }
+                + if ifd.exif.is_some() { 1 } else { 0 }
+                + if ifd.maker_note.is_some() { 1 } else { 0 }
                 + if ifd.subs.is_empty() { 0 } else { 1 }
         };
         let block_len = |ifd: &TestIfd| {
@@ -850,18 +1183,28 @@ mod tests {
         }
         let mut jpeg_at = vec![0usize; ifds.len()];
         let mut strip_at = vec![0usize; ifds.len()];
-        let mut blob_at = at;
+        let mut raw_at = vec![0usize; ifds.len()];
+        let mut note_at = vec![0usize; ifds.len()];
+        let mut data_at = at;
         for (i, ifd) in ifds.iter().enumerate() {
             if let Some(jpeg) = &ifd.jpeg {
-                jpeg_at[i] = blob_at;
-                blob_at = (blob_at + jpeg.len() + 3) & !3;
+                jpeg_at[i] = data_at;
+                data_at = (data_at + jpeg.len() + 3) & !3;
             }
             if let Some(strip) = &ifd.strip {
-                strip_at[i] = blob_at;
-                blob_at = (blob_at + strip.len() + 3) & !3;
+                strip_at[i] = data_at;
+                data_at = (data_at + strip.len() + 3) & !3;
+            }
+            if let Some(blob) = &ifd.blob {
+                raw_at[i] = data_at;
+                data_at = (data_at + blob.len() + 3) & !3;
+            }
+            if let Some(note) = &ifd.maker_note {
+                note_at[i] = data_at;
+                data_at = (data_at + note.len() + 3) & !3;
             }
         }
-        let mut file = vec![0u8; blob_at];
+        let mut file = vec![0u8; data_at];
         file[0..2].copy_from_slice(if little { b"II" } else { b"MM" });
         if layout.big {
             put_u16(&mut file, 2, 43, little);
@@ -898,6 +1241,15 @@ mod tests {
                 write(&mut file, 0x0111, 4, 1, strip_at[i] as u64);
                 write(&mut file, 0x0117, 4, 1, strip.len() as u64);
             }
+            if let Some(blob) = &ifd.blob {
+                write(&mut file, 0xC68B, 7, blob.len() as u64, raw_at[i] as u64);
+            }
+            if let Some(exif) = ifd.exif {
+                write(&mut file, 0x8769, 4, 1, offsets[exif] as u64);
+            }
+            if let Some(note) = &ifd.maker_note {
+                write(&mut file, 0x927C, 7, note.len() as u64, note_at[i] as u64);
+            }
             if !ifd.subs.is_empty() {
                 let inline = ifd.subs.len() * 4 <= inline_size;
                 write(
@@ -932,6 +1284,12 @@ mod tests {
             if let Some(strip) = &ifd.strip {
                 file[strip_at[i]..strip_at[i] + strip.len()].copy_from_slice(strip);
             }
+            if let Some(blob) = &ifd.blob {
+                file[raw_at[i]..raw_at[i] + blob.len()].copy_from_slice(blob);
+            }
+            if let Some(note) = &ifd.maker_note {
+                file[note_at[i]..note_at[i] + note.len()].copy_from_slice(note);
+            }
         }
         file
     }
@@ -947,13 +1305,20 @@ mod tests {
             TestIfd {
                 width: 6000,
                 height: 4000,
-                subs: vec![1, 2, 3],
+                subs: vec![1, 2, 3, 4],
                 ..Default::default()
             },
+            // A 5:4 thumbnail; never chosen as a stand-in for the 3:2 previews.
             TestIfd {
                 width: 100,
                 height: 80,
                 jpeg: Some(tiny_jpeg(100, 80)),
+                ..Default::default()
+            },
+            TestIfd {
+                width: 400,
+                height: 300,
+                jpeg: Some(tiny_jpeg(400, 300)),
                 ..Default::default()
             },
             TestIfd {
@@ -1003,10 +1368,186 @@ mod tests {
             let picked = tiff_preview_bytes(&mut cursor, file_len, 50).unwrap();
             assert_eq!(
                 preview_dims(&picked),
-                (100, 80),
-                "smallest covering a tiny request"
+                (400, 300),
+                "smallest covering copy, not the 5:4 thumbnail"
             );
         }
+    }
+
+    #[test]
+    fn jpeg_frame_reads_baseline_frames_and_rejects_junk() {
+        let colour = tiny_jpeg(64, 48);
+        assert_eq!(jpeg_frame(&colour), Some((64, 48, 3)));
+        assert_eq!(jpeg_frame(&colour[..10]), None);
+        assert_eq!(jpeg_frame(b"not a jpeg"), None);
+
+        let grey = tiny_gray_jpeg(32, 24);
+        assert_eq!(jpeg_frame(&grey), Some((32, 24, 1)));
+    }
+
+    #[test]
+    fn tiff_undefined_jpg_from_raw_blob_is_extracted() {
+        let ifds = vec![TestIfd {
+            // IFD dimensions describe the sensor, not the JpgFromRaw blob.
+            width: 6000,
+            height: 4000,
+            blob: Some(tiny_jpeg(900, 600)),
+            ..Default::default()
+        }];
+        let file = build_tiff(&ifds, LE_CLASSIC);
+        let mut cursor = Cursor::new(file.clone());
+        let picked = tiff_preview_bytes(&mut cursor, file.len() as u64, 512).unwrap();
+        assert_eq!(preview_dims(&picked), (900, 600));
+    }
+
+    #[test]
+    fn tiff_preview_matches_the_reference_component_count() {
+        let ifds = vec![
+            TestIfd {
+                width: 6000,
+                height: 4000,
+                subs: vec![1, 2, 3],
+                ..Default::default()
+            },
+            // A grey mask that covers the request and is smaller than the
+            // colour preview: it must not be picked as the stand-in.
+            TestIfd {
+                width: 600,
+                height: 600,
+                jpeg: Some(tiny_gray_jpeg(600, 600)),
+                ..Default::default()
+            },
+            TestIfd {
+                width: 800,
+                height: 600,
+                jpeg: Some(tiny_jpeg(800, 600)),
+                ..Default::default()
+            },
+            TestIfd {
+                width: 1600,
+                height: 1200,
+                jpeg: Some(tiny_jpeg(1600, 1200)),
+                ..Default::default()
+            },
+        ];
+        let file = build_tiff(&ifds, LE_CLASSIC);
+        let mut cursor = Cursor::new(file.clone());
+        let picked = tiff_preview_bytes(&mut cursor, file.len() as u64, 512).unwrap();
+        assert_eq!(preview_dims(&picked), (800, 600));
+    }
+
+    /// Nikon V3 maker note: `Nikon\0` + version + embedded TIFF header, with a
+    /// PreviewIFD (0x0011) whose JPEG offset is relative to the header at +10.
+    fn nikon_note(jpeg: &[u8]) -> Vec<u8> {
+        let mut note = vec![0u8; 18];
+        note[0..6].copy_from_slice(b"Nikon\0");
+        note[6..10].copy_from_slice(&[0x02, 0x10, 0x00, 0x00]);
+        note[10..12].copy_from_slice(b"II");
+        note[12..14].copy_from_slice(&42u16.to_le_bytes());
+        // The Nikon IFD starts 8 bytes into the embedded TIFF header (+10).
+        note[14..18].copy_from_slice(&8u32.to_le_bytes());
+        // Maker IFD: one entry, PreviewIFD pointer 26 (36 - the base at +10).
+        note.extend_from_slice(&1u16.to_le_bytes());
+        note.extend_from_slice(&0x0011u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&26u32.to_le_bytes());
+        note.extend_from_slice(&0u32.to_le_bytes());
+        // PreviewIFD: JPEG at 66 (base + 56), then its length.
+        note.extend_from_slice(&2u16.to_le_bytes());
+        note.extend_from_slice(&0x0201u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&56u32.to_le_bytes());
+        note.extend_from_slice(&0x0202u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
+        note.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(note.len(), 66);
+        note.extend_from_slice(jpeg);
+        note
+    }
+
+    /// Olympus maker note: `OLYMPUS\0` + order + version, a CameraSettings IFD
+    /// (0x2020), and preview start/length (0x0101/0x0102) relative to the note.
+    fn olympus_note(jpeg: &[u8]) -> Vec<u8> {
+        let mut note = vec![0u8; 12];
+        note[0..8].copy_from_slice(b"OLYMPUS\0");
+        note[8..10].copy_from_slice(b"II");
+        note[10..12].copy_from_slice(&[0x03, 0x00]);
+        // Maker IFD: CameraSettings at 30.
+        note.extend_from_slice(&1u16.to_le_bytes());
+        note.extend_from_slice(&0x2020u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&30u32.to_le_bytes());
+        note.extend_from_slice(&0u32.to_le_bytes());
+        // CameraSettings: preview at 60, then its length.
+        note.extend_from_slice(&2u16.to_le_bytes());
+        note.extend_from_slice(&0x0101u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&60u32.to_le_bytes());
+        note.extend_from_slice(&0x0102u16.to_le_bytes());
+        note.extend_from_slice(&4u16.to_le_bytes());
+        note.extend_from_slice(&1u32.to_le_bytes());
+        note.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
+        note.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(note.len(), 60);
+        note.extend_from_slice(jpeg);
+        note
+    }
+
+    #[test]
+    fn tiff_maker_note_previews_are_extracted() {
+        for (name, note) in [
+            ("nikon.nef", nikon_note(&tiny_jpeg(800, 600))),
+            ("olympus.orf", olympus_note(&tiny_jpeg(800, 600))),
+        ] {
+            let ifds = vec![
+                TestIfd {
+                    width: 6000,
+                    height: 4000,
+                    exif: Some(1),
+                    ..Default::default()
+                },
+                TestIfd {
+                    maker_note: Some(note),
+                    ..Default::default()
+                },
+            ];
+            let file = build_tiff(&ifds, LE_CLASSIC);
+            let mut cursor = Cursor::new(file.clone());
+            let picked = tiff_preview_bytes(&mut cursor, file.len() as u64, 512).unwrap();
+            assert_eq!(preview_dims(&picked), (800, 600), "{name}");
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(name);
+            std::fs::write(&path, &file).unwrap();
+            let img = embedded_preview(&path, 512).unwrap();
+            assert_eq!((img.width(), img.height()), (800, 600), "{name}");
+        }
+    }
+
+    #[test]
+    fn raf_fixed_header_preview_is_extracted() {
+        let jpeg = tiny_jpeg(320, 240);
+        let mut file = vec![0u8; 108];
+        file[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        file[84..88].copy_from_slice(&108u32.to_be_bytes());
+        file[88..92].copy_from_slice(&(jpeg.len() as u32).to_be_bytes());
+        file.extend_from_slice(&jpeg);
+
+        let mut cursor = Cursor::new(file.clone());
+        let picked = raf_preview_bytes(&mut cursor, file.len() as u64).unwrap();
+        assert_eq!(preview_dims(&picked), (320, 240));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.raf");
+        std::fs::write(&path, &file).unwrap();
+        let img = embedded_preview(&path, 512).unwrap();
+        assert_eq!((img.width(), img.height()), (320, 240));
     }
 
     #[test]
