@@ -19,6 +19,39 @@ use crate::io::decoder::{
 };
 use crate::{CoreError, Result};
 
+/// Lower-case extensions this decoder handles; the scanner shares this list.
+pub const EXTENSIONS: &[&str] = &["heic", "heif", "hif"];
+
+fn has_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// The TIFF block of the primary item's `Exif` payload, if the file has one.
+///
+/// Only the container is parsed — no pixels. `heic-rs` has already stripped the
+/// HEIF `Exif\0\0` wrapper and returns the TIFF block itself, which is what the
+/// EXIF reader in [`crate::io::exif`] wants. Runs under `catch_unwind` for the
+/// same reason as decoding: this parses untrusted files.
+pub(crate) fn exif_tiff_block(path: &Path) -> Option<Vec<u8>> {
+    if !has_extension(path) {
+        return None;
+    }
+    ensure_file_within(path, MAX_IMAGE_FILE_BYTES).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let context = heic_rs::context::Context::open(&bytes).ok()?;
+        context
+            .exif(context.meta.primary)
+            .ok()
+            .flatten()
+            .map(|tiff| tiff.to_vec())
+    }))
+    .ok()
+    .flatten()
+}
+
 /// Decode HEIC/HEIF bytes to 8-bit RGB, optionally downscaled to `max_long_side`.
 pub fn decode_heic(bytes: &[u8], max_long_side: Option<u32>) -> Result<Array3<u8>> {
     let options = heic_rs::DecodeOptions::default().with_layout(heic_rs::PixelLayout::Rgb8);

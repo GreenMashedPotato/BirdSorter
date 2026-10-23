@@ -599,6 +599,16 @@ on a 28-core Windows box.
 
 ### Format coverage (done)
 
+- ✅ **HEIC EXIF (2026-10-23)**: the primary item's `Exif` item now supplies
+  capture time and the review strip (make/model, lens, ISO, exposure, aperture,
+  focal length) for HEIC/HEIF when the optional `heic` feature is on. Only the
+  container is parsed (`heic-rs` already strips the `Exif\0\0` wrapper), under
+  `catch_unwind` and the ordinary 512 MiB cap; the shared root-IFD reader now
+  reads Make/Model as well. EXIF orientation is **not** re-applied because
+  `irot`/`imir` already oriented the pixels. Tested with a synthetic HEIF
+  container carrying a minimal TIFF `Exif` item (capture time, camera name,
+  no double rotation) plus a corrupt-container case; the corpus has no real HEIC
+  file, so the opt-in `BIRDSORTER_TEST_HEIC` hook remains. See `HEIC.md`.
 - ✅ **Optional HEIC/HEIF input (2026-10-22)**: `birdsorter-core` has an
   off-by-default `heic` feature that adds `heic-rs = 0.1.4` (pure Rust, no C, no
   `unsafe`, MIT OR Apache-2.0, pinned exactly) as a decoder. The scanner accepts

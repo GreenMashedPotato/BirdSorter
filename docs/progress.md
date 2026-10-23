@@ -3,7 +3,7 @@
 Living status doc for BirdSorter. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for
 the design and [`implemented.md`](./implemented.md) for shipped work.
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-23_
 
 ## Where we are
 
@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **351 core unit tests** (359 Rust tests including the integration/desktop
+- **352 core unit tests** (360 Rust tests including the integration/desktop
   suites, +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 354
+  optional `heic` feature the core suite is 357
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -83,8 +83,9 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
    Apple Developer Program + the §2 steps. Auto-updater after that.
 5. ~~**HEIC input**~~ — **shipped 2026-10-22 behind the off-by-default `heic`
    feature** (pure-Rust `heic-rs`, no C/unsafe; `docs/HEIC.md`). It is opt-in
-   because HEVC is patent-encumbered. Still open: HEIC EXIF (capture time) and
-   the macOS ImageIO path.
+   because HEVC is patent-encumbered. **HEIC EXIF shipped 2026-10-23** (capture
+   time + review strip, no double orientation). Still open: the macOS ImageIO
+   path and a real iPhone file to validate against.
 6. **Anti-aliased downscaling + recalibration** — `normalise_size` subsamples;
    a box average is more faithful but shifts every metric, so it needs a scoring
    recalibration rather than a silent swap.
@@ -189,6 +190,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   Desktop and CLI forward the feature. Feature-gated tests cover garbage input,
   the size bound, scanner acceptance and an opt-in real-file hook; the corpus is
   Canon-only, so no real HEIC was validated. See `HEIC.md`.
+- **HEIC EXIF (2026-10-23)**: `capture_time` and `photo_meta` now read the
+  primary item's `Exif` item (container only, under `catch_unwind` and the same
+  cap), so a HEIC joins time-based bursts and `--by date` exports and fills the
+  review strip. The shared root-IFD reader also returns Make/Model. EXIF
+  orientation is not re-applied because `irot`/`imir` already oriented the
+  pixels. Evidence is a synthetic HEIF container with a minimal TIFF `Exif` item
+  (capture time, camera, orientation suppression) plus a corrupt-container case;
+  no real iPhone file exists in the corpus. See `HEIC.md`.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

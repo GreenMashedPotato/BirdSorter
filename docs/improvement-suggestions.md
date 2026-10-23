@@ -749,8 +749,10 @@ RGB8, the container's `irot`/`imir`/`clap` transforms are applied, the ordinary
 under `catch_unwind`. LightCraft's fuller colour handling (VUI range/matrix,
 libheif-matching chroma upsample) is not ported; `docs/HEIC.md` records the
 licensing, limits and evidence. 4:2:2 and 4:4:4 (some Canon/Sony `.HIF`) still
-fail in the decoder; HEIC EXIF (capture time) is not wired yet; the macOS
-ImageIO route in `MACOS_TODO.md` remains an alternative.
+fail in the decoder. **HEIC EXIF shipped 2026-10-23** (capture time and the
+review strip from the `Exif` item; EXIF orientation is not re-applied because the
+container transforms already oriented the pixels). The macOS ImageIO route in
+`MACOS_TODO.md` remains an alternative.
 
 ### 8.2 Sensor-path decoders (only if truly needed)
 
