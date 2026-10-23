@@ -129,6 +129,7 @@ raw-sorter-app/
 │       ├── app.rs          settings, species list, About, cache maintenance
 │       ├── export.rs       keeper / single-file export
 │       ├── annotations.rs  species override, labels/undo, eye points
+│       ├── xmp_sync.rs     best-effort label/colour/species sidecar sync
 │       ├── preview.rs      thumbnail / preview rendering (cached data URLs)
 │       ├── models.rs       model manager (status/download/import/remove)
 │       ├── config.rs       rendering constants

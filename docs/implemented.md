@@ -307,6 +307,18 @@ state and open work, see [progress.md](./progress.md) and
   sidecar when none exists. UI: clickable stars on every grid tile, a star row in
   the review view, **Auto-star** (sharp 5 / uncertain 3 / blurry 1 / none 0) and
   **Reset stars** buttons.
+- **XMP sidecars beyond ratings (2026-10-22)**: colour labels write `xmp:Label`
+  (`Red`/`Yellow`/`Green`/`Blue`); the latest verdict label and the effective
+  species are `dc:subject` keywords; ratings stay `xmp:Rating`. Writes are
+  byte-preserving merges (unrelated namespaces, comments and creator data
+  survive), resolve both `shot.xmp` and `shot.CR3.xmp` (editing the existing
+  sidecar in place), and copy an unreadable sidecar to
+  `<name>.xmp.bak.<pid>.<seq>` before refusing. Scan imports an existing
+  `xmp:Rating` only when the DB rating is 0, so a user's stars are never
+  overwritten. Tests cover attribute and element forms, self-closing
+  descriptions, stem/full naming, keyword merge/removal, backups, scan import,
+  and the label/colour/species sync. Still open: fsync + Windows rename retry,
+  a private settings blob, and a library-wide keyword manager.
 - **About dialog** (`About.svelte`), opened by clicking the **🐦 BirdSorter**
   title: author (Michel Gunawan), contact, version and **build date** (baked in by
   `build.rs`), plus credits/licences and dataset disclaimers — most importantly

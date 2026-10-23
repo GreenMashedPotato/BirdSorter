@@ -18,13 +18,14 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v18**; **338 Rust + 126 UI tests**; clippy clean.
+- SQLite schema **v18**; **345 Rust + 126 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches + all/any/none smart collections,
-  ratings/flags/colours + Ctrl+Z undo,
+  ratings/flags/colours + Ctrl+Z undo, XMP labels/keywords + rating import at
+  scan,
   auto-advance, similarity-aware burst grouping + bracket detection, windowed
   1:1 preview above native pixels, preview adjustments (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
@@ -123,8 +124,12 @@ each slice end-to-end.
    saved searches extend into all/any/none groups with a compiled evaluator,
    validated JSON in `localStorage`, an inline create/rename/delete editor and
    per-folder filtering. Still open: a library-wide view and SQL evaluation.
-6. **XMP keywords/labels + import existing ratings at scan.** Byte-preserving
-   merge, back up unreadable sidecars, resolve stem-vs-full naming.
+~~6. XMP keywords/labels + rating import at scan~~ — **shipped 2026-10-22**:
+   `xmp:Label` (colour), `dc:subject` (verdict + effective species), and
+   `xmp:Rating`; byte-preserving merges, stem/full naming, `.bak` for unreadable
+   sidecars, and a scan import that never overwrites a user rating. Still open:
+   fsync/rename retry, a private settings blob, and a library-wide keyword
+   manager.
 7. **Model identity per analysis.** Store detector/species identity/hash; mark
    analyses pending when a model changes; expose it in diagnostics.
 8. **Camera AF-point overlay.** Header-only maker-note read (Sony first, then

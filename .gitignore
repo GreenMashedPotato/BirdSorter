@@ -33,3 +33,6 @@ models/*.onnx
 Thumbs.db
 .vscode/
 .idea/
+
+# Local agent/taste state
+.commandcode/
