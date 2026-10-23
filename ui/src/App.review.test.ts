@@ -385,6 +385,20 @@ describe("review view", () => {
     expect(saveEdits).toHaveBeenCalledWith(3, expect.objectContaining({ exposure: 0.25 }));
   });
 
+  it("edits the tone curve and clamps it between points", async () => {
+    const { container, getByText } = await openFirstReview();
+    await fireEvent.click(getByText("Adjust"));
+
+    const mid = () => container.querySelector("#adj-curve-2") as HTMLInputElement;
+    const quarter = () => container.querySelector("#adj-curve-1") as HTMLInputElement;
+    await fireEvent.input(mid(), { target: { value: "0.7" } });
+    await waitFor(() => expect(mid().value).toBe("0.7"));
+
+    // A point cannot pass its neighbour: the curve never inverts.
+    await fireEvent.input(quarter(), { target: { value: "0.9" } });
+    await waitFor(() => expect(quarter().value).toBe("0.7"));
+  });
+
   it("offers image export in the adjust panel", async () => {
     const { getByText } = await openFirstReview();
     await fireEvent.click(getByText("Adjust"));

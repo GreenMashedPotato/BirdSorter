@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_ADJUSTMENTS } from "./api";
 import {
   clampAdjustments,
+  clampCurve,
   isNeutral,
   loadPresets,
   MAX_PRESETS,
@@ -74,6 +75,29 @@ describe("develop presets", () => {
     const hot = { ...DEFAULT_ADJUSTMENTS, exposure: 1.5, shadows: 0.9 };
     expect(scaleAdjustments(hot, 2).exposure).toBe(2);
     expect(scaleAdjustments(hot, 2).shadows).toBe(1);
+  });
+
+  it("scales the tone curve around its diagonal and keeps it monotonic", () => {
+    const lifted = {
+      ...DEFAULT_ADJUSTMENTS,
+      curve: [0, 0.25, 0.7, 0.75, 1] as [number, number, number, number, number],
+    };
+    const half = scaleAdjustments(lifted, 0.5);
+    expect(half.curve[2]).toBeCloseTo(0.6);
+    const strong = scaleAdjustments(
+      { ...DEFAULT_ADJUSTMENTS, curve: [0, 0.4, 0.5, 0.75, 1] },
+      2,
+    );
+    expect(strong.curve[1]).toBeCloseTo(0.55);
+    // Below-diagonal points clamp at the black end rather than going negative.
+    const crushed = scaleAdjustments(
+      { ...DEFAULT_ADJUSTMENTS, curve: [0, 0.1, 0.5, 0.75, 1] },
+      2,
+    );
+    expect(crushed.curve[1]).toBe(0);
+    // A stored non-monotonic curve is clamped, never inverted.
+    expect(clampCurve([0, 0.9, 0.4, 0.8, 1])).toEqual([0, 0.9, 0.9, 0.9, 1]);
+    expect(isNeutral(lifted)).toBe(false);
   });
 
   it("clamps stored values to slider ranges", () => {

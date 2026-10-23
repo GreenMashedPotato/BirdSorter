@@ -919,6 +919,16 @@
     void refreshDetail();
   });
 
+  const LINEAR_CURVE: [number, number, number, number, number] = [0, 0.25, 0.5, 0.75, 1];
+  const curveAdjusted = $derived(
+    adjustments.curve.some(
+      (value, index) => Math.abs(value - LINEAR_CURVE[index]) > 1e-4,
+    ),
+  );
+  const curvePoints = $derived(
+    adjustments.curve.map((value, index) => `${index * 25},${(1 - value) * 100}`).join(" "),
+  );
+
   const adjusted = $derived(
     adjustments.exposure !== 0 ||
       adjustments.contrast !== 0 ||
@@ -931,11 +941,12 @@
       adjustments.vibrance !== 0 ||
       adjustments.saturation !== 0 ||
       adjustments.clarity !== 0 ||
-      adjustments.defringe !== 0,
+      adjustments.defringe !== 0 ||
+      curveAdjusted,
   );
 
   const ADJUST_CONTROLS: {
-    key: keyof Adjustments;
+    key: Exclude<keyof Adjustments, "curve">;
     label: string;
     min: number;
     max: number;
@@ -955,8 +966,27 @@
     { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
   ];
 
-  function setAdjustment(key: keyof Adjustments, value: number) {
+  function setAdjustment(key: Exclude<keyof Adjustments, "curve">, value: number) {
     adjustments = { ...adjustments, [key]: value };
+    scheduleAdjustmentSave();
+  }
+
+  /// Clamp a curve point between its neighbours so the curve never inverts.
+  function setCurvePoint(index: number, value: number) {
+    const curve = [...adjustments.curve] as Adjustments["curve"];
+    const min = index === 0 ? 0 : curve[index - 1];
+    const max = index === 4 ? 1 : curve[index + 1];
+    curve[index] = Math.min(max, Math.max(min, value));
+    adjustments = { ...adjustments, curve };
+    scheduleAdjustmentSave();
+  }
+
+  function resetCurve() {
+    adjustments = { ...adjustments, curve: [...LINEAR_CURVE] };
+    scheduleAdjustmentSave();
+  }
+
+  function scheduleAdjustmentSave() {
     clearRegion();
     if (adjustTimer) clearTimeout(adjustTimer);
     // Coalesce slider drags into one render.
@@ -1539,6 +1569,31 @@
                 oninput={(e) => setAdjustment(c.key, Number(e.currentTarget.value))}
               />
               <span class="val">{adjustments[c.key].toFixed(2)}</span>
+            </div>
+          {/each}
+          <div class="row curve-row">
+            <span class="curve-title">Curve</span>
+            <svg class="curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve">
+              <polyline points={curvePoints} fill="none" stroke="currentColor" stroke-width="2" />
+              {#each adjustments.curve as value, index (index)}
+                <circle cx={index * 25} cy={(1 - value) * 100} r="3" />
+              {/each}
+            </svg>
+            <button class="mini" onclick={resetCurve} disabled={!curveAdjusted}>Reset</button>
+          </div>
+          {#each adjustments.curve as value, index (index)}
+            <div class="row">
+              <label for={`adj-curve-${index}`}>{["Black", "¼", "½", "¾", "White"][index]}</label>
+              <input
+                id={`adj-curve-${index}`}
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={value}
+                oninput={(e) => setCurvePoint(index, Number(e.currentTarget.value))}
+              />
+              <span class="val">{value.toFixed(2)}</span>
             </div>
           {/each}
           <div class="row">

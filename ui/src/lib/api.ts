@@ -223,6 +223,8 @@ export interface Adjustments {
   clarity: number;
   /** Suppress magenta/green fringing on high-contrast edges, 0..1. */
   defringe: number;
+  /** Output level at input 0, ¼, ½, ¾, 1. Neutral is 0,.25,.5,.75,1. */
+  curve: [number, number, number, number, number];
 }
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -238,6 +240,7 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   saturation: 0,
   clarity: 0,
   defringe: 0,
+  curve: [0, 0.25, 0.5, 0.75, 1],
 };
 
 /** Preview with adjustments applied on top of the cached base render. */
