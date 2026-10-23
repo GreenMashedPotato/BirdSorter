@@ -48,9 +48,10 @@ current status is in [`progress.md`](./progress.md). For cross-project ideas
 
 ## UX & features
 
-- ⬜ **Library-wide smart collections** — all/any/none rule sets, an inline
-  editor and per-folder filtering are in place; a library-wide view (and
-  server-side SQL evaluation) remains.
+- 🟡 **Library-wide smart collections** — all/any/none rule sets, an inline
+  editor and per-folder filtering shipped 2026-10-22; the **All photos**
+  library-wide view shipped 2026-10-23. Server-side SQL evaluation remains
+  open (the compiled client evaluator is shared with saved searches).
 
 ## Packaging & distribution
 

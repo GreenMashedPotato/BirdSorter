@@ -153,7 +153,12 @@ state and open work, see [progress.md](./progress.md) and
   `all.every && (any.empty || any.some) && none.every(!)`. Unit tests cover the
   semantics, persistence, sanitising, caps, replace/rename and removal; a
   FilterBar test covers applying a collection and saving an editor draft.
-  Library-wide evaluation remains open.
+- **Library-wide collections (2026-10-23)**: the sidebar's **All photos** entry
+  shows every registered folder at once, so smart collections, search, chips
+  and colour filters run across the library. A folder click returns to folder
+  scope; folder-scoped actions keep naming their primary target. It reuses the
+  multi-folder `queryFiles` command and the compiled client evaluator.
+  Server-side SQL evaluation remains open.
 - **Multi-folder view**: Ctrl/Cmd-click folders to show them together; the last
   clicked is the primary action target (sidebar badge + "Actions target" note +
   folder-named status text). Queries merge folders into one global worst-first
