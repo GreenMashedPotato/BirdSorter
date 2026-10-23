@@ -11,8 +11,8 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **350 core unit tests** (357 Rust tests including the integration/desktop suites,
-  +126 UI), `cargo fmt` + `cargo clippy -D warnings` clean
+- **350 core unit tests** (358 Rust tests including the integration/desktop suites,
+  +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -174,8 +174,10 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   renders a bounded thumbnail grid with filename/verdict/score captions (built-in
   5×7 font, no system-font dependency), accent bars by verdict, aspect-preserving
   fit and a 32 MP cap; an output inside the folder is excluded from the next
-  scan. Verified on three copied CR3s (756×644, 3 cells, 47 KB). A4/Letter print
-  layouts, page counts and a desktop button remain.
+  scan. The toolbar's **Contact sheet…** button exports the selected (or
+  visible) photos via a save dialog. Verified on three copied CR3s (756×644,
+  3 cells, 47 KB) and by a desktop test on a real JPEG. A4/Letter print layouts
+  and page counts remain.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

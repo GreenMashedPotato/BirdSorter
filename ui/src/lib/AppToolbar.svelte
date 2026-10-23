@@ -14,6 +14,7 @@
     onOpenModels,
     onRetrain,
     onExportKeepers,
+    onContactSheet = () => {},
     onKeepBurstWinners,
     onPreload = () => {},
     preloadBusy = false,
@@ -32,6 +33,7 @@
     onOpenModels: () => void;
     onRetrain: () => void;
     onExportKeepers: () => void;
+    onContactSheet?: () => void;
     onKeepBurstWinners: () => void;
     onPreload?: () => void;
     preloadBusy?: boolean;
@@ -61,6 +63,13 @@
     title="Copy every file labelled Sharp into a folder"
   >
     Export keepers…
+  </button>
+  <button
+    onclick={onContactSheet}
+    disabled={busy || !hasFolder}
+    title="Export a contact sheet of the selected (or visible) photos"
+  >
+    Contact sheet…
   </button>
   <button
     onclick={onKeepBurstWinners}

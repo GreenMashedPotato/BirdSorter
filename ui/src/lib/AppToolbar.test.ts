@@ -21,6 +21,7 @@ function setup(
     onOpenModels: vi.fn(),
     onRetrain: vi.fn(),
     onExportKeepers: vi.fn(),
+    onContactSheet: vi.fn(),
     onKeepBurstWinners: vi.fn(),
     onPreload: vi.fn(),
   };
@@ -35,6 +36,12 @@ describe("AppToolbar", () => {
     const { getByText, onAnalyze } = setup({ busy: false });
     await fireEvent.click(getByText("Analyze"));
     expect(onAnalyze).toHaveBeenCalledOnce();
+  });
+
+  it("fires the contact-sheet action", async () => {
+    const { getByText, onContactSheet } = setup();
+    await fireEvent.click(getByText("Contact sheet…"));
+    expect(onContactSheet).toHaveBeenCalledOnce();
   });
 
   it("disables the analyse actions while busy", () => {

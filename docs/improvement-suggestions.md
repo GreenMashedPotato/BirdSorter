@@ -722,8 +722,9 @@ count, written atomically. Useful for sharing a shoot or a species list.
 [--size N] [--limit N]` renders a bounded thumbnail grid with filename/verdict/
 score captions (built-in 5×7 font, verdict accent bars, aspect-preserving fit,
 32 MP cap) and excludes the output file if it lives in the scanned folder.
-Verified on three copied CR3s. Still open: A4/Letter print layouts, page counts,
-150 dpi sizing and a desktop button.
+The toolbar's **Contact sheet…** button exports the selected (or visible)
+photos through a save dialog. Verified on three copied CR3s and by a desktop
+test. Still open: A4/Letter print layouts, page counts and 150 dpi sizing.
 
 Slideshow and full print/picture-package layouts are available in LightCraft
 but are low value for a culling app; skip unless requested.

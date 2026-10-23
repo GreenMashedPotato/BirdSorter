@@ -718,6 +718,24 @@ export async function exportKeepers(
   });
 }
 
+export interface ContactSheetResult {
+  path: string;
+  width: number;
+  height: number;
+  cells: number;
+  skipped: number;
+}
+
+/** Render a contact sheet of `files` to `dest` (JPEG). */
+export async function exportContactSheet(
+  files: number[],
+  dest: string,
+  cols = 4,
+  size = 360,
+): Promise<ContactSheetResult> {
+  return invoke("contact_sheet", { files, dest, cols, size });
+}
+
 /** Copy (or move) one file into `dest` (the review view's Export button). */
 export async function exportFile(
   file: number,
