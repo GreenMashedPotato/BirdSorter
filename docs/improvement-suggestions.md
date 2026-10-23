@@ -115,7 +115,7 @@ roughly describes the code surface.
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten (all but crop/straighten shipped) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
-| 15 | 🟡 Presets with amount and selection sync (0–200 % shipped 2026-10-23; partial groups open) | LightCraft `develop/src/presets.rs` | P2 | Medium |
+| 15 | 🟡 Presets with amount, partial groups and selection sync (shipped 2026-10-23; undo per sync open) | LightCraft `develop/src/presets.rs` | P2 | Medium |
 | 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
 | 18 | Export: richer tokens, resize modes, output sharpening, watermark, metadata policy | LightCraft `engine/src/export.rs`, `rename.rs` | P2 | Small |
@@ -706,8 +706,10 @@ For culling, "apply this look to the burst/shoot" is the practical use.
 (validated JSON, values clamped to the slider ranges, 16 presets), applies
 them at **0–200 %** with every control clamped, and **Sync** writes the applied
 look to the grid selection as well as the open photo (one `save_edits` per
-file). Copy/paste and reset already existed. Still open: partial preset groups
-(e.g. tone only) and one undo step per sync.
+file). A preset carries only the **groups** selected when saving (tone /
+colour / detail / dehaze); applying merges those and leaves the others, and
+legacy presets get all groups. Copy/paste and reset already existed. Still
+open: one undo step per sync and a per-group amount.
 
 ### 6.7 Other adjustments, lower priority
 

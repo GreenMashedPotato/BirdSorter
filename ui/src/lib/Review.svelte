@@ -33,13 +33,18 @@
   } from "./api";
   import { lumaHistogram } from "./histogram";
   import { neighborIds } from "./navigation";
-  import { loadAdjustmentClipboard, saveAdjustmentClipboard } from "./adjustments";
+  import {
+    applyGroups,
+    loadAdjustmentClipboard,
+    PRESET_GROUPS,
+    saveAdjustmentClipboard,
+    type PresetGroup,
+  } from "./adjustments";
   import {
     isNeutral,
     loadPresets,
     removePreset,
     savePresets,
-    scaleAdjustments,
     upsertPreset,
     type DevelopPreset,
   } from "./presets";
@@ -143,6 +148,12 @@
   let presetName = $state("");
   let presetAmount = $state(1);
   let presetSync = $state(false);
+  let presetGroups = $state<Record<PresetGroup, boolean>>({
+    tone: true,
+    colour: true,
+    detail: true,
+    dehaze: true,
+  });
   let autoAdvance = $state(loadAutoAdvance());
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1064,7 +1075,11 @@
       status = "adjust something before saving a preset";
       return;
     }
-    presets = upsertPreset(presets, { name, adjustments: { ...adjustments } });
+    presets = upsertPreset(presets, {
+      name,
+      adjustments: { ...adjustments },
+      groups: PRESET_GROUPS.filter((group) => presetGroups[group]),
+    });
     savePresets(presets);
     activePreset = name;
     presetName = "";
@@ -1072,7 +1087,12 @@
   }
 
   function applyPreset(preset: DevelopPreset) {
-    adjustments = scaleAdjustments(preset.adjustments, presetAmount);
+    adjustments = applyGroups(
+      adjustments,
+      preset.adjustments,
+      preset.groups,
+      presetAmount,
+    );
     settleAdjustTimers();
     clearRegion();
     const targets = presetSync ? selectedIds.filter((id) => id !== fileId) : [];
@@ -1632,6 +1652,18 @@
               title="Also save the preset to the grid selection"
             />
             <span class="val">{selectedIds.length}</span>
+          </div>
+          <div class="row groups">
+            <span class="curve-title">Groups</span>
+            <div class="group-checks">
+              {#each PRESET_GROUPS as group (group)}
+                <label>
+                  <input type="checkbox" bind:checked={presetGroups[group]} />
+                  {group}
+                </label>
+              {/each}
+            </div>
+            <span></span>
           </div>
           <div class="row">
             <label for="adj-preset-name">Save as</label>
