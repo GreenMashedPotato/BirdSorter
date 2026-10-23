@@ -958,6 +958,7 @@
       adjustments.clarity !== 0 ||
       adjustments.defringe !== 0 ||
       adjustments.range_exposure !== 0 ||
+      adjustments.mask_exposure !== 0 ||
       curveAdjusted,
   );
 
@@ -982,6 +983,11 @@
     { key: "range_exposure", label: "Range exp", min: -2, max: 2, step: 0.05 },
     { key: "range_center", label: "Range at", min: 0, max: 1, step: 0.05 },
     { key: "range_width", label: "Range w", min: 0.02, max: 1, step: 0.01 },
+    { key: "mask_exposure", label: "Mask exp", min: -2, max: 2, step: 0.05 },
+    { key: "mask_x", label: "Mask X", min: 0, max: 1, step: 0.01 },
+    { key: "mask_y", label: "Mask Y", min: 0, max: 1, step: 0.01 },
+    { key: "mask_radius", label: "Mask r", min: 0, max: 2, step: 0.01 },
+    { key: "mask_feather", label: "Mask soft", min: 0, max: 1, step: 0.01 },
     { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
   ];
 

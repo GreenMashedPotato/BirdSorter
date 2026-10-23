@@ -141,6 +141,14 @@ describe("develop presets", () => {
     expect(out.range_exposure).toBe(1);
     expect(out.range_center).toBe(0.2);
     expect(out.exposure).toBe(0);
+
+    // The radial mask's geometry is inert until its exposure is set too.
+    const moved = { ...DEFAULT_ADJUSTMENTS, mask_x: 0.2, mask_y: 0.8, mask_radius: 0.1 };
+    expect(isNeutral(moved)).toBe(true);
+    expect(isNeutral({ ...moved, mask_exposure: -1 })).toBe(false);
+    const masked = applyGroups(DEFAULT_ADJUSTMENTS, { ...moved, mask_exposure: -1 }, ["local"], 1);
+    expect(masked.mask_exposure).toBe(-1);
+    expect(masked.mask_x).toBe(0.2);
   });
 
   it("clamps stored values to slider ranges", () => {

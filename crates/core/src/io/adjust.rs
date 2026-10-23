@@ -50,6 +50,15 @@ pub struct Adjustments {
     pub range_center: f32,
     /// Half-width of the band before the mask fades out, `0.02..=1`.
     pub range_width: f32,
+    /// Radial local exposure in stops, `-2..=2` (0 = off).
+    pub mask_exposure: f32,
+    /// Mask centre, normalized to the full image, `0..=1`.
+    pub mask_x: f32,
+    pub mask_y: f32,
+    /// Mask radius as a fraction of the image's short side, `0..=2`.
+    pub mask_radius: f32,
+    /// Feather width past the radius, as a fraction of the short side, `0..=1`.
+    pub mask_feather: f32,
 }
 
 /// The neutral diagonal tone curve.
@@ -74,6 +83,11 @@ impl Default for Adjustments {
             range_exposure: 0.0,
             range_center: 0.5,
             range_width: 0.25,
+            mask_exposure: 0.0,
+            mask_x: 0.5,
+            mask_y: 0.5,
+            mask_radius: 0.3,
+            mask_feather: 0.15,
         }
     }
 }
@@ -94,6 +108,7 @@ impl Adjustments {
             && self.clarity.abs() < 1e-4
             && self.defringe.abs() < 1e-4
             && self.range_exposure.abs() < 1e-4
+            && self.mask_exposure.abs() < 1e-4
             && curve_is_identity(&self.curve)
     }
 
@@ -129,8 +144,35 @@ pub fn decode_and_apply(bytes: &[u8], adj: &Adjustments) -> crate::Result<Array3
     Ok(apply(&crate::io::decoder::dynamic_to_rgb(img, None), adj))
 }
 
+/// Where a preview crop sits inside the full image. Spatial masks use it so a
+/// windowed 1:1 render matches the full-frame render.
+#[derive(Debug, Clone, Copy)]
+pub struct Region {
+    pub origin_x: usize,
+    pub origin_y: usize,
+    pub full_width: usize,
+    pub full_height: usize,
+}
+
+impl Region {
+    pub fn full(width: usize, height: usize) -> Self {
+        Self {
+            origin_x: 0,
+            origin_y: 0,
+            full_width: width,
+            full_height: height,
+        }
+    }
+}
+
 /// Apply `adj` to an 8-bit RGB image, returning a new image.
 pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
+    let (h, w, _) = rgb.dim();
+    apply_with_region(rgb, adj, Region::full(w, h))
+}
+
+/// Apply `adj` to a crop that represents `region` of the full image.
+pub fn apply_with_region(rgb: &Array3<u8>, adj: &Adjustments, region: Region) -> Array3<u8> {
     let mut out = if adj.denoise > 0.0 {
         denoise(rgb, adj.denoise)
     } else {
@@ -161,6 +203,9 @@ pub fn apply(rgb: &Array3<u8>, adj: &Adjustments) -> Array3<u8> {
     }
     if adj.range_exposure.abs() > 1e-4 {
         out = range_exposure(&out, adj.range_exposure, adj.range_center, adj.range_width);
+    }
+    if adj.mask_exposure.abs() > 1e-4 {
+        out = radial_mask(&out, adj, region);
     }
     out
 }
@@ -513,6 +558,47 @@ fn range_exposure(rgb: &Array3<u8>, exposure: f32, center: f32, width: f32) -> A
     out
 }
 
+/// Radial local exposure. The centre/radius are in full-image coordinates, so
+/// `region` keeps a windowed 1:1 crop identical to the full-frame render.
+fn radial_mask(rgb: &Array3<u8>, adj: &Adjustments, region: Region) -> Array3<u8> {
+    let gain = 2f32.powf(adj.mask_exposure.clamp(-2.0, 2.0));
+    let full_w = region.full_width.max(1) as f32;
+    let full_h = region.full_height.max(1) as f32;
+    let short = full_w.min(full_h);
+    let cx = adj.mask_x.clamp(0.0, 1.0) * full_w;
+    let cy = adj.mask_y.clamp(0.0, 1.0) * full_h;
+    let radius = adj.mask_radius.clamp(0.0, 2.0) * short;
+    let feather = adj.mask_feather.clamp(0.0, 1.0) * short;
+    let (h, w, c) = rgb.dim();
+    let mut out = rgb.clone();
+    for y in 0..h {
+        let py = region.origin_y as f32 + y as f32 + 0.5;
+        for x in 0..w {
+            let px = region.origin_x as f32 + x as f32 + 0.5;
+            let distance = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+            let weight = if distance <= radius {
+                1.0
+            } else if feather <= 0.0 {
+                0.0
+            } else {
+                let t = ((distance - radius) / feather).min(1.0);
+                1.0 - t * t * (3.0 - 2.0 * t)
+            };
+            if weight <= 0.0 {
+                continue;
+            }
+            let factor = 1.0 + (gain - 1.0) * weight;
+            if (factor - 1.0).abs() < 1e-4 {
+                continue;
+            }
+            for k in 0..c.min(3) {
+                out[[y, x, k]] = (rgb[[y, x, k]] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// 3×3 edge-preserving (bilateral) denoise with a range LUT — no `exp` per pixel.
 fn denoise(rgb: &Array3<u8>, strength: f32) -> Array3<u8> {
     let (h, w, c) = rgb.dim();
@@ -775,6 +861,62 @@ mod tests {
         let adj = Adjustments {
             range_center: 0.1,
             range_width: 0.05,
+            ..Default::default()
+        };
+        assert_eq!(apply(&img, &adj), img);
+    }
+
+    #[test]
+    fn a_radial_mask_targets_the_centre_and_matches_a_crop() {
+        let img = Array3::from_elem((20, 20, 3), 100u8);
+        let adj = Adjustments {
+            mask_exposure: 1.0,
+            mask_x: 0.5,
+            mask_y: 0.5,
+            mask_radius: 0.2,
+            mask_feather: 0.1,
+            ..Default::default()
+        };
+        let full = apply(&img, &adj);
+        assert!(full[[10, 10, 0]] > 150, "centre = {}", full[[10, 10, 0]]);
+        assert_eq!(full[[0, 0, 0]], 100);
+        assert!(!adj.is_identity());
+
+        // A crop through the same region must match the full-frame pixels.
+        let mut crop = Array3::from_elem((10, 10, 3), 100u8);
+        for y in 0..10 {
+            for x in 0..10 {
+                for k in 0..3 {
+                    crop[[y, x, k]] = img[[y + 5, x + 5, k]];
+                }
+            }
+        }
+        let region = Region {
+            origin_x: 5,
+            origin_y: 5,
+            full_width: 20,
+            full_height: 20,
+        };
+        let cropped = apply_with_region(&crop, &adj, region);
+        for y in 0..10 {
+            for x in 0..10 {
+                let expected = full[[y + 5, x + 5, 0]] as i16;
+                let actual = cropped[[y, x, 0]] as i16;
+                assert!(
+                    (actual - expected).abs() <= 1,
+                    "({x},{y}): {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_radial_mask_is_identity_at_zero() {
+        let img = Array3::from_elem((8, 8, 3), 90u8);
+        let adj = Adjustments {
+            mask_x: 0.1,
+            mask_y: 0.9,
+            mask_radius: 0.1,
             ..Default::default()
         };
         assert_eq!(apply(&img, &adj), img);
@@ -1305,6 +1447,11 @@ mod tests {
             range_exposure: 2.0,
             range_center: 0.5,
             range_width: 0.5,
+            mask_exposure: 2.0,
+            mask_x: 0.4,
+            mask_y: 0.6,
+            mask_radius: 0.5,
+            mask_feather: 0.2,
         };
         let out = apply(&img, &adj);
         assert_eq!(out.dim(), img.dim());

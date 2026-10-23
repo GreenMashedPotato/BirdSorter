@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **365 core unit tests** (372 Rust tests including the integration/desktop
+- **367 core unit tests** (375 Rust tests including the integration/desktop
   suites, +142 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 370
+  optional `heic` feature the core suite is 372
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -146,6 +146,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   remains open (the evaluator is shared with saved searches, so translating it
   would risk grammar drift). App test: All files loads 5 tiles from 2 folders,
   then a folder click returns to 3.
+- **Radial local mask (2026-10-23)**: a radial exposure (`mask_exposure`,
+  `mask_x`/`mask_y`, `mask_radius`, `mask_feather`) with a smooth feather. The
+  apply path now takes a `Region` (crop origin + full size) and `preview_region`
+  passes it, so a windowed 1:1 crop renders exactly like the full frame; a unit
+  test compares the two pixel-for-pixel. Adjust has Mask exp/X/Y/r/soft sliders,
+  the `local` preset group carries it, and the CLI adds the five flags. Verified
+  on a copied R5 preview at 1600 px (+1 stop, radius 0.15 at 0.3/0.4): inside
+  +119 mean channel delta, outside ~0 (max 5); copy deleted.
 - **Luminance-range local exposure (2026-10-23)**: a local dodge/burn that
   applies `-2..2` stops only to pixels whose luma lies in a band (`centre`,
   `width`), with a smoothstep falloff. It reads only the pixel's own luma, so
@@ -154,7 +162,8 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   `--range-at`, `--range-width`. Verified on a copied R5 preview at 1600 px with
   0.8 stop at 0.22/0.15: band pixels +13.1 mean channel delta, far pixels
   ~0 (max 17 on 827 of 1.7 M pixels); copy deleted. Unit tests cover band
-  targeting and the zero-strength identity. Brush/gradient masks remain open.
+  targeting and the zero-strength identity. Brush and linear-gradient masks
+  remain open.
 - **Tone curve (2026-10-23)**: a five-point curve (output at input 0, ¼, ½, ¾
   and 1) runs as the last tone step, as a shared 256-entry LUT per channel. The
   curve is clamped to 0..1 and forced non-decreasing, so it can never invert.
