@@ -11,9 +11,9 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **352 core unit tests** (360 Rust tests including the integration/desktop
+- **357 core unit tests** (364 Rust tests including the integration/desktop
   suites, +128 UI), `cargo fmt` + `cargo clippy -D warnings` clean; with the
-  optional `heic` feature the core suite is 357
+  optional `heic` feature the core suite is 362
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
 - **Validated against a real corpus** (`D:/unsorted data`: 19.6k Canon `.CR3`s): `analyze`
@@ -172,8 +172,16 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   block, and maps the rect through EXIF orientation. Review and Compare draw it
   as a dashed "AF" frame with a mode/area/tracking tooltip. Synthetic ARW tests
   cover the point, manual/Wide-centre suppression, orientation 6, unsupported
-  bodies and truncation; a real CR3 is rejected safely (not TIFF). Canon
-  CR3/Nikon AF points remain open.
+  bodies and truncation. Nikon AF points remain open.
+- **Canon CR3 AF-point overlay (2026-10-23)**: `moov` → Canon CRX `uuid` →
+  `CMT1`/`CMT3` (bounded, header-only reads). AFInfo2 (`0x0026`, `0x003c`
+  fallback) gives per-point geometry, the in-focus bitset and the AF area mode;
+  `CanonCameraSettings` gives One-shot/AI Servo. The union of the in-focus
+  points is drawn. Verified on a copied EOS R5 (`_5268869.CR3`, orientation 1):
+  1053 points, mode 7 (Zone AF), 3 in-focus points, rect
+  `[0.3892, 0.5567, 0.4365, 0.6263]`, matching an independent Python decode;
+  the copy was deleted. Synthetic CR3 tests cover the point, union, manual/empty
+  masks, orientation 6, non-EOS bodies and truncated/oversized boxes.
 - **Contact-sheet export (2026-10-22)**: `birdsorter contact <folder> <out.jpg>`
   renders a bounded thumbnail grid with filename/verdict/score captions (built-in
   5×7 font, no system-font dependency), accent bars by verdict, aspect-preserving

@@ -182,6 +182,11 @@ pub(crate) struct IfdFields {
     pub(crate) focus_location: Option<[u16; 4]>,
     pub(crate) focus_frame: Option<Vec<u8>>,
     pub(crate) focus_block: Option<Vec<u8>>,
+    /// Canon maker-note blocks: `CanonCameraSettings` and the AFInfo2/AFInfo3
+    /// records (CR3 keeps these in the `CMT3` TIFF).
+    pub(crate) canon_settings: Option<Vec<u8>>,
+    pub(crate) canon_af_info_2: Option<Vec<u8>>,
+    pub(crate) canon_af_info_3: Option<Vec<u8>>,
 }
 
 /// Bounded random-access TIFF reader. Every read is size-checked before it
@@ -468,6 +473,9 @@ impl<R: Read + Seek> TiffReader<R> {
                 }
                 0x2037 => fields.focus_frame = self.entry_bytes(typ, values_count, inline),
                 0x9402 => fields.focus_block = self.entry_bytes(typ, values_count, inline),
+                0x0001 => fields.canon_settings = self.entry_bytes(typ, values_count, inline),
+                0x0026 => fields.canon_af_info_2 = self.entry_bytes(typ, values_count, inline),
+                0x003C => fields.canon_af_info_3 = self.entry_bytes(typ, values_count, inline),
                 0x927C => fields.maker_note = self.entry_data(typ, values_count, inline),
                 _ => {
                     if values_count > UNDEFINED_JPEG_MIN {

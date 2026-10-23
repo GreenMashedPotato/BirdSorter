@@ -111,7 +111,7 @@ roughly describes the code surface.
 | 8 | ✅ Search token grammar and smart collections (client-side all/any/none shipped 2026-10-22) | LightCraft `catalog/src/query.rs`, `rules.rs` | P1 | Medium |
 | 9 | ✅ Burst grouping by image similarity; bracket detection (shipped 2026-10-22) | LightCraft `pipeline/src/cull.rs`, `catalog/src/stacks.rs` | P1 | Small |
 | 10 | Block-percentile sharpness, noise floor, clipping metric, focus region | LightCraft `cull.rs`, PhotoCraft `algo/segment/focus.rs` | P1 | Medium |
-| 11 | 🟡 Camera AF-point overlay (Sony shipped 2026-10-22; Canon/Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
+| 11 | 🟡 Camera AF-point overlay (Sony 2026-10-22; Canon CR3 2026-10-23; Nikon open) | LightCraft `meta/src/focus_read.rs` | P2 | Medium |
 | 12 | ✅ HEIC/HEIF via pure-Rust `heic-rs` (opt-in `heic` feature, shipped 2026-10-22) | LightCraft `crates/heif` | P2 | Small |
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, crop/straighten | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
@@ -501,13 +501,20 @@ only the pointed-at ranges, bounded to ~32 KB per photo; it reported ~100
 photos/s on a slow USB drive. It then draws the point in Detail, Compare and
 Survey, and handles rotation/crop.
 
-**Shipped (2026-10-22, Sony only):** `io::focus` walks the bounded TIFF/Exif/
+**Shipped (2026-10-22, Sony):** `io::focus` walks the bounded TIFF/Exif/
 maker IFDs in a Sony ARW (ILCE-1 / ILCE-7SM3), decodes the focus frame, mode,
 area and tracking (including the enciphered `0x9402` block), applies EXIF
 orientation, and suppresses manual focus and the untracked Wide centre. Review
-and Compare draw it with a tooltip. Synthetic ARW tests are the evidence; a
-real CR3 is rejected as non-TIFF. Still open: Canon CR3 and Nikon AF-point
-layouts (Canon can be validated on the working corpus).
+and Compare draw it with a tooltip. Synthetic ARW tests are the evidence.
+
+**Shipped (2026-10-23, Canon CR3):** the same module walks `moov` → the Canon
+CRX `uuid` → `CMT1` (identity/orientation) and `CMT3` (maker notes) with
+bounded header-only reads, then decodes AFInfo2 (`0x0026`, AFInfo3 `0x003c`
+fallback): per-point geometry, the in-focus bitset and the AF area mode, plus
+`CanonCameraSettings` for AI Servo/One-shot. The union of the in-focus points
+is drawn. Verified on a real EOS R5 copy (rect `[0.389, 0.557, 0.437, 0.626]`,
+"AI Servo AF · Zone AF"), cross-checked with an independent decode; synthetic
+CR3 tests cover the rest. Still open: Nikon AF-point layouts.
 
 Start with Sony (documented tag ids and the `p³ mod 249` obfuscation), then
 Canon/Nikon. This is a strong differentiator for culling: "where did the camera
