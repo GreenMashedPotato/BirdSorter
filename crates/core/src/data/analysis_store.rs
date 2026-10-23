@@ -44,6 +44,8 @@ pub struct AnalysisRecord {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub analyzed_content_hash: Option<String>,
+    /// Encoded 8×8 luminance signature (see `analysis::burst::FrameSignature`).
+    pub signature: Option<Vec<u8>>,
 }
 
 /// A read-back analysis row.
@@ -67,6 +69,8 @@ pub struct AnalysisRow {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub analyzed_content_hash: Option<String>,
+    /// Encoded 8×8 luminance signature, when one was computed.
+    pub signature: Option<Vec<u8>>,
 }
 
 fn boxes_json(record: &AnalysisRecord) -> Result<Option<String>> {
@@ -109,8 +113,8 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 species_override_name, species_override_confidence,
                 species_top5_json, edge_sharpness_grid, eye_sharpness_worst,
                 center_edge_ratio, miss_focus_reason, subject_species_json,
-                image_width, image_height, analyzed_content_hash
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                image_width, image_height, analyzed_content_hash, signature
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
              ON CONFLICT(file_id) DO UPDATE SET
                 features_json        = excluded.features_json,
                 sharpness_score      = excluded.sharpness_score,
@@ -129,8 +133,9 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 miss_focus_reason    = excluded.miss_focus_reason,
                 subject_species_json = excluded.subject_species_json,
                 image_width          = excluded.image_width,
-                 image_height         = excluded.image_height,
-                 analyzed_content_hash = excluded.analyzed_content_hash",
+                image_height         = excluded.image_height,
+                analyzed_content_hash = excluded.analyzed_content_hash,
+                signature            = excluded.signature",
             rusqlite::params![
                 record.file_id,
                 record.features.to_json(),
@@ -154,6 +159,7 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 record.image_width,
                 record.image_height,
                 record.analyzed_content_hash,
+                record.signature.as_deref(),
             ],
         )?;
         write_subject_boxes(conn, record)?;
@@ -261,7 +267,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     model_version, analysis.species_name, analysis.species_confidence,
                     analysis.species_override_name, analysis.species_override_confidence,
                     species_top5_json, miss_focus_reason, subject_species_json,
-                    image_width, image_height, analyzed_content_hash,
+                    image_width, image_height, analyzed_content_hash, signature,
                     o.species_name AS override_name,
                     o.confidence AS override_confidence
                FROM analysis
@@ -288,6 +294,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     r.get::<_, Option<i64>>("image_width")?,
                     r.get::<_, Option<i64>>("image_height")?,
                     r.get::<_, Option<String>>("analyzed_content_hash")?,
+                    r.get::<_, Option<Vec<u8>>>("signature")?,
                     r.get::<_, Option<String>>("override_name")?,
                     r.get::<_, Option<f32>>("override_confidence")?,
                 ))
@@ -314,6 +321,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         image_width,
         image_height,
         analyzed_content_hash,
+        signature,
         joined_override_name,
         joined_override_confidence,
     )) = row
@@ -358,6 +366,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         subject_species,
         image_width: image_width.map(|v| v as u32),
         image_height: image_height.map(|v| v as u32),
+        signature,
         analyzed_content_hash,
     }))
 }
@@ -545,6 +554,7 @@ mod tests {
                     class: Some("bird".into()),
                 },
             ],
+            signature: Some(vec![1, 2, 3, 4]),
             ..Default::default()
         }
     }
@@ -655,6 +665,7 @@ mod tests {
         assert!((got.species_confidence.unwrap() - 0.87).abs() < 1e-6);
         assert_eq!(got.species_top5.len(), 1);
         assert_eq!(got.subject_species, rec.subject_species);
+        assert_eq!(got.signature, rec.signature);
     }
 
     #[test]

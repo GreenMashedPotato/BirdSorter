@@ -18,14 +18,15 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v17**; **331 Rust + 120 UI tests**; clippy clean.
+- SQLite schema **v18**; **336 Rust + 120 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches, ratings/flags/colours + Ctrl+Z undo,
-  auto-advance, preview adjustments (exposure/contrast/shadows/highlights/WB/
-  vibrance/saturation/clarity/dehaze/denoise), copy/paste, JPEG/TIFF export.
+  auto-advance, similarity-aware burst grouping + bracket detection, preview
+  adjustments (exposure/contrast/shadows/highlights/WB/vibrance/saturation/
+  clarity/dehaze/denoise), copy/paste, JPEG/TIFF export.
 - Guided-filter clarity and dehaze shipped 2026-10-22 (see `implemented.md`).
 - The main product decision for multi-folder is settled: the **last-clicked
   folder is primary**; Analyze/Re-score/Keep burst winners/Auto-star/Reset
@@ -109,10 +110,10 @@ each slice end-to-end.
    corpus, so it is tested with synthetic containers only. Remaining preview
    parity: colour-space handling (Adobe RGB), Sony DRO, Fuji maker-note
    previews and the Hasselblad uncompressed RGB preview.
-4. **Burst similarity + bracket detection.** Compute an 8×8 mean-subtracted
-   luminance signature during analysis (schema migration), group by time +
-   similarity, detect brackets by exposure span, and fall back to time-only for
-   old rows.
+~~4. Burst similarity + bracket detection~~ — **shipped 2026-10-22**: an 8×8
+   mean-subtracted luminance signature + mean luma per analysis (schema v18),
+   time + 0.75-correlation grouping with time-only fallback for old rows, and a
+   ≥3-frame / ≥1 EV bracket flag with the EV span exposed in the UI and CLI.
 5. **Smart-collection rule groups.** Extend saved searches into `all`/`any`/
    `none` rule sets; pure evaluator + tests; persist JSON; add an editor.
 6. **XMP keywords/labels + import existing ratings at scan.** Byte-preserving

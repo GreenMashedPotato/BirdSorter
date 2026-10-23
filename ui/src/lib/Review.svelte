@@ -65,7 +65,14 @@
     fileId: number;
     /** Visible file ids, in display order (for navigation). */
     ids: number[];
-    burstGroups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[];
+    burstGroups: {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[];
     /** Current file's 0-5 star rating. */
     rating: number;
     /** Current file's pick/reject flag. */
@@ -87,7 +94,14 @@
     onPushUndo: (ids: number[]) => void;
     onRate: (id: number, rating: number) => void;
     onBurstGroups: (
-      groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+      groups: {
+        frames: number[];
+        best: number;
+        size: number;
+        winnerOverride: boolean;
+        bracket: boolean;
+        exposureSpanEv: number | null;
+      }[],
     ) => void;
     onOpenBreakdown: () => void;
     onUndo: () => void;
@@ -1291,6 +1305,14 @@
       >
         {isManualWinner ? "★ Winner" : isWinner ? "★ Sharpest" : "☆ Set winner"}
       </button>
+      {#if currentBurst?.bracket}
+        <span
+          class="badge burst"
+          title={`Bracketed exposures (${(currentBurst.exposureSpanEv ?? 0).toFixed(1)} EV span)`}
+        >
+          Bracket
+        </span>
+      {/if}
     {/if}
     <button onclick={exportCurrent} title="Copy this photo to a folder you pick">Export…</button>
     <button

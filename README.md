@@ -5,7 +5,8 @@ Tauri v2 (Rust core + Svelte UI).
 
 It scores every shot for sharpness with a subject-aware pipeline so a sharp bird
 against creamy bokeh is correctly kept, weighs eye focus above everything else,
-groups bursts, and (optionally) identifies species.
+groups similar bursts (and flags exposure brackets), and (optionally) identifies
+species.
 
 **Built to run well without an NVIDIA GPU.** Inferencing goes through ONNX Runtime
 with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
@@ -33,7 +34,7 @@ Early. The headless Rust core is underway (M1 of the plan):
 | `core::analysis::yolo` — YOLO letterbox pre-processing + output decoding/NMS | ✅ tested with synthetic tensors |
 | `core::runtime` — ONNX Runtime (`ort`) YOLO detector, CPU by default, GPU EPs behind features | ✅ builds; model-gated test |
 | `birdsorter` CLI — `hash`, `analyze`, `list`, `thumb`, `probe`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos **and real Canon R5 CR3 files** |
-| `core::analysis::burst` — capture-time burst grouping + best-of-burst | ✅ tested |
+| `core::analysis::burst` — capture-time + similarity burst grouping, bracket detection, best-of-burst | ✅ tested (synthetic similarity/EV; a real 3-frame CR3 burst analysed) |
 | `core::analysis::species` + `core::runtime::species` — crop → preprocess → ONNX classifier, top-5, manual override | ✅ **verified on real photos** (egret → Snowy Egret 0.39) |
 | Scoring settings — persisted thresholds + instant re-score from stored features | ✅ tested |
 | `ui/` — Svelte 5 + Vite frontend (grid, review, settings, labelling) | ✅ builds |

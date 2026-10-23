@@ -96,6 +96,8 @@ pub(crate) struct BurstDto {
     best: i64,
     size: usize,
     winner_override: bool,
+    bracket: bool,
+    exposure_span_ev: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -402,13 +404,15 @@ pub(crate) async fn bursts(
                 best: b.best,
                 size: b.size,
                 winner_override: b.winner_override,
+                bracket: b.bracket,
+                exposure_span_ev: b.exposure_span_ev,
             })
             .collect())
     })
     .await
 }
 
-/// Pick (or clear) the winner of a file's burst by hand — the sharpest frame is
+/// Mark `file` as its burst's winner (or clear it). The sharpest frame is
 /// not always the best pose. Returns the folder's refreshed bursts.
 #[tauri::command]
 pub(crate) async fn set_burst_winner(
@@ -428,6 +432,8 @@ pub(crate) async fn set_burst_winner(
                 best: b.best,
                 size: b.size,
                 winner_override: b.winner_override,
+                bracket: b.bracket,
+                exposure_span_ev: b.exposure_span_ev,
             })
             .collect())
     })

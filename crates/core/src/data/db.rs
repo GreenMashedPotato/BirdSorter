@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -64,7 +64,8 @@ const DDL: &[&str] = &[
         subject_species_json TEXT,
         image_width         INTEGER,
         image_height        INTEGER,
-        analyzed_content_hash TEXT
+        analyzed_content_hash TEXT,
+        signature           BLOB
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -315,6 +316,17 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         )?;
         if has_color == 0 {
             conn.execute_batch("ALTER TABLE files ADD COLUMN color TEXT;")?;
+        }
+    }
+    if from < 18 {
+        // v17 -> v18: 8×8 luminance signature, for burst similarity/brackets.
+        let has_signature: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'signature'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_signature == 0 {
+            conn.execute_batch("ALTER TABLE analysis ADD COLUMN signature BLOB;")?;
         }
     }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
@@ -601,6 +613,27 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn migration_from_v17_adds_the_signature_column() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE analysis DROP COLUMN signature;
+             UPDATE schema_version SET version = 17;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let has_signature: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'signature'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_signature, 1);
     }
 
     #[test]

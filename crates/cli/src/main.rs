@@ -45,7 +45,7 @@ Commands:
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
-  bursts <folder> [--db <path>]  Print burst groups (by capture time)
+  bursts <folder> [--db <path>]  Print burst groups (capture time + similarity)
   export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
       --label <name>            Which label to export (default: sharp)
       --move                    Move instead of copy
@@ -541,8 +541,16 @@ fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()
         multi
     );
     for b in groups.iter().filter(|b| b.size > 1) {
+        let bracket = if b.bracket {
+            format!(
+                "  [bracket {:.1} EV]",
+                b.exposure_span_ev.unwrap_or_default()
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "  size {:<3} best {:<6} frames {:?}",
+            "  size {:<3} best {:<6} frames {:?}{bracket}",
             b.size, b.best, b.frames
         );
     }

@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **327 core unit tests** (331 Rust tests including the integration/desktop suites,
+- **332 core unit tests** (336 Rust tests including the integration/desktop suites,
   +120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -120,6 +120,15 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   TIFF ones cover it; the working corpus has no such files, so real-format
   evidence is still missing. `RENDER_CACHE_VERSION` is now **4**. The CR3
   thumb/preview paths were re-run on a copy and still work.
+- **Similarity-aware bursts and brackets (2026-10-22)**: analysis now stores an
+  8×8 mean-subtracted, unit-normalised luminance signature plus mean luma
+  (schema **v18**, 68-byte BLOB). Bursts split when adjacent frames' signatures
+  correlate below 0.75 (old rows without a signature stay time-only), and a
+  ≥3-frame burst spanning ≥1 EV is flagged as a bracket with its EV span. The
+  review shows a **Bracket** badge and the CLI prints it. Validated on a real
+  three-frame CR3 burst with an isolated DB: 3.71 img/s, all three grouped,
+  signatures stored, means 0.43–0.45 (not a bracket). Similarity splits and a
+  bracketed span are synthetic tests; the corpus has no bracket sequence.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo
@@ -158,7 +167,7 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   only after the CPU retry fails. Model ZIP imports enforce expected filenames,
   duplicate/entry/expanded-size limits, and stage files before committing;
   ordinary image decoding has a 512 MiB safety limit; thumbnail/XMP temp files
-  are unique per writer. Schema is now **v17**.
+  are unique per writer. Schema is now **v18**.
 - **Refactor Phase 1.3**: subject boxes are now first-class rows in a
   `subject_boxes` table (geometry, class, detector/manual source, subject flag,
   ordinal), written in the same transaction as the analysis row. A **v14**

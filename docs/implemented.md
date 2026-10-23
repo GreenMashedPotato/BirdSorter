@@ -81,6 +81,16 @@ state and open work, see [progress.md](./progress.md) and
   it) and grouped with a 2 s gap. Tiles show a burst badge (`★×N` for the
   winner), and a **Burst winners** filter shows only the best frame of each
   sequence. CLI: `birdsorter bursts <folder>`.
+- **Similarity-aware bursts and bracket detection (2026-10-22)**: every analysis
+  stores an 8×8 mean-subtracted, unit-normalised luminance signature plus the
+  frame's mean luma (schema **v18**, 68 bytes). Time-adjacent frames stay in one
+  burst only when their signatures correlate ≥ 0.75; rows without a signature
+  (old analyses) keep the time-only grouping. A burst of ≥3 frames whose mean
+  luma spans ≥ 1 EV is flagged with its EV span: the review shows a **Bracket**
+  badge and `birdsorter bursts` prints `[bracket N.N EV]`. Validated on a real
+  three-frame CR3 burst: all three grouped, signatures stored (68 bytes), mean
+  lumas 0.43–0.45 (correctly not a bracket). Similarity splits and bracketed
+  exposure spans are synthetic tests (the corpus has no bracket sequence).
 - **Sliced (tiled) detection for distant birds**: the detector also runs on an
   overlapping tile grid and merges the results, so birds that vanish when the
   whole frame is letterboxed to 640 px are still found. Measured on a real 26 MP

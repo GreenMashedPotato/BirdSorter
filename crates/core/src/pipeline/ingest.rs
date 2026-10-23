@@ -421,6 +421,7 @@ fn analyze_one(
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
         analyzed_content_hash: None,
+        signature: crate::analysis::burst::signature(rgb).map(|s| s.encode()),
     })
 }
 
@@ -688,6 +689,10 @@ mod tests {
         .unwrap();
         assert_eq!(row.subject_class.as_deref(), Some("bird"));
         assert_eq!(row.predicted_label, "sharp");
+        assert!(
+            row.signature.as_ref().is_some_and(|s| s.len() == 68),
+            "analysis stores an encoded 8x8 signature"
+        );
     }
 
     #[test]
