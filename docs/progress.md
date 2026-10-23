@@ -11,7 +11,7 @@ A working cross-platform bird culling app: Rust core + Tauri v2 shell + Svelte U
 Verified end-to-end on real Canon EOS R5 `.CR3` files (RAW decode → YOLO
 detection → sharpness verdict → species ID → grid/review UI).
 
-- **322 core unit tests** (326 Rust tests including the integration/desktop suites,
+- **327 core unit tests** (331 Rust tests including the integration/desktop suites,
   +120 UI), `cargo fmt` + `cargo clippy -D warnings` clean
 - `svelte-check`: 0 errors / 0 warnings
 - CPU-only throughput: **4.56 img/s** on 40× 26 MP CR3 (28-core), parallel decode
@@ -112,6 +112,14 @@ See [`SUGGESTIONS.md`](./SUGGESTIONS.md) for the full, status-tagged list.
   thumbnail bytes change). No NEF/ARW/DNG samples exist in the working corpus,
   so this is synthetic-container evidence only; the real CR3 `thumb`/`preview`
   paths were re-run on a copy and still work.
+- **RAW preview container parity (2026-10-22)**: Fuji RAF (fixed header),
+  undefined-type `JpgFromRaw` blobs, and Nikon/Olympus maker-note preview IFDs
+  (base-relative offsets) now feed the same selector. It validates a
+  baseline/progressive DCT frame and matches the largest preview's aspect
+  (within 1 %) and component count. Synthetic RAF/Nikon/Olympus tests plus the
+  TIFF ones cover it; the working corpus has no such files, so real-format
+  evidence is still missing. `RENDER_CACHE_VERSION` is now **4**. The CR3
+  thumb/preview paths were re-run on a copy and still work.
 - **GitHub Actions is blocked by billing, not by the code.** Every CI job was
   failing at 0 steps with: *"The job was not started because recent account
   payments have failed or your spending limit needs to be increased."* The repo

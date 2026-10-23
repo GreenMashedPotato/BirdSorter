@@ -575,6 +575,19 @@ on a 28-core Windows box.
   end-to-end thumbnail path. `RENDER_CACHE_VERSION` is now **3** because TIFF
   RAW thumbnail bytes change; the working corpus is all Canon CR3, so real
   NEF/ARW/DNG samples were not available — synthetic containers only.
+- ✅ **RAW preview container parity (2026-10-22)**: beyond the TIFF IFD walk,
+  embedded previews now also come from the Fuji RAF fixed header (JPEG pointer
+  at bytes 84/88), undefined-type `JpgFromRaw` blobs, Nikon's maker-note
+  PreviewIFD (0x0011) and Olympus's CameraSettings IFD (0x2020), with the
+  maker-note base/byte-order rules for Nikon V1/V3, Olympus new/old, Panasonic
+  and plain notes. Candidates are validated by walking to a baseline/progressive
+  DCT frame header (lossless/arithmetic JPEGs are rejected), and a stand-in must
+  match the largest preview's aspect ratio within 1% and its component count, so
+  a cropped thumbnail, grey mask or depth map is not chosen. Synthetic tests
+  cover RAF, `JpgFromRaw`, Nikon, Olympus, classic/BigTIFF, both endiannesses,
+  strips, invalid JPEGs, IFD chains and out-of-bounds offsets.
+  `RENDER_CACHE_VERSION` is now **4**. The corpus has no NEF/ARW/DNG/RAF
+  samples, so these containers remain synthetic-only evidence.
 - ✅ **JPEG/TIFF + wider RAW support**: the scanner accepts every `rawler` format
   (Canon/Nikon/Sony/OM/Fuji/Panasonic/Pentax/DNG plus X3F, SRW, KDC, ERF, IIQ,
   MEF, MOS, MRW, NKD, TFR, ARI) and JPEG/TIFF. JPEG/TIFF EXIF supplies **capture
