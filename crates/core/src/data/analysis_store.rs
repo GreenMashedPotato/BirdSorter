@@ -46,6 +46,10 @@ pub struct AnalysisRecord {
     pub analyzed_content_hash: Option<String>,
     /// Encoded 8×8 luminance signature (see `analysis::burst::FrameSignature`).
     pub signature: Option<Vec<u8>>,
+    /// Identity of the detector artifact used for this analysis.
+    pub detector_id: Option<String>,
+    /// Identity of the species artifact used for this analysis.
+    pub species_id: Option<String>,
 }
 
 /// A read-back analysis row.
@@ -71,6 +75,10 @@ pub struct AnalysisRow {
     pub analyzed_content_hash: Option<String>,
     /// Encoded 8×8 luminance signature, when one was computed.
     pub signature: Option<Vec<u8>>,
+    pub detector_id: Option<String>,
+    pub species_id: Option<String>,
+    /// True when a model changed since this row was written.
+    pub model_stale: bool,
 }
 
 fn boxes_json(record: &AnalysisRecord) -> Result<Option<String>> {
@@ -113,8 +121,9 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 species_override_name, species_override_confidence,
                 species_top5_json, edge_sharpness_grid, eye_sharpness_worst,
                 center_edge_ratio, miss_focus_reason, subject_species_json,
-                image_width, image_height, analyzed_content_hash, signature
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
+                image_width, image_height, analyzed_content_hash, signature,
+                detector_id, species_id, model_stale
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(file_id) DO UPDATE SET
                 features_json        = excluded.features_json,
                 sharpness_score      = excluded.sharpness_score,
@@ -135,7 +144,10 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 image_width          = excluded.image_width,
                 image_height         = excluded.image_height,
                 analyzed_content_hash = excluded.analyzed_content_hash,
-                signature            = excluded.signature",
+                signature            = excluded.signature,
+                detector_id          = excluded.detector_id,
+                species_id           = excluded.species_id,
+                model_stale          = 0",
             rusqlite::params![
                 record.file_id,
                 record.features.to_json(),
@@ -160,11 +172,41 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 record.image_height,
                 record.analyzed_content_hash,
                 record.signature.as_deref(),
+                record.detector_id.as_deref(),
+                record.species_id.as_deref(),
+                0i64,
             ],
         )?;
         write_subject_boxes(conn, record)?;
         Ok(())
     })
+}
+
+/// Mark rows written with a different detector/species artifact as stale.
+/// A `None` role means that model is not in use and is not compared.
+pub fn mark_model_stale(
+    conn: &Connection,
+    detector_id: Option<&str>,
+    species_id: Option<&str>,
+) -> Result<usize> {
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    if let Some(id) = detector_id {
+        clauses.push("(detector_id IS NULL OR detector_id <> ?)");
+        values.push(id.to_string());
+    }
+    if let Some(id) = species_id {
+        clauses.push("(species_id IS NULL OR species_id <> ?)");
+        values.push(id.to_string());
+    }
+    if clauses.is_empty() {
+        return Ok(0);
+    }
+    let sql = format!(
+        "UPDATE analysis SET model_stale = 1 WHERE {}",
+        clauses.join(" OR ")
+    );
+    Ok(conn.execute(&sql, rusqlite::params_from_iter(values))?)
 }
 
 fn parse_boxes(json: Option<String>) -> Result<Vec<BBox>> {
@@ -268,6 +310,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     analysis.species_override_name, analysis.species_override_confidence,
                     species_top5_json, miss_focus_reason, subject_species_json,
                     image_width, image_height, analyzed_content_hash, signature,
+                    detector_id, species_id, model_stale,
                     o.species_name AS override_name,
                     o.confidence AS override_confidence
                FROM analysis
@@ -295,6 +338,9 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     r.get::<_, Option<i64>>("image_height")?,
                     r.get::<_, Option<String>>("analyzed_content_hash")?,
                     r.get::<_, Option<Vec<u8>>>("signature")?,
+                    r.get::<_, Option<String>>("detector_id")?,
+                    r.get::<_, Option<String>>("species_id")?,
+                    r.get::<_, i64>("model_stale")? != 0,
                     r.get::<_, Option<String>>("override_name")?,
                     r.get::<_, Option<f32>>("override_confidence")?,
                 ))
@@ -322,6 +368,9 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         image_height,
         analyzed_content_hash,
         signature,
+        detector_id,
+        species_id,
+        model_stale,
         joined_override_name,
         joined_override_confidence,
     )) = row
@@ -367,6 +416,9 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         image_width: image_width.map(|v| v as u32),
         image_height: image_height.map(|v| v as u32),
         signature,
+        detector_id,
+        species_id,
+        model_stale,
         analyzed_content_hash,
     }))
 }
@@ -555,6 +607,8 @@ mod tests {
                 },
             ],
             signature: Some(vec![1, 2, 3, 4]),
+            detector_id: Some("det-v1".into()),
+            species_id: Some("species-v1".into()),
             ..Default::default()
         }
     }
@@ -666,6 +720,50 @@ mod tests {
         assert_eq!(got.species_top5.len(), 1);
         assert_eq!(got.subject_species, rec.subject_species);
         assert_eq!(got.signature, rec.signature);
+        assert_eq!(got.detector_id, rec.detector_id);
+        assert_eq!(got.species_id, rec.species_id);
+        assert!(!got.model_stale);
+    }
+
+    #[test]
+    fn model_changes_mark_analyses_stale_and_reanalysis_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let rec = sample_record(fid);
+        upsert_analysis(&conn, &rec).unwrap();
+
+        assert_eq!(
+            mark_model_stale(&conn, Some("det-v1"), Some("species-v1")).unwrap(),
+            0
+        );
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        assert_eq!(
+            mark_model_stale(&conn, Some("det-v2"), Some("species-v1")).unwrap(),
+            1
+        );
+        let stale = get_analysis(&conn, fid).unwrap().unwrap();
+        assert!(stale.model_stale);
+        assert_eq!(stale.detector_id.as_deref(), Some("det-v1"));
+
+        // Writing a new analysis clears the flag.
+        upsert_analysis(&conn, &rec).unwrap();
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        // A NULL stored identity is stale once a detector is active.
+        let mut no_ids = rec.clone();
+        no_ids.detector_id = None;
+        no_ids.species_id = None;
+        upsert_analysis(&conn, &no_ids).unwrap();
+        assert_eq!(mark_model_stale(&conn, Some("det-v1"), None).unwrap(), 1);
+        assert!(get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        // No active model means nothing is compared.
+        upsert_analysis(&conn, &rec).unwrap();
+        assert_eq!(mark_model_stale(&conn, None, None).unwrap(), 0);
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
     }
 
     #[test]

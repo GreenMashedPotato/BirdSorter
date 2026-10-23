@@ -543,7 +543,8 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
         "AND f.trashed_at IS NULL
          AND (a.file_id IS NULL
               OR a.analyzed_content_hash IS NOT NULL
-                 AND a.analyzed_content_hash <> f.content_hash)",
+                 AND a.analyzed_content_hash <> f.content_hash
+              OR COALESCE(a.model_stale, 0) = 1)",
         "f.filename ASC",
     )
 }
@@ -937,6 +938,42 @@ mod tests {
             .query_row("SELECT rating FROM files WHERE id = ?1", [id], |r| r.get(0))
             .unwrap();
         assert_eq!(rating, 2);
+    }
+
+    #[test]
+    fn stale_model_analyses_are_pending_again() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"raw");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM files WHERE filename = 'a.cr3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO analysis (file_id, features_json, sharpness_score,
+                                   predicted_label, analyzed_at, model_version,
+                                   analyzed_content_hash, model_stale)
+             SELECT id, '{}', 0.5, 'sharp', 'now', 'rules-v1', content_hash, 0
+               FROM files WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(files_needing_analysis(&conn, fid)
+            .unwrap()
+            .iter()
+            .all(|f| f.file.id != id));
+
+        conn.execute(
+            "UPDATE analysis SET model_stale = 1 WHERE file_id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(files_needing_analysis(&conn, fid)
+            .unwrap()
+            .iter()
+            .any(|f| f.file.id == id));
     }
 
     #[test]

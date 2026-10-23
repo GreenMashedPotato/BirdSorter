@@ -18,14 +18,14 @@ autonomously, ship complete vertical slices, and keep the gates green.
 
 - Rust workspace: `birdsorter-core` (all domain logic), `birdsorter-desktop`
   (Tauri v2), `birdsorter-cli`; Svelte 5 UI in `ui/`.
-- SQLite schema **v18**; **345 Rust + 126 UI tests**; clippy clean.
+- SQLite schema **v19**; **349 Rust + 126 UI tests**; clippy clean.
 - Shipped: folder scan/review, CR3 `PRVW` + TIFF-IFD thumbnails, sharded
   render cache v4, startup-migrated read-only DB path, EXIF strip, filmstrip,
   multi-folder view
   with a primary action target, sorting (worst/best/rating/date/species),
   token search + saved searches + all/any/none smart collections,
   ratings/flags/colours + Ctrl+Z undo, XMP labels/keywords + rating import at
-  scan,
+  scan, model identity per analysis,
   auto-advance, similarity-aware burst grouping + bracket detection, windowed
   1:1 preview above native pixels, preview adjustments (exposure/contrast/
   shadows/highlights/WB/vibrance/saturation/clarity/dehaze/denoise), copy/paste,
@@ -130,8 +130,11 @@ each slice end-to-end.
    sidecars, and a scan import that never overwrites a user rating. Still open:
    fsync/rename retry, a private settings blob, and a library-wide keyword
    manager.
-7. **Model identity per analysis.** Store detector/species identity/hash; mark
-   analyses pending when a model changes; expose it in diagnostics.
+~~7. Model identity per analysis~~ — **shipped 2026-10-22**: detector/species
+   identities (name + size + mtime) are stored with each analysis (schema v19),
+   a changed/unknown identity sets `model_stale` so the next run re-analyzes,
+   and diagnostics lists the distinct stored identities. Validated on a copied
+   CR3: same model → 0 pending; renamed model → 1 re-analyzed.
 8. **Camera AF-point overlay.** Header-only maker-note read (Sony first, then
    Canon/Nikon), rotation-aware, drawn in Review/Compare.
 9. **HEIC (optional feature).** Pure-Rust decoder behind a feature flag; document

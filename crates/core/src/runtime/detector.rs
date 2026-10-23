@@ -146,13 +146,18 @@ pub(crate) fn build_session(
 pub struct OnnxDetector {
     session: OnnxSession,
     config: YoloConfig,
+    model_id: Option<String>,
 }
 
 impl OnnxDetector {
     /// Load an ONNX model from disk.
     pub fn from_file(model: &Path, config: YoloConfig, device: DevicePreference) -> Result<Self> {
         let session = OnnxSession::load(model, device)?;
-        Ok(Self { session, config })
+        Ok(Self {
+            session,
+            config,
+            model_id: crate::data::models::model_identity(model),
+        })
     }
 
     /// True while the session runs on a GPU execution provider.
@@ -503,6 +508,10 @@ fn region_h(r: &RegionInput) -> usize {
 impl SubjectDetector for OnnxDetector {
     fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>> {
         images.iter().map(|img| self.run_one(img)).collect()
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.model_id.clone()
     }
 }
 

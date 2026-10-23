@@ -106,6 +106,12 @@ impl Detection {
 pub trait SubjectDetector: Send + Sync {
     /// One list of detections per input image, in order.
     fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>>;
+
+    /// A stable identity for the loaded model artifact, when known. The
+    /// pipeline stores it so a model change can mark old analyses stale.
+    fn identity(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A detector that never finds anything. Useful for whole-image scoring (the

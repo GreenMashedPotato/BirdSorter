@@ -261,6 +261,10 @@ the library has no rating for that file.
   peaking, **Ctrl+Z** undoes the last label, rating, flag or colour change,
 - J/K to step through files, Esc to close.
 
+Changing the detector or species model marks stored analyses pending, so the
+next **Analyze** run applies the new model automatically; the diagnostics report
+lists the identities stored with the library's analyses.
+
 The toolbar's **Settings** button opens the scoring panel: one **Culling
 strictness** slider plus an **Advanced rules** section with a slider for every
 parameter the scorer uses. Saving persists the thresholds and **re-scores the
