@@ -424,6 +424,8 @@ mod tests {
         assert_eq!(partial.device, "cpu");
         assert_eq!(partial.slice_mode, "fallback");
         assert_eq!(partial.threads, 0);
+        assert_eq!(partial.analysis_preview, "full");
+        assert!(!partial.use_embedded_preview());
         assert!(partial.species);
     }
 
