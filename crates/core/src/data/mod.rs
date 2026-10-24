@@ -4,6 +4,7 @@ pub mod analysis_store;
 pub mod db;
 pub mod labels;
 pub mod library;
+pub mod registry;
 pub mod settings;
 
 /// Current UTC time as an RFC 3339 string, matching the prototype's

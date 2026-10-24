@@ -32,9 +32,22 @@ Early. The headless Rust core is underway (M1 of the plan):
 | `core::analysis::saliency` — zero-download fallback detector | ✅ tested |
 | `core::analysis::yolo` — YOLO letterbox pre-processing + output decoding/NMS | ✅ tested with synthetic tensors |
 | `core::runtime` — ONNX Runtime (`ort`) YOLO detector, CPU by default, GPU EPs behind features | ✅ builds; model-gated test |
-| `birdsorter` CLI — `hash`, `analyze`, `list`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos |
+| `birdsorter` CLI — `hash`, `analyze`, `list`, `thumb`, `probe`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos **and real Canon R5 CR3 files** |
 | Species ID, learning loop, thumbnail encoder | ⏳ next |
 | Tauri desktop shell + Svelte UI | ⏳ next |
+
+### Validated on real RAW files
+
+Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
+
+- `rawler` decodes the embedded previews correctly — **40/40, 0 failures**.
+- The ONNX YOLO11n detector finds birds (e.g. an egret at conf 0.85).
+- Verdict spread is sensible: 9 sharp / 13 uncertain / 5 blurry / 13 no-subject
+  (the no-subject set includes butterflies and a distant raptor on featureless
+  sky — a real COCO-YOLO miss that the fine-tuned detector in M5 will address).
+- **Throughput: 4.56 images/s** with parallel decode (28 cores, CPU-only,
+  full decode + detection + feature extraction), versus 1.38 img/s
+  single-threaded.
 
 ## Layout
 
@@ -51,7 +64,7 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 103 unit tests
+cargo test --workspace          # 111 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -63,6 +76,8 @@ cargo run -p birdsorter-cli -- list /tmp/shoot
 
 # with a real detector (needs a YOLO ONNX export):
 cargo run -p birdsorter-cli -- analyze /tmp/shoot --model yolo11n.onnx
+# inspect one file's detections and features:
+cargo run -p birdsorter-cli -- probe /tmp/shoot/IMG_0001.CR3 --model yolo11n.onnx
 ```
 
 GPU execution providers are opt-in at build time:
