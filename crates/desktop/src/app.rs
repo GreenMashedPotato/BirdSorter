@@ -128,6 +128,8 @@ pub(crate) struct AppInfoDto {
     contact: String,
     /// Short text shown for the link.
     contact_label: String,
+    /// Public source repository, offered for the AGPL.
+    source: String,
     disclaimers: Vec<DisclaimerDto>,
 }
 
@@ -148,6 +150,7 @@ pub(crate) fn app_info(app: tauri::AppHandle) -> AppInfoDto {
         author: "Michel Gunawan".to_string(),
         contact: "https://www.instagram.com/michael.wildlife/".to_string(),
         contact_label: "@michael.wildlife".to_string(),
+        source: "https://github.com/GreenMashedPotato/BirdSorter".to_string(),
         disclaimers: vec![
             d(
                 "Bird species model - iNaturalist 2021 (ConvNeXt-Large, 10,000 species)",
@@ -166,7 +169,8 @@ pub(crate) fn app_info(app: tauri::AppHandle) -> AppInfoDto {
             d(
                 "BirdSorter",
                 "AGPL-3.0-or-later",
-                "Provisional licence. Bundling or modifying it? Keep it AGPL-compatible.",
+                "Licensed AGPL-3.0-or-later. Bundling or modifying it? Keep it AGPL-compatible; \
+                 the source is at github.com/GreenMashedPotato/BirdSorter.",
             ),
             d(
                 "rawler",

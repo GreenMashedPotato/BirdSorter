@@ -37,7 +37,8 @@ rebuilds the session on CPU once and retries.
 - **DirectML cannot run the iNaturalist ConvNeXt** (`Reshape` node crashes the
   DML provider). The species classifier detects this, rebuilds on CPU, and
   continues — so leaving the device on `auto` is safe.
-- **macOS CoreML is unverified** — see `MACOS_TODO.md`.
+- **macOS CoreML is unverified** — the CoreML execution provider is selected
+  automatically but has had no real-hardware testing yet.
 
 ## Models
 
@@ -166,9 +167,9 @@ default (6).
 
 ## Platform-specific
 
-- **macOS** (CoreML, `.app`/`.dmg`, notarization, HEIC): `MACOS_TODO.md`.
+- **macOS** (CoreML, `.app`/`.dmg`, notarization, HEIC): see `SIGNING.md` for
+  packaging and notarization.
 - **Signing / Gatekeeper / SmartScreen**: `SIGNING.md` (Windows signing is wired
   and needs a certificate; macOS needs an Apple Developer account).
 - **CI shows "recent account payments have failed"**: that's GitHub Actions
-  billing on a private repo, not the code — raise the spending limit or make the
-  repo public (`progress.md`).
+  billing, not the code — raise the spending limit or make the repo public.

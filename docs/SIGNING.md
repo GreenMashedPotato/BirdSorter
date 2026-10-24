@@ -147,7 +147,8 @@ spctl -a -vv "target/release/bundle/macos/BirdSorter.app"   # accepted
 codesign -dv --verbose=4 "target/release/bundle/macos/BirdSorter.app"
 ```
 
-See `MACOS_TODO.md` for the full macOS task list.
+Signed installers for every platform are built by the Tauri CLI; see the macOS
+notes above for the notarization steps.
 
 ---
 

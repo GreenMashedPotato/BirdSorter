@@ -11,8 +11,7 @@ agents. Humans should start at [README.md](./README.md).
    not suggestions.
 2. [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — crates, pipeline, runtime
    tiers, Tauri IPC, storage locations.
-3. [docs/progress.md](./docs/progress.md) — current state and the open backlog.
-4. [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) — recipes for adding a metric,
+3. [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) — recipes for adding a metric,
    detector, model, UI panel or command, plus the invariants.
 
 ## Doc index
@@ -23,16 +22,10 @@ agents. Humans should start at [README.md](./README.md).
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | System/pipeline diagrams, module map, IPC, storage, budgets |
 | [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) | How to add code; the gates; invariants |
 | [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) | Symptoms and fixes (GPU, models, cache, slow runs) |
-| [docs/progress.md](./docs/progress.md) | Living status, milestones, open backlog |
-| [docs/implemented.md](./docs/implemented.md) | Shipped features, change log, measurements |
-| [docs/SUGGESTIONS.md](./docs/SUGGESTIONS.md) | Open/partial improvements only |
-| [docs/improvement-suggestions.md](./docs/improvement-suggestions.md) | Cross-project ideas worth borrowing (LightCraft, PhotoCraft) |
 | [docs/MODELS.md](./docs/MODELS.md) · [docs/EYE_MODEL.md](./docs/EYE_MODEL.md) | Model contracts, provenance, eye-model pipeline |
-| [docs/DENOISE_PLAN.md](./docs/DENOISE_PLAN.md) | Future denoise/export feature: model shortlist, licences, tiling, milestones |
 | [docs/HEIC.md](./docs/HEIC.md) | Optional HEIC/HEIF input: the `heic` feature, decoder, patents, limits, evidence |
-| [docs/SIGNING.md](./docs/SIGNING.md) · [docs/MACOS_TODO.md](./docs/MACOS_TODO.md) | Release/signing and the macOS validation brief |
+| [docs/SIGNING.md](./docs/SIGNING.md) | Release signing and notarization |
 | [docs/rule.md](./docs/rule.md) | Engineering rules |
-| [docs/agent-brief.md](./docs/agent-brief.md) | Handoff brief for the next agent: current state, goals, queue, definition of done |
 
 ## Repository map
 

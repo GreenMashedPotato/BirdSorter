@@ -21,8 +21,7 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 
 **Planned, not implemented:** `denoise_srgb`, `denoise_better` and (later)
 `denoise_deblur` — optional downloads that reduce noise on preview/export only.
-They never feed the analysis path. Model shortlist, licences, tiling contract and
-milestones: [`DENOISE_PLAN.md`](./DENOISE_PLAN.md).
+They never feed the analysis path.
 
 ### What ships today (exact provenance)
 

@@ -136,7 +136,7 @@ pub(crate) fn run() {
         .unwrap_or_else(|_| ThumbCache::new(std::env::temp_dir().join("birdsorter-thumbs")));
 
     // File association / "Open with": the launched file, if any (Windows passes
-    // it in argv; macOS delivers it via `RunEvent::Opened`, see MACOS_TODO.md).
+    // it in argv; macOS delivers it via `RunEvent::Opened`).
     let open_request = first_file_arg(&std::env::args().collect::<Vec<_>>());
 
     // Migrate before the window opens. A failure is kept (not discarded) so the

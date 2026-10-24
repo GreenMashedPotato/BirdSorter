@@ -117,7 +117,7 @@
           </div>
           {#if m.planned}
             <p class="status">
-              Planned — needs a labelled dataset and a training run; see MODELS.md / SUGGESTIONS.md.
+              Planned — needs a labelled dataset and a training run; see MODELS.md.
             </p>
           {/if}
           <p class="status files">files: {m.files.join(", ")}</p>

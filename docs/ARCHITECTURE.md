@@ -231,7 +231,7 @@ without the flag. Absent either, nothing changes.
 ## 7. Performance budgets
 
 Targets for CPU-only hardware (8-core i5-1240P / M1 class), with a GPU execution
-provider as the comparison. Current measurements are in `implemented.md`.
+provider as the comparison.
 
 | Metric | CPU-only | With a GPU EP |
 |---|---|---|
@@ -248,9 +248,7 @@ provider as the comparison. Current measurements are in `implemented.md`.
 
 ## 8. Where to go next
 
-- Shipped work (features, change log, measurements): [`implemented.md`](./implemented.md)
-- Current status and backlog: [`progress.md`](./progress.md) · [`SUGGESTIONS.md`](./SUGGESTIONS.md)
 - Engineering rules (invariants, error handling, DB/model/UI rules): [`rule.md`](./rule.md)
 - Model contracts and provenance: [`MODELS.md`](./MODELS.md) · [`EYE_MODEL.md`](./EYE_MODEL.md)
-- Building, running and packaging: [`README.md`](../README.md) · [`SIGNING.md`](./SIGNING.md) · [`MACOS_TODO.md`](./MACOS_TODO.md) · [`HEIC.md`](./HEIC.md)
+- Building, running and packaging: [`README.md`](../README.md) · [`SIGNING.md`](./SIGNING.md) · [`HEIC.md`](./HEIC.md)
 - Adding code / debugging: [`CONTRIBUTING.md`](./CONTRIBUTING.md) · [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)

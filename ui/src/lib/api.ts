@@ -765,6 +765,7 @@ export interface AppInfo {
   author: string;
   contact: string;
   contactLabel: string;
+  source: string;
   disclaimers: Disclaimer[];
 }
 

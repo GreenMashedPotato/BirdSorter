@@ -60,7 +60,7 @@ the image twice.
 |---|---|
 | Supported | single pictures and grid-tiled photos, 4:2:0 and monochrome, 8–10 bit (and 16-bit paths), alpha auxiliary images, container rotation/mirror/crop, **EXIF capture time and the review strip** |
 | Refused by the decoder | 4:2:2 and 4:4:4 (some Canon/Sony "HIF"), image sequences, overlays, non-HEVC derivations — reported as a clear error |
-| Not done | the macOS ImageIO path (see `MACOS_TODO.md`), which would avoid bundling a decoder on macOS |
+| Not done | the macOS ImageIO path, which would avoid bundling a decoder on macOS |
 
 ## Evidence
 

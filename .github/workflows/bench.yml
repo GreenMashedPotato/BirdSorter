@@ -3,11 +3,10 @@ name: Benchmarks
 # Nightly criterion run for the analysis hot paths. Criterion compares against
 # its *own* previous run when a baseline is present in the cargo cache; a hard
 # ">15% regression fails the build" gate needs a committed baseline and is not
-# wired yet (tracked in SUGGESTIONS.md §Performance). This job records the
-# numbers and uploads the HTML report so a regression is visible.
+# wired yet (it needs a committed baseline). This job records the numbers and
+# uploads the HTML report so a regression is visible.
 #
-# Actions minutes are billed on this private repo, so this runs nightly and on
-# demand rather than per push.
+# Runs nightly and on demand rather than per push.
 
 on:
   schedule:

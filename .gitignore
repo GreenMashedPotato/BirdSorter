@@ -37,3 +37,11 @@ Thumbs.db
 # Local agent state (not published)
 .commandcode/
 graphify-out/
+
+# Local planning and scratch notes (not published)
+plan.md
+docs/plan.md
+*.plan.md
+TODO.md
+CHECKLIST.md
+docs/review-*.md

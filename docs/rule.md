@@ -23,15 +23,9 @@ raw-sorter-app/
     ARCHITECTURE.md  System/pipeline diagrams, module map, IPC, storage
     CONTRIBUTING.md  How to add code (deps, gates, recipes, invariants)
     TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
-    progress.md      Living implementation status
-    implemented.md   Shipped features, change log and measurements
-    SUGGESTIONS.md   Open/partial improvements only
-    improvement-suggestions.md  Cross-project ideas worth borrowing
     MODELS.md        Model contracts and licenses
     EYE_MODEL.md     Eye model data/training/runtime contract
-    DENOISE_PLAN.md  Future denoise feature: models, licences, tiling plan
     HEIC.md          Optional HEIC/HEIF input: feature flag, decoder, patents
-    MACOS_TODO.md    Mac-specific validation brief
     SIGNING.md       Signing and notarization instructions
     rule.md          Engineering rules (this file)
 ```
@@ -232,7 +226,7 @@ Required controls:
 
 For every task:
 
-1. Read `ARCHITECTURE.md`, `progress.md`, `rule.md`, and relevant module docs.
+1. Read `ARCHITECTURE.md`, `README.md`, `rule.md`, and relevant module docs.
 2. Search before editing; do not assume names or paths.
 3. Inspect existing changes with `git status`.
 4. State the intended files and invariants.
@@ -240,7 +234,7 @@ For every task:
 6. Make the smallest coherent patch.
 7. Run formatting, tests, clippy, and UI checks.
 8. Review the diff for accidental behavior changes.
-9. Update `progress.md` and relevant documentation.
+9. Update the relevant documentation.
 10. Commit with a specific message. Do not reset or discard user work.
 
 Never:

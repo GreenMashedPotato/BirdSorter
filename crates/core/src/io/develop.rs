@@ -87,7 +87,7 @@ impl DevelopOptions {
 
 /// Demosaic effort for the developed preview. All three are Bayer algorithms:
 /// the crate's DHT and Markesteijn variants are **X-Trans only** and are not
-/// reachable here, so a true Bayer DHT/DCB would need LibRaw (see progress.md).
+/// reachable here, so a true Bayer DHT/DCB would need LibRaw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DemosaicQuality {
     /// Bilinear - fastest, softest.

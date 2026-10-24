@@ -62,6 +62,12 @@
               <span class="status">—</span>
             {/if}
           </p>
+          <p>
+            <strong>Source:</strong>
+            <button class="link" onclick={() => info && openContact(info.source)}>
+              github.com/GreenMashedPotato/BirdSorter
+            </button>
+          </p>
         </section>
 
         <section>
