@@ -52,9 +52,10 @@ npm run build
 ```
 
 All of these must pass. `scripts/build.sh` runs the whole list for you; CI runs
-the same set (plus a criterion perf check on nightly). Do not package an
-installer from a red build — `scripts/release.sh` refuses a dirty tree and
-reruns every gate.
+the same set on Windows, Linux and macOS, plus the optional `heic` feature on
+Linux, dependency review on pull requests and a criterion perf check on nightly.
+Do not package an installer from a red build — `scripts/release.sh` refuses a
+dirty tree and reruns every gate.
 
 ## Versioning
 

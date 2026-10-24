@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Rust workspace (core, desktop, cli).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # Pinned exactly: ort-sys 2.0.0-rc.13 stopped publishing Intel macOS
+      # binaries. Do not widen without a Mac to test on (see crates/core/Cargo.toml).
+      - dependency-name: "ort"
+      - dependency-name: "ort-sys"
+    open-pull-requests-limit: 5
+
+  # Svelte/Vite frontend.
+  - package-ecosystem: npm
+    directory: "/ui"
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  # GitHub Actions used by the workflows; grouped so a SHA/tag bump is one PR.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5

@@ -1,7 +1,9 @@
 name: CI
 
-# macOS is not in the matrix: the project is developed on Windows/Linux and the
-# macOS runners are the expensive ones. Add it when a Mac is available to debug.
+# Windows, Linux and macOS all run the core tests: the app ships on Windows and
+# macOS, and macOS path handling (canonicalize, verbatim prefixes) is not
+# exercised anywhere else. Public-repository runner minutes are free, so the old
+# "macOS is expensive" note no longer applies.
 on:
   push:
     branches: [main]
@@ -31,6 +33,7 @@ jobs:
   rust-core:
     name: core (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -49,17 +52,44 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (core + cli)
-        run: cargo clippy -p birdsorter-core -p birdsorter-cli --all-targets -- -D warnings
+        run: cargo clippy --locked -p birdsorter-core -p birdsorter-cli --all-targets -- -D warnings
 
       - name: Unit tests (core + cli)
-        run: cargo test -p birdsorter-core -p birdsorter-cli
+        run: cargo test --locked -p birdsorter-core -p birdsorter-cli
+
+      # The optional HEIC decoder is a security-sensitive input path; compile
+      # and test it on one platform so the feature cannot rot.
+      - name: Unit tests (heic feature)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p birdsorter-core --features heic
 
       - name: Pipeline self-test
-        run: cargo run -p birdsorter-cli -- selftest
+        run: cargo run --locked -p birdsorter-cli -- selftest
+
+  core-macos:
+    name: core (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (core)
+        run: cargo clippy --locked -p birdsorter-core --all-targets -- -D warnings
+
+      - name: Unit tests (core)
+        run: cargo test --locked -p birdsorter-core
 
   ui:
     name: ui
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -85,6 +115,7 @@ jobs:
   desktop:
     name: desktop (windows)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -103,5 +134,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check desktop crate
-        run: cargo check -p birdsorter-desktop
+      # Clippy is a superset of `cargo check` and the local gates lint the whole
+      # workspace; without this the Tauri adapter was only compile-checked here.
+      - name: Clippy (desktop)
+        run: cargo clippy --locked -p birdsorter-desktop --all-targets -- -D warnings
+
+      - name: Unit tests (desktop)
+        run: cargo test --locked -p birdsorter-desktop
