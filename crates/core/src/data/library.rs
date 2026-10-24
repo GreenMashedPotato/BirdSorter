@@ -402,6 +402,10 @@ pub fn scan_folder_streaming(
             mtime: mtime_secs(&meta),
         });
     }
+    // WalkDir yields whatever order the filesystem returns (APFS differs from
+    // NTFS/ext4), which would make freshly assigned file ids platform-dependent.
+    // Sort by relative path so a scan is reproducible.
+    candidates.sort_by(|a, b| a.rel.cmp(&b.rel));
     let total = candidates.len();
     on_progress(0, total);
 
