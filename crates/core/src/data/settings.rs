@@ -71,6 +71,19 @@ impl ScoreSettings {
         Ok(dirs.config_dir().join("score_settings.json"))
     }
 
+    /// Load the persisted settings, or defaults when none are saved.
+    pub fn load_default() -> Self {
+        match Self::default_path() {
+            Ok(path) => Self::load(path),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Persist to the default location.
+    pub fn save_default(&self) -> Result<()> {
+        self.save(Self::default_path()?)
+    }
+
     /// Load from `path`, falling back to defaults when the file is missing or
     /// unreadable (never fails the app on a bad settings file).
     pub fn load(path: impl AsRef<Path>) -> Self {

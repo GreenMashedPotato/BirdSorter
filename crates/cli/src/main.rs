@@ -10,6 +10,7 @@ use birdsorter_core::analysis::detector::{BBox, NullDetector, SubjectDetector};
 use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::score_rules;
 use birdsorter_core::analysis::sharpness::{compute_features, Subject};
+use birdsorter_core::analysis::species::{SpeciesClassifier, SpeciesPreprocess};
 use birdsorter_core::analysis::yolo::YoloConfig;
 use birdsorter_core::data::library;
 use birdsorter_core::data::settings::ScoreSettings;
@@ -18,7 +19,7 @@ use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDec
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::pipeline::{ingest_folder, IngestContext, IngestProgress, RulesScorer};
-use birdsorter_core::runtime::{DevicePreference, OnnxDetector};
+use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
 use ndarray::Array3;
 
 fn usage() -> &'static str {
@@ -28,10 +29,13 @@ Commands:
   hash <file>...              Print xxh3 content hashes (file identity)
   analyze <folder> [options]  Scan a folder and analyse every pending RAW
       --model <path.onnx>       Use a YOLO ONNX detector (needs a model file)
+      --species-model <path.onnx>   Bird species classifier ONNX (optional)
+      --species-labels <path.json>  Labels for the species classifier
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
   thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
+  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
@@ -47,6 +51,7 @@ fn main() -> ExitCode {
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
+        Some("preview") => cmd_preview(&args[1..]),
         Some("probe") => cmd_probe(&args[1..]),
         Some("genimage") => cmd_genimage(&args[1..]),
         Some("selftest") => cmd_selftest(),
@@ -85,6 +90,45 @@ fn cmd_hash(paths: &[String]) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Render the analysis-resolution preview for one file (same decode path the
+/// review view uses, so detection boxes align 1:1).
+fn cmd_preview(args: &[String]) -> ExitCode {
+    let (Some(src), Some(out)) = (args.first(), args.get(1)) else {
+        eprintln!("preview: usage: preview <raw> <out.jpg> [max_long_side]");
+        return ExitCode::FAILURE;
+    };
+    let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
+    let decoder = CompositeDecoder::new(vec![
+        Box::new(RawDecoder::new(Some(max))),
+        Box::new(ImageCrateDecoder::new(Some(max))),
+    ]);
+    match decoder.decode(Path::new(src)) {
+        Ok(img) => {
+            let (w, h) = img.dimensions();
+            match birdsorter_core::io::thumb::encode_rgb_jpeg(&img.rgb, 85) {
+                Ok(bytes) => match std::fs::write(out, &bytes) {
+                    Ok(()) => {
+                        println!("wrote {out} ({w}x{h}, {} KB)", bytes.len() / 1024);
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("preview: {e}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(e) => {
+                    eprintln!("preview: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("preview failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -172,6 +216,27 @@ fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_cor
         features.subject_edge_distance,
         features.motion_directionality
     );
+
+    // Species identification of the first bird box (default model).
+    match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+        Ok(Some(classifier)) => {
+            if let Some(bird) = dets.iter().find(|d| d.class_name == "bird") {
+                if let Some(crop) =
+                    birdsorter_core::analysis::species::crop_rgb(&img.rgb, bird.bbox)
+                {
+                    let results = classifier.identify_batch(&[&crop])?;
+                    if let Some(Some(id)) = results.into_iter().next() {
+                        println!("species (crop {}x{}):", bird.bbox.w, bird.bbox.h);
+                        for p in id.top.iter() {
+                            println!("  {:<30} {:.3}", p.name, p.confidence);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None) => println!("species: no model installed"),
+        Err(e) => println!("species: model failed to load: {e}"),
+    }
     Ok(())
 }
 
@@ -328,6 +393,8 @@ struct AnalyzeArgs {
     model: Option<String>,
     no_detect: bool,
     db_path: Option<String>,
+    species_model: Option<String>,
+    species_labels: Option<String>,
 }
 
 fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
@@ -335,11 +402,19 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut model = None;
     let mut no_detect = false;
     let mut db_path = None;
+    let mut species_model = None;
+    let mut species_labels = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = Some(it.next().ok_or("--model needs a path")?.clone()),
             "--db" => db_path = Some(it.next().ok_or("--db needs a path")?.clone()),
+            "--species-model" => {
+                species_model = Some(it.next().ok_or("--species-model needs a path")?.clone())
+            }
+            "--species-labels" => {
+                species_labels = Some(it.next().ok_or("--species-labels needs a path")?.clone())
+            }
             "--no-detect" => no_detect = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => folder = Some(other.to_string()),
@@ -350,6 +425,8 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
         model,
         no_detect,
         db_path,
+        species_model,
+        species_labels,
     })
 }
 
@@ -404,16 +481,46 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         Box::new(SaliencyDetector::default())
     };
 
+    // Species identification (optional): explicit flags, else the default model.
+    let species: Option<OnnxSpeciesClassifier> = if args.no_detect {
+        None
+    } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
+        Some(OnnxSpeciesClassifier::from_files(
+            Path::new(m),
+            Path::new(l),
+            SpeciesPreprocess::default(),
+            DevicePreference::Auto,
+        )?)
+    } else {
+        match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: species model could not be loaded: {e}");
+                None
+            }
+        }
+    };
+    match &species {
+        Some(c) => println!(
+            "species identification: enabled ({} species)",
+            c.labels().len()
+        ),
+        None => println!(
+            "species identification: no model installed (use --species-model/--species-labels)"
+        ),
+    }
+
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(2400))),
         Box::new(ImageCrateDecoder::new(Some(2400))),
     ]);
-    let scorer = RulesScorer(ScoreSettings::default());
+    let scorer = RulesScorer(ScoreSettings::load_default());
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4),
+        species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
         ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
     };
 
