@@ -75,8 +75,11 @@ flowchart TD
 Key properties:
 
 - **Thumbnails** decode the camera's compact `PRVW`/`THMB` JPEG when present
-  (CR3: ~1620×1080, read from the first 2 MiB); analysis and the review's
-  fast/full modes still decode the larger track at their requested size.
+  (CR3: ~1620×1080, read from the first 2 MiB) and the review's `full` mode
+  decodes the larger track at its native size. Analysis decodes the largest
+  embedded preview at long-side 2400 by default; the opt-in **Camera preview**
+  mode uses the small preview instead (much faster, lower resolution, and the
+  review's `fast` mode follows the same source).
 - **Content identity is the file hash**, not the path, so a moved/renamed RAW
   keeps its analysis; a *changed* file is marked pending again
   (`analysis.analyzed_content_hash`).

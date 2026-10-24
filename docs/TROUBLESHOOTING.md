@@ -75,15 +75,20 @@ rebuilds the session on CPU once and retries.
 - **Distant birds**: Settings ▸ **Distant birds** (`off` / `smart` / `always`).
   `smart` (default) only tiles frames where the full-frame pass found nothing.
   `always` is thorough but slow.
-- Analysis resolution is fixed at long-side **2400**; grid thumbnails are 512.
-- The species classifier skips crops smaller than **110 px**, so distant specks
-  never reach it.
+- Analysis decodes the largest embedded preview at long-side **2400** by default;
+  grid thumbnails are 512. **Analysis preview -> Camera preview**
+  (Settings -> Performance) decodes the camera's small preview instead: about
+  15x faster and far less memory, but distant birds get fewer pixels and
+  verdicts can change (re-analyze the folder after switching).
+- The species classifier names only the **chosen subject** during ingest and
+  skips crops smaller than **110 px**. Other birds in the frame are named on
+  demand in review; a tiny subject leaves the file-level name empty.
 - **Low-end machines**: turn **Species identification off** (Settings ▸ Performance,
   or `analyze --no-species`) — that drops the ~818 MB model and ~350 ms/crop. Also
   set **Analysis threads** to 1–4 (Settings ▸ Performance, or `analyze --threads n`):
   each worker holds a decoded 2400 px image, so fewer workers means a smaller peak
   RSS and less CPU contention. The batch holds at most one decoded image per worker
-  (capped at 8), so peak memory scales with that setting.
+  (capped at 4), so peak memory scales with that setting.
 
 ## Results look stale
 
