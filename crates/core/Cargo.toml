@@ -1,0 +1,41 @@
+[package]
+name = "birdsorter-core"
+description = "BirdSorter core: headless RAW culling pipeline, analysis and data layer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ndarray.workspace = true
+rayon.workspace = true
+rustfft.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+directories.workspace = true
+xxhash-rust.workspace = true
+rusqlite.workspace = true
+walkdir.workspace = true
+time.workspace = true
+image.workspace = true
+demosaic.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+zip.workspace = true
+rawler = "0.6.0"
+ort = { version = "2.0.0-rc.9", features = ["ndarray", "download-binaries"] }
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+
+[features]
+default = []
+# Optional GPU execution providers. Off by default: the CPU build is smaller and
+# runs everywhere, which is the project's core requirement.
+gpu-directml = ["ort/directml"]
+gpu-coreml = ["ort/coreml"]
+gpu-cuda = ["ort/cuda"]
