@@ -43,6 +43,7 @@ pub struct AnalysisRecord {
     /// Dimensions of the image the features (and boxes) were computed on.
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
+    pub analyzed_content_hash: Option<String>,
 }
 
 /// A read-back analysis row.
@@ -65,6 +66,7 @@ pub struct AnalysisRow {
     pub subject_species: Vec<SubjectSpecies>,
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
+    pub analyzed_content_hash: Option<String>,
 }
 
 fn boxes_json(record: &AnalysisRecord) -> Result<Option<String>> {
@@ -104,10 +106,11 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 file_id, features_json, sharpness_score, subject_bbox_json,
                 subject_class, has_bokeh, predicted_label, analyzed_at,
                 model_version, species_name, species_confidence,
+                species_override_name, species_override_confidence,
                 species_top5_json, edge_sharpness_grid, eye_sharpness_worst,
                 center_edge_ratio, miss_focus_reason, subject_species_json,
-                image_width, image_height
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                image_width, image_height, analyzed_content_hash
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
              ON CONFLICT(file_id) DO UPDATE SET
                 features_json        = excluded.features_json,
                 sharpness_score      = excluded.sharpness_score,
@@ -126,7 +129,8 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 miss_focus_reason    = excluded.miss_focus_reason,
                 subject_species_json = excluded.subject_species_json,
                 image_width          = excluded.image_width,
-                image_height         = excluded.image_height",
+                 image_height         = excluded.image_height,
+                 analyzed_content_hash = excluded.analyzed_content_hash",
             rusqlite::params![
                 record.file_id,
                 record.features.to_json(),
@@ -139,6 +143,8 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 record.score.model_version,
                 record.species_name,
                 record.species_confidence,
+                Option::<String>::None,
+                Option::<f32>::None,
                 top5_json,
                 edge_grid_json,
                 record.features.eye_sharpness_worst,
@@ -147,8 +153,10 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 subj_species_json,
                 record.image_width,
                 record.image_height,
+                record.analyzed_content_hash,
             ],
         )?;
+        write_subject_boxes(conn, record)?;
         Ok(())
     })
 }
@@ -169,11 +177,96 @@ fn parse_subject_species(json: Option<String>) -> Result<Vec<SubjectSpecies>> {
     Ok(serde_json::from_str(&json)?)
 }
 
+/// Replace the normalized subject-box rows for a file.
+///
+/// Written in the same transaction as the analysis row so geometry and verdict
+/// can never disagree.
+fn write_subject_boxes(conn: &Connection, record: &AnalysisRecord) -> Result<()> {
+    conn.execute(
+        "DELETE FROM subject_boxes WHERE file_id = ?1",
+        [record.file_id],
+    )?;
+    if record.all_bboxes.is_empty() {
+        return Ok(());
+    }
+    let now = now_iso();
+    let mut stmt = conn.prepare(
+        "INSERT INTO subject_boxes
+           (file_id, x, y, w, h, class_name, source, confidence, is_subject, ordinal, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+    )?;
+    for (i, b) in record.all_bboxes.iter().enumerate() {
+        let ss = record.subject_species.get(i);
+        let class = ss
+            .and_then(|s| s.class.clone())
+            .or_else(|| {
+                if i == 0 {
+                    record.subject_class.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "bird".to_string());
+        let source = if class == "manual" {
+            "manual"
+        } else {
+            "detector"
+        };
+        stmt.execute(rusqlite::params![
+            record.file_id,
+            b.x,
+            b.y,
+            b.w,
+            b.h,
+            class,
+            source,
+            ss.and_then(|s| s.confidence),
+            (record.subject_bbox == Some(*b)) as i32,
+            i as i64,
+            now
+        ])?;
+    }
+    Ok(())
+}
+
+/// Normalized boxes for a file, or `None` when the file has none.
+fn read_subject_boxes(
+    conn: &Connection,
+    file_id: i64,
+) -> Result<Option<Vec<(BBox, String, bool)>>> {
+    let mut stmt = conn.prepare(
+        "SELECT x, y, w, h, class_name, is_subject
+           FROM subject_boxes WHERE file_id = ?1 ORDER BY ordinal, id",
+    )?;
+    let rows = stmt.query_map([file_id], |r| {
+        Ok((
+            BBox::new(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?),
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)? != 0,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(if out.is_empty() { None } else { Some(out) })
+}
+
 /// Read the analysis row for a file, if present.
 pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRow>> {
     let row = conn
         .query_row(
-            "SELECT * FROM analysis WHERE file_id = ?1",
+            "SELECT features_json, sharpness_score, subject_bbox_json,
+                    subject_class, has_bokeh, predicted_label, analyzed_at,
+                    model_version, analysis.species_name, analysis.species_confidence,
+                    analysis.species_override_name, analysis.species_override_confidence,
+                    species_top5_json, miss_focus_reason, subject_species_json,
+                    image_width, image_height, analyzed_content_hash,
+                    o.species_name AS override_name,
+                    o.confidence AS override_confidence
+               FROM analysis
+               LEFT JOIN species_overrides o ON o.file_id = analysis.file_id
+              WHERE analysis.file_id = ?1",
             [file_id],
             |r| {
                 Ok((
@@ -187,11 +280,16 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     r.get::<_, String>("model_version")?,
                     r.get::<_, Option<String>>("species_name")?,
                     r.get::<_, Option<f32>>("species_confidence")?,
+                    r.get::<_, Option<String>>("species_override_name")?,
+                    r.get::<_, Option<f32>>("species_override_confidence")?,
                     r.get::<_, Option<String>>("species_top5_json")?,
                     r.get::<_, Option<String>>("miss_focus_reason")?,
                     r.get::<_, Option<String>>("subject_species_json")?,
                     r.get::<_, Option<i64>>("image_width")?,
                     r.get::<_, Option<i64>>("image_height")?,
+                    r.get::<_, Option<String>>("analyzed_content_hash")?,
+                    r.get::<_, Option<String>>("override_name")?,
+                    r.get::<_, Option<f32>>("override_confidence")?,
                 ))
             },
         )
@@ -208,33 +306,59 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         model_version,
         species_name,
         species_confidence,
+        override_name,
+        override_confidence,
         top5_json,
         miss_focus_reason,
         subj_species_json,
         image_width,
         image_height,
+        analyzed_content_hash,
+        joined_override_name,
+        joined_override_confidence,
     )) = row
     else {
         return Ok(None);
     };
 
+    // Prefer the normalized box table; fall back to the legacy JSON list for
+    // rows written before the v14 migration (or by old code paths).
+    let mut bboxes = parse_boxes(bbox_json)?;
+    let mut subject_species = parse_subject_species(subj_species_json)?;
+    if let Some(rows) = read_subject_boxes(conn, file_id)? {
+        bboxes = rows.iter().map(|(b, _, _)| *b).collect();
+        // Rebuild per-box results so they stay parallel to the normalized rows,
+        // preserving species data by index where it exists.
+        let mut rebuilt: Vec<SubjectSpecies> = Vec::with_capacity(rows.len());
+        for (i, (b, class, _)) in rows.iter().enumerate() {
+            let mut entry = subject_species.get(i).cloned().unwrap_or_default();
+            entry.bbox = b.to_array();
+            entry.class = Some(class.clone());
+            rebuilt.push(entry);
+        }
+        subject_species = rebuilt;
+    }
+
     Ok(Some(AnalysisRow {
         file_id,
         features: SharpnessFeatures::from_json(&features_json)?,
         sharpness_score,
-        bboxes: parse_boxes(bbox_json)?,
+        bboxes,
         subject_class,
         has_bokeh: has_bokeh != 0,
         predicted_label,
         analyzed_at,
         model_version,
-        species_name,
-        species_confidence,
+        species_name: joined_override_name.or(override_name).or(species_name),
+        species_confidence: joined_override_confidence
+            .or(override_confidence)
+            .or(species_confidence),
         species_top5: parse_top5(top5_json)?,
         miss_focus_reason,
-        subject_species: parse_subject_species(subj_species_json)?,
+        subject_species,
         image_width: image_width.map(|v| v as u32),
         image_height: image_height.map(|v| v as u32),
+        analyzed_content_hash,
     }))
 }
 
@@ -247,8 +371,13 @@ pub fn set_species_override(
 ) -> Result<()> {
     with_tx(conn, || {
         conn.execute(
-            "UPDATE analysis SET species_name = ?1, species_confidence = ?2 WHERE file_id = ?3",
-            rusqlite::params![species_name, species_confidence, file_id],
+            "INSERT INTO species_overrides(file_id, species_name, confidence, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(file_id) DO UPDATE SET
+                 species_name = excluded.species_name,
+                 confidence = excluded.confidence,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![file_id, species_name, species_confidence, now_iso()],
         )?;
         Ok(())
     })
@@ -258,7 +387,7 @@ pub fn set_species_override(
 pub fn clear_species_override(conn: &Connection, file_id: i64) -> Result<()> {
     with_tx(conn, || {
         conn.execute(
-            "UPDATE analysis SET species_name = NULL, species_confidence = NULL WHERE file_id = ?1",
+            "DELETE FROM species_overrides WHERE file_id = ?1",
             [file_id],
         )?;
         Ok(())
@@ -275,7 +404,33 @@ pub fn set_manual_bbox(conn: &Connection, file_id: i64, bbox: BBox) -> Result<()
               WHERE file_id = ?2",
             rusqlite::params![json, file_id],
         )?;
+        conn.execute("DELETE FROM subject_boxes WHERE file_id = ?1", [file_id])?;
+        conn.execute(
+            "INSERT INTO subject_boxes
+               (file_id, x, y, w, h, class_name, source, confidence, is_subject, ordinal, created_at)
+             VALUES (?1,?2,?3,?4,?5,'manual','manual',NULL,1,0,?6)",
+            rusqlite::params![file_id, bbox.x, bbox.y, bbox.w, bbox.h, now_iso()],
+        )?;
         Ok(())
+    })
+}
+
+/// Delete every analysis row for a folder's files, so a re-analysis recomputes
+/// them from scratch (used by "Re-analyse all"). User labels are untouched.
+/// Returns how many rows were removed.
+pub fn clear_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
+    with_tx(conn, || {
+        conn.execute(
+            "DELETE FROM subject_boxes
+              WHERE file_id IN (SELECT id FROM files WHERE folder_id = ?1)",
+            [folder_id],
+        )?;
+        let n = conn.execute(
+            "DELETE FROM analysis
+              WHERE file_id IN (SELECT id FROM files WHERE folder_id = ?1)",
+            [folder_id],
+        )?;
+        Ok(n)
     })
 }
 
@@ -373,13 +528,22 @@ mod tests {
             species_name: Some("Pycnonotus goiavier".into()),
             species_confidence: Some(0.87),
             species_top5: vec![("Pycnonotus goiavier".into(), 0.87)],
-            subject_species: vec![SubjectSpecies {
-                bbox: [10, 20, 30, 40],
-                species: Some("Pycnonotus goiavier".into()),
-                confidence: Some(0.87),
-                top5: vec![("Pycnonotus goiavier".into(), 0.87)],
-                class: Some("bird".into()),
-            }],
+            subject_species: vec![
+                SubjectSpecies {
+                    bbox: [10, 20, 30, 40],
+                    species: Some("Pycnonotus goiavier".into()),
+                    confidence: Some(0.87),
+                    top5: vec![("Pycnonotus goiavier".into(), 0.87)],
+                    class: Some("bird".into()),
+                },
+                SubjectSpecies {
+                    bbox: [1, 2, 3, 4],
+                    species: None,
+                    confidence: None,
+                    top5: Vec::new(),
+                    class: Some("bird".into()),
+                },
+            ],
             ..Default::default()
         }
     }
@@ -405,6 +569,66 @@ mod tests {
             get_analysis(&conn, fid).unwrap().unwrap().predicted_label,
             "uncertain"
         );
+    }
+
+    #[test]
+    fn subject_boxes_are_normalized_and_keep_manual_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+
+        let mut rec = sample_record(fid);
+        rec.subject_bbox = Some(BBox::new(10, 20, 30, 40));
+        rec.all_bboxes = vec![BBox::new(10, 20, 30, 40), BBox::new(1, 2, 3, 4)];
+        rec.subject_species = vec![
+            SubjectSpecies {
+                bbox: [10, 20, 30, 40],
+                species: None,
+                confidence: None,
+                top5: Vec::new(),
+                class: Some("manual".into()),
+            },
+            SubjectSpecies {
+                bbox: [1, 2, 3, 4],
+                species: None,
+                confidence: None,
+                top5: Vec::new(),
+                class: Some("bird".into()),
+            },
+        ];
+        upsert_analysis(&conn, &rec).unwrap();
+
+        let rows: Vec<(String, i64, i64)> = conn
+            .prepare(
+                "SELECT source, is_subject, ordinal FROM subject_boxes
+                  WHERE file_id = ?1 ORDER BY ordinal",
+            )
+            .unwrap()
+            .query_map([fid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("manual".to_string(), 1, 0));
+        assert_eq!(rows[1], ("detector".to_string(), 0, 1));
+
+        // A rewrite replaces rows instead of duplicating them.
+        upsert_analysis(&conn, &rec).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subject_boxes WHERE file_id = ?1",
+                [fid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+
+        // Geometry and classes read back from the normalized table.
+        let got = get_analysis(&conn, fid).unwrap().unwrap();
+        assert_eq!(got.bboxes.len(), 2);
+        assert_eq!(got.bboxes[0], BBox::new(10, 20, 30, 40));
+        assert_eq!(got.subject_species[0].class.as_deref(), Some("manual"));
     }
 
     #[test]
@@ -452,8 +676,8 @@ mod tests {
 
         clear_species_override(&conn, fid).unwrap();
         let got = get_analysis(&conn, fid).unwrap().unwrap();
-        assert!(got.species_name.is_none());
-        assert!(got.species_confidence.is_none());
+        assert_eq!(got.species_name.as_deref(), Some("Pycnonotus goiavier"));
+        assert!((got.species_confidence.unwrap() - 0.87).abs() < 1e-6);
     }
 
     #[test]
@@ -502,6 +726,30 @@ mod tests {
         let conn = connect_in_memory().unwrap();
         init_schema(&conn).unwrap();
         assert!(get_analysis(&conn, 123).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_folder_removes_analysis_but_keeps_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let folder = crate::data::library::list_folders(&conn).unwrap()[0].id;
+        upsert_analysis(&conn, &sample_record(fid)).unwrap();
+        crate::data::labels::add_label(
+            &conn,
+            fid,
+            crate::data::labels::UserLabel::Sharp,
+            crate::data::labels::LabelSource::Manual,
+        )
+        .unwrap();
+
+        assert_eq!(clear_folder(&conn, folder).unwrap(), 1);
+        assert!(get_analysis(&conn, fid).unwrap().is_none());
+        // The user's label survives, so a re-analysis keeps their work.
+        assert!(crate::data::labels::latest_label(&conn, fid)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

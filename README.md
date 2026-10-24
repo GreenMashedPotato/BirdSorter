@@ -35,7 +35,8 @@ Early. The headless Rust core is underway (M1 of the plan):
 | Scoring settings — persisted thresholds + instant re-score from stored features | ✅ tested |
 | `ui/` — Svelte 5 + Vite frontend (grid, review, settings, labelling) | ✅ builds |
 | `crates/desktop` — Tauri v2 shell (commands + progress events) | ✅ builds |
-| Learning loop (smartcore retrain) | ⏳ next |
+| Learning loop (pure-Rust logistic regression, `train` CLI + Retrain button) | ✅ trains + re-scores |
+| Sliced (tiled) detection for distant birds | ✅ **verified**: finds a distant raptor at 0.92 |
 
 ### Validated on real RAW files
 
@@ -43,9 +44,12 @@ Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
 
 - `rawler` decodes the embedded previews correctly — **40/40, 0 failures**.
 - The ONNX YOLO11n detector finds birds (e.g. an egret at conf 0.85).
-- Verdict spread is sensible: 9 sharp / 13 uncertain / 5 blurry / 13 no-subject
-  (the no-subject set includes butterflies and a distant raptor on featureless
-  sky — a real COCO-YOLO miss that the fine-tuned detector in M5 will address).
+- Verdict spread is sensible: 9 sharp / 13 uncertain / 5 blurry / 13 no-subject.
+- The "no-subject" set includes butterflies and a distant raptor on featureless
+  sky — a real COCO-YOLO miss at full-frame resolution. **Sliced (tiled)
+  detection fixes the raptor**: 0 birds frame-wide → 1 bird at **0.92**
+  confidence with `--slice 6`. It is on by default when a GPU EP is active
+  (Settings ▸ Distant birds).
 - **Throughput: 4.56 images/s** with parallel decode (28 cores, CPU-only,
   full decode + detection + feature extraction), versus 1.38 img/s
   single-threaded.
@@ -65,7 +69,7 @@ tools/           dev-only Python for ONNX export/distillation (planned)
 Requires Rust (stable) — and on Windows the MSVC toolchain.
 
 ```bash
-cargo test --workspace          # 137 unit tests
+cargo test --workspace          # 158 unit tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
 cargo run -p birdsorter-cli -- hash shot.cr3
@@ -94,12 +98,50 @@ The GUI is a Tauri v2 shell (`crates/desktop`) over the same core, with a Svelte
 frontend in `ui/`. It needs the frontend built first (Tauri embeds `ui/dist`):
 
 ```bash
-cd ui && npm install && npm run build && cd ..
 # Always use --release: RAW decode (rawler) and image ops are ~10x slower in a
 # debug build, which makes the window appear to hang.
 cargo run --release -p birdsorter-desktop
 # or from the ui/ folder: `npm run dev` for a browser preview with mock data
 ```
+
+### Building installers
+
+The Tauri CLI builds `.msi`/`.exe` (Windows) and `.dmg`/`.app` (macOS):
+
+```bash
+cd ui && npm install && npm run build && cd ..   # frontend first (Tauri embeds ui/dist)
+cd crates/desktop
+../../ui/node_modules/.bin/tauri build           # add --no-bundle for just the binary
+```
+
+Output goes to `target/release/bundle/`.
+
+**Two flavours:**
+
+| Build | Command | Contents |
+|---|---|---|
+| Default | `tauri build` | app + the bundled **detector** only. Works on any machine — the species model is installed later from Models ▸ Install from file. |
+| With the species model | `tauri build --config tauri.models.conf.json --bundles nsis` (Windows) / `… --bundles dmg` (macOS) | also bundles the **iNaturalist 2021 model (~820 MB)** and seeds it on first run, so testers get working ID with no downloads. Windows installer ≈ **769 MB**. |
+
+`tauri.models.conf.json` is a merge overlay (Tauri accepts repeated `--config`),
+so it combines with the signing config:
+`tauri build --config tauri.signing.json --config tauri.models.conf.json --bundles nsis`.
+The model files live in `dist-models/inat21/` (gitignored) — build them on the
+shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./MODELS.md)).
+That is why the default config references only the committed detector.
+
+Releases are built by `.github/workflows/release.yml` (Windows x64, macOS arm64
+and x64); those runners do not have the 820 MB model, so they produce the default
+(detector-only) bundles. Windows code signing is **wired up** — set
+`WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD` (base64 `.pfx`) and the
+app exe and installers are signed; without the secrets the build stays unsigned
+so forks keep working. macOS signing/notarization is ready but untested (needs an
+Apple Developer certificate). Full instructions: [`SIGNING.md`](./SIGNING.md).
+Until a certificate is configured, macOS Gatekeeper needs right-click → Open and
+Windows may show a SmartScreen warning.
+
+macOS-specific work (CoreML, notarization, `.dmg`, HEIC) is listed as a
+self-contained brief in [`MACOS_TODO.md`](./MACOS_TODO.md).
 
 The window provides a folder sidebar, a worst-first thumbnail grid with filter
 chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
@@ -118,6 +160,37 @@ parameter the scorer uses. Saving persists the thresholds and **re-scores the
 current folder from its stored feature vectors** — instant, no re-decoding.
 
 All logic stays in `birdsorter-core`; the shell only wires commands and events.
+
+### Distant birds and the developed preview
+
+Two detector/preview knobs live outside the scoring panel:
+
+- **Distant birds** (Settings ▸ Distant birds): runs the detector on an
+  overlapping tile grid and merges the results, so small/far birds that vanish
+  when the frame is letterboxed to 640 px are still found. Default **Auto** =
+  tiles only when a GPU execution provider is active, so CPU-only machines are
+  unaffected. Changing it applies to the **next analysis run**.
+- **Developed preview** (CLI only, `preview --develop [--max-quality]`): a full
+  RAW development with AHD (or VNG with `--max-quality`) plus RL deconvolution.
+  Bayer sensors only — X-Trans/Fuji files report a clear message; the camera
+  preview is used for those.
+
+### Training the bird models
+
+`tools/train_bird_detector.py` fine-tunes and exports the two planned models —
+a single-class bird detector (`bird_det_v2.onnx`) and eye/head landmarks
+(`bird_eye_v1.onnx`) — then prints the checksums and how to install them. Only a
+labelled dataset is missing:
+
+```bash
+# Build a single-class bird dataset from COCO and fine-tune:
+python tools/train_bird_detector.py --task detect --from-coco \
+    --coco-json instances_val2017.json --images val2017 --epochs 100
+# Or point it at your own YOLO-format dataset:
+python tools/train_bird_detector.py --task detect --data birds/dataset.yaml --export-int8
+```
+
+See `MODELS.md` for hosting and `progress.md` for the current status.
 
 ### Species model
 

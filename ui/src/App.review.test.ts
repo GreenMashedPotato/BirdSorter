@@ -1,0 +1,152 @@
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
+
+// Gates let a test hold one file's `analysisDetail` response so a stale response
+// can be released out of order (the rapid-navigation regression).
+const gates = vi.hoisted(() => {
+  const waits = new Map<number, Promise<void>>();
+  const release = new Map<number, () => void>();
+  return {
+    hold(id: number) {
+      if (!waits.has(id)) waits.set(id, new Promise<void>((res) => release.set(id, res)));
+    },
+    wait(id: number): Promise<void> | undefined {
+      return waits.get(id);
+    },
+    release(id: number) {
+      release.get(id)?.();
+      release.delete(id);
+      waits.delete(id);
+    },
+  };
+});
+
+// jsdom has no ResizeObserver; App's grid effect needs one.
+beforeAll(() => {
+  class RO {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", RO);
+});
+
+vi.mock("./lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./lib/api")>();
+  const file = (id: number) => ({
+    id,
+    filename: `img${id}.cr3`,
+    format: "CR3",
+    trashed: false,
+    analyzed: true,
+    label: null,
+    predicted: "sharp",
+    score: 0.9,
+    hasBokeh: false,
+    species: null,
+    subjectClass: "bird",
+    rating: 0,
+  });
+  const detail = (id: number) => ({
+    fileId: id,
+    filename: `img${id}.cr3`,
+    label: null,
+    predicted: "sharp",
+    score: 0.9,
+    hasBokeh: false,
+    missFocusReason: null,
+    species: null,
+    speciesConfidence: null,
+    top5: [],
+    boxes: [],
+    modelVersion: "v",
+    imageWidth: null,
+    imageHeight: null,
+  });
+  return {
+    ...actual,
+    inTauri: true,
+    listFolders: vi.fn(async () => [
+      { id: 1, path: "D:\\shoot", addedAt: "", lastScannedAt: null },
+    ]),
+    queryFiles: vi.fn(async () => [file(1), file(2), file(3)]),
+    bursts: vi.fn(async () => []),
+    analysisDetail: vi.fn(async (id: number) => {
+      const held = gates.wait(id);
+      if (held) await held;
+      return detail(id);
+    }),
+    previewImage: vi.fn(async () => "data:image/jpeg;base64,"),
+    getThumbnail: vi.fn(async () => ""),
+    labelFiles: vi.fn(async () => 1),
+    trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
+    speciesLabels: vi.fn(async () => []),
+    onProgress: () => Promise.resolve(() => {}),
+    onDone: () => Promise.resolve(() => {}),
+    onError: () => Promise.resolve(() => {}),
+    onScanProgress: () => Promise.resolve(() => {}),
+    onScanDone: () => Promise.resolve(() => {}),
+    onScanError: () => Promise.resolve(() => {}),
+    getSettings: vi.fn(async () => actual.DEFAULT_SETTINGS),
+    getDetectionSettings: vi.fn(async () => actual.DEFAULT_DETECTION_SETTINGS),
+  };
+});
+
+import App from "./App.svelte";
+import { analysisDetail, labelFiles } from "./lib/api";
+
+/** Render App with mock data and open the first tile's review. */
+async function openFirstReview() {
+  const utils = render(App);
+  await waitFor(() => expect(utils.container.querySelectorAll(".tile").length).toBe(3));
+  const tile = utils.container.querySelector('[data-idx="0"]') as HTMLElement;
+  await fireEvent.dblClick(tile);
+  await waitFor(() =>
+    expect(utils.container.querySelector(".review strong")?.textContent).toBe("img1.cr3"),
+  );
+  return utils;
+}
+
+describe("review view", () => {
+  it("opens from a tile and shows the file", async () => {
+    vi.mocked(analysisDetail).mockClear();
+    await openFirstReview();
+    expect(analysisDetail).toHaveBeenCalledWith(1);
+  });
+
+  it("navigates to the next frame with the J button", async () => {
+    vi.mocked(analysisDetail).mockClear();
+    const { container, getByText } = await openFirstReview();
+
+    await fireEvent.click(getByText("J ›"));
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img2.cr3"),
+    );
+    expect(analysisDetail).toHaveBeenCalledWith(2);
+  });
+
+  it("labels the open file from the review sidebar", async () => {
+    vi.mocked(labelFiles).mockClear();
+    const { container } = await openFirstReview();
+
+    const review = container.querySelector(".review") as HTMLElement;
+    await fireEvent.click(within(review).getByText("Sharp"));
+    await waitFor(() => expect(labelFiles).toHaveBeenCalledWith([1], "sharp"));
+  });
+
+  it("ignores a stale frame when navigating quickly", async () => {
+    gates.hold(2); // the frame we navigate to first will not resolve yet
+    const { container, getByText } = await openFirstReview();
+
+    await fireEvent.click(getByText("J ›")); // → file 2 (held)
+    await fireEvent.click(getByText("J ›")); // → file 3 (resolves)
+    await waitFor(() =>
+      expect(container.querySelector(".review strong")?.textContent).toBe("img3.cr3"),
+    );
+
+    // Frame 2's response finally arrives: it must not overwrite the open file.
+    gates.release(2);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.querySelector(".review strong")?.textContent).toBe("img3.cr3");
+  });
+});

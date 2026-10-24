@@ -5,10 +5,8 @@
 //! the app's model directory.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use ndarray::Array3;
-use ort::session::Session;
 use ort::value::Tensor;
 
 use crate::analysis::species::{
@@ -16,17 +14,13 @@ use crate::analysis::species::{
     SPECIES_LABELS, SPECIES_META, SPECIES_ONNX,
 };
 use crate::data::registry::default_model_dir;
-use crate::runtime::detector::{build_session, DevicePreference};
+use crate::runtime::detector::DevicePreference;
+use crate::runtime::session::{ort_err, OnnxSession};
 use crate::{CoreError, Result};
-
-fn ort_err(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Other(format!("onnxruntime: {e}"))
-}
 
 /// A species classifier backed by an ONNX model + labels file.
 pub struct OnnxSpeciesClassifier {
-    session: Mutex<Session>,
-    input_name: String,
+    session: OnnxSession,
     labels: Vec<String>,
     preprocess: SpeciesPreprocess,
     top_k: usize,
@@ -40,12 +34,7 @@ impl OnnxSpeciesClassifier {
         preprocess: SpeciesPreprocess,
         device: DevicePreference,
     ) -> Result<Self> {
-        let session = build_session(model, device)?;
-        let input_name = session
-            .inputs()
-            .first()
-            .map(|i| i.name().to_string())
-            .unwrap_or_else(|| "pixel_values".to_string());
+        let session = OnnxSession::load(model, device)?;
         let labels = load_labels(labels_path)?;
         if labels.is_empty() {
             return Err(CoreError::Other(format!(
@@ -54,12 +43,19 @@ impl OnnxSpeciesClassifier {
             )));
         }
         Ok(Self {
-            session: Mutex::new(session),
-            input_name,
+            session,
             labels,
             preprocess,
             top_k: 5,
         })
+    }
+
+    /// Run the model. A GPU-provider failure is handled inside the session (one
+    /// CPU rebuild and retry — some models hit provider bugs, e.g. DirectML on
+    /// the iNaturalist ConvNeXt `Reshape`).
+    fn infer(&self, tensor: &Tensor<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+        self.session
+            .run_tensor(tensor, |shape, data| Ok((shape.to_vec(), data.to_vec())))
     }
 
     /// Load the classifier from the default model directory, if the files are
@@ -73,7 +69,7 @@ impl OnnxSpeciesClassifier {
         if !model.is_file() || !labels.is_file() {
             return Ok(None);
         }
-        if std::env::var("BIRDSORTER_DEBUG_ONNX").is_ok() {
+        if debug_onnx() {
             let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
             eprintln!(
                 "[onnx] loading species model {} ({} bytes)",
@@ -94,10 +90,54 @@ impl OnnxSpeciesClassifier {
         &self.labels
     }
 
+    /// Turn one `[num_classes]` logit row into a ranked result.
+    fn result_from_row(&self, row: &[f32]) -> Option<SpeciesId> {
+        let top = top_k(row, &self.labels, self.top_k);
+        if top.is_empty() {
+            None
+        } else {
+            Some(SpeciesId { top })
+        }
+    }
+
+    /// Classify every crop in **one** batched ONNX call, falling back to
+    /// per-crop inference when the model's batch dimension is fixed at 1.
+    fn identify_batched(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {
+        let n = crops.len();
+        let side = self.preprocess.size as usize;
+        let stride = 3 * side * side;
+        let mut batch: Vec<f32> = Vec::with_capacity(n * stride);
+        for crop in crops {
+            batch.extend(preprocess_crop(crop, &self.preprocess));
+        }
+
+        let tensor = Tensor::from_array((
+            [
+                n as i64,
+                3,
+                self.preprocess.size as i64,
+                self.preprocess.size as i64,
+            ],
+            batch,
+        ))
+        .map_err(ort_err)?;
+
+        let (dims, data) = self.infer(&tensor)?;
+        let num_classes = dims.get(1).copied().unwrap_or(0);
+        if num_classes == 0 || data.len() < n * num_classes {
+            return Err(CoreError::Other(
+                "species model returned an unexpected output shape".into(),
+            ));
+        }
+        Ok((0..n)
+            .map(|i| self.result_from_row(&data[i * num_classes..(i + 1) * num_classes]))
+            .collect())
+    }
+
     fn run_one(&self, crop: &Array3<u8>) -> Result<Option<SpeciesId>> {
         let side = self.preprocess.size as i64;
         let buf = preprocess_crop(crop, &self.preprocess);
-        if std::env::var("BIRDSORTER_DEBUG_ONNX").is_ok() {
+        if debug_onnx() {
             let n = buf.len() as f32;
             let mean = buf.iter().sum::<f32>() / n;
             let sd = (buf.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n).sqrt();
@@ -109,31 +149,8 @@ impl OnnxSpeciesClassifier {
         }
         let tensor = Tensor::from_array(([1i64, 3, side, side], buf)).map_err(ort_err)?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
-        if std::env::var("BIRDSORTER_DEBUG_ONNX").is_ok() {
-            eprintln!(
-                "[onnx] inputs={:?} outputs={:?} input_name={}",
-                session
-                    .inputs()
-                    .iter()
-                    .map(|i| i.name().to_string())
-                    .collect::<Vec<_>>(),
-                session
-                    .outputs()
-                    .iter()
-                    .map(|o| o.name().to_string())
-                    .collect::<Vec<_>>(),
-                self.input_name
-            );
-        }
-        let outputs = session
-            .run(ort::inputs![self.input_name.clone() => &tensor])
-            .map_err(ort_err)?;
-        let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        if std::env::var("BIRDSORTER_DEBUG_ONNX").is_ok() {
+        let (_dims, data) = self.infer(&tensor)?;
+        if debug_onnx() {
             let head: Vec<f32> = data.iter().take(5).copied().collect();
             let mean = data.iter().sum::<f32>() / data.len() as f32;
             let sd = (data.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
@@ -145,14 +162,13 @@ impl OnnxSpeciesClassifier {
                 head
             );
         }
-
-        let top = top_k(data, &self.labels, self.top_k);
-        if top.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(SpeciesId { top }))
-        }
+        Ok(self.result_from_row(&data))
     }
+}
+
+/// `BIRDSORTER_DEBUG_ONNX=1` turns on verbose inference logging.
+fn debug_onnx() -> bool {
+    std::env::var("BIRDSORTER_DEBUG_ONNX").is_ok()
 }
 
 impl SpeciesClassifier for OnnxSpeciesClassifier {
@@ -161,6 +177,23 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
     }
 
     fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {
+        if crops.len() <= 1 {
+            return crops.iter().map(|c| self.run_one(c)).collect();
+        }
+        // One batched call is *slower* per crop than per-crop inference on CPU
+        // for the iNat21 ConvNeXt (measured: 289 ms/crop at batch 1 vs 472
+        // ms/crop at batch 4 with 28 threads), so only batch on a GPU provider,
+        // where a bigger batch amortises the dispatch.
+        if self.session.is_gpu() {
+            match self.identify_batched(crops) {
+                Ok(results) => return Ok(results),
+                Err(e) => {
+                    if debug_onnx() {
+                        eprintln!("[onnx] batched species inference failed ({e}); per-crop");
+                    }
+                }
+            }
+        }
         crops.iter().map(|c| self.run_one(c)).collect()
     }
 }
@@ -178,5 +211,42 @@ mod tests {
             DevicePreference::Cpu,
         );
         assert!(err.is_err());
+    }
+
+    /// With a real model installed, batched inference must agree with running
+    /// each crop separately (this is what the fallback path would do).
+    /// Gated on `BIRDSORTER_TEST_SPECIES_DIR` so CI stays model-free.
+    #[test]
+    fn batched_inference_matches_single_crop_inference() {
+        let Ok(dir) = std::env::var("BIRDSORTER_TEST_SPECIES_DIR") else {
+            return;
+        };
+        let model = Path::new(&dir).join(SPECIES_ONNX);
+        let labels = Path::new(&dir).join(SPECIES_LABELS);
+        if !model.is_file() || !labels.is_file() {
+            return;
+        }
+        let preprocess = std::fs::read_to_string(Path::new(&dir).join(SPECIES_META))
+            .ok()
+            .and_then(|t| serde_json::from_str::<SpeciesPreprocess>(&t).ok())
+            .unwrap_or_default();
+        let classifier =
+            OnnxSpeciesClassifier::from_files(&model, &labels, preprocess, DevicePreference::Cpu)
+                .unwrap();
+
+        let crop = Array3::<u8>::from_shape_fn((150, 200, 3), |(y, x, c)| {
+            ((x * 5 + y * 11 + c * 37) % 256) as u8
+        });
+        let single = classifier.run_one(&crop).unwrap();
+        // The public entry point runs per-crop on CPU ...
+        let batched = classifier.identify_batch(&[&crop, &crop]).unwrap();
+        assert_eq!(batched.len(), 2);
+        assert_eq!(single, batched[0]);
+        assert_eq!(batched[0], batched[1]);
+        // ... and the raw one-call batch must still agree with it.
+        let raw = classifier.identify_batched(&[&crop, &crop]).unwrap();
+        assert_eq!(raw.len(), 2);
+        assert_eq!(single, raw[0]);
+        assert_eq!(raw[0], raw[1]);
     }
 }

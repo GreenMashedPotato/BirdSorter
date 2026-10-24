@@ -136,10 +136,13 @@ input {
 .grid {
   overflow: auto;
   padding: 12px;
+  display: block;
+  flex: 1;
+  min-height: 0;
+}
+.grid-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 10px;
-  align-content: start;
 }
 
 .tile {
@@ -151,6 +154,57 @@ input {
 }
 .tile.selected {
   outline: 2px solid var(--accent);
+}
+/* Keyboard cursor (arrow keys); a dashed ring distinguishes it from selection. */
+.tile.focused {
+  outline: 2px dashed #ffd479;
+  outline-offset: 1px;
+}
+.tile.focused.selected {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px #ffd479aa;
+}
+
+/* Long-running work (scan hashing / analysis). */
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  margin: 0 0 8px 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.progress .bar {
+  flex: 1;
+  height: 10px;
+  background: #0c0e12;
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.progress .fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+.progress .bar.indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: var(--accent);
+  border-radius: 999px;
+  animation: indet 1.1s ease-in-out infinite;
+}
+@keyframes indet {
+  0% {
+    transform: translateX(-40%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
 }
 .tile .thumb {
   aspect-ratio: 4 / 3;
@@ -410,6 +464,39 @@ input {
 .stage:active {
   cursor: grabbing;
 }
+.stage.drawing,
+.stage.drawing:active {
+  cursor: crosshair;
+}
+/* While drawing, a box must not swallow the pointer down, otherwise you cannot
+   start a new rectangle on top of an existing bird. */
+.stage.drawing .box,
+.stage.drawing .boxx {
+  pointer-events: none;
+}
+.drawrect {
+  position: absolute;
+  border: 2px dashed #ffd166;
+  background: rgba(255, 209, 102, 0.15);
+  pointer-events: none;
+  z-index: 3;
+}
+.boxx {
+  position: absolute;
+  top: -11px;
+  right: -11px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #d9534f;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 4;
+}
 .imgwrap {
   position: absolute;
   top: 0;
@@ -428,14 +515,108 @@ input {
      scaling of a small raster is what made zoomed-in previews soft). */
   image-rendering: auto;
 }
+/* Side-by-side burst compare: two stages share one zoom/pan transform. */
+.preview.compare {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px;
+}
+.preview.compare .stage {
+  position: relative;
+  inset: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.pane-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(6, 18, 31, 0.72);
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 5;
+}
+.pane-nav {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(6, 18, 31, 0.72);
+  z-index: 5;
+}
+/* Focus peaking: an edge overlay that scales with the image transform. */
+.peaking {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.peakrange {
+  width: 90px;
+}
+.peakcolor {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.peakcolor .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.peakcolor .dot.green {
+  background: #78ffaa;
+}
+.peakcolor .dot.red {
+  background: #ff4646;
+}
+/* Hand-labelled eye/head keypoints. */
+.eyepoint {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 4;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.eyepoint.eye {
+  border-color: #ffd166;
+}
+.eyepoint.head {
+  border-color: #4c8dff;
+}
+.eyepoint.beak {
+  border-color: #ff8f4c;
+}
 .box {
   position: absolute;
   border: 2px solid rgba(76, 141, 255, 0.85);
   cursor: pointer;
+  z-index: 1;
 }
 .box.sel {
   border-color: #ffd166;
   border-width: 3px;
+  z-index: 2;
 }
 .boxtag {
   position: absolute;
@@ -503,6 +684,115 @@ input {
 }
 .other input {
   flex: 1;
+}
+/* Species autocomplete: the list hangs below the field. */
+.ac-wrap {
+  position: relative;
+  flex-wrap: wrap;
+}
+.ac {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 2px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0009;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ac li {
+  margin: 0;
+}
+.ac button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.ac button.active,
+.ac button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* App title opens the About dialog. */
+.app-title {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+.app-title:hover {
+  color: var(--accent);
+}
+
+/* Star ratings (grid tiles + review sidebar + bulk row). */
+.stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+.star {
+  background: none;
+  border: 0;
+  padding: 0 1px;
+  font-size: 13px;
+  line-height: 1;
+  color: #4a5160;
+  cursor: pointer;
+}
+.star:hover:not(:disabled) {
+  color: #ffd479;
+}
+.star.on {
+  color: #ffc247;
+}
+.star:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.tile-stars {
+  margin-left: 2px;
+}
+.disclaimer {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.disclaimer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.disclaimer-head .tier {
+  font-size: 11px;
+}
+
+/* Inline link-styled button (external links open via the opener plugin). */
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
 }
 .mini {
   font-size: 12px;

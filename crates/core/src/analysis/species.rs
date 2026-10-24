@@ -67,16 +67,30 @@ pub struct SpeciesPreprocess {
     /// Per-channel mean (applied after scaling to `[0, 1]`).
     pub mean: [f32; 3],
     pub std: [f32; 3],
+    /// Resize layout: `"squash"` (default) or `"center"` (shortest-side resize +
+    /// centre crop, the ImageNet/timm convention the iNat21 model wants).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resize: Option<String>,
+    /// Resampling kernel: `"nearest"` (default), `"triangle"` or `"bicubic"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// For `resize: "center"`: resize the shortest side to `size / crop_pct`
+    /// before centre-cropping to `size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop_pct: Option<f32>,
 }
 
 impl Default for SpeciesPreprocess {
     fn default() -> Self {
-        // Matches the model's image processor exactly (verified against the
-        // reference: NEAREST resize to 260 + standard ImageNet normalisation).
+        // Matches the iNat21 ConvNeXt-Large bundle (384 px, CLIP mean/std,
+        // shortest-side resize + 0.95 centre crop, bicubic).
         Self {
-            size: 260,
-            mean: [0.485, 0.456, 0.406],
-            std: [0.229, 0.224, 0.225],
+            size: 384,
+            mean: [0.48145466, 0.4578275, 0.40821073],
+            std: [0.26862955, 0.2613026, 0.2757771],
+            resize: Some("center".to_string()),
+            filter: Some("bicubic".to_string()),
+            crop_pct: Some(0.95),
         }
     }
 }
@@ -99,13 +113,21 @@ pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {
     Some(view.to_owned())
 }
 
-/// Resize a crop to `size x size` (bilinear) and normalise to NCHW `f32`.
+/// Resize a crop to `size x size` and normalise to NCHW `f32`.
+///
+/// Two layouts are supported, selected by [`SpeciesPreprocess::resize`]:
+/// * `"squash"` — stretch to a square (older models);
+/// * `"center"` — resize the *shortest* side to `size / crop_pct` and
+///   centre-crop, which is what the iNat21 ConvNeXt model expects.
+///
+/// [`SpeciesPreprocess::filter`] picks the resampling kernel (`nearest`,
+/// `triangle` or `bicubic`).
 pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
     let (h, w, _) = crop.dim();
     let s = cfg.size as usize;
     let mut out = vec![0.0f32; 3 * s * s];
 
-    if h == 0 || w == 0 {
+    if h == 0 || w == 0 || s == 0 {
         return out;
     }
     let raw: Vec<u8> = crop.iter().copied().collect();
@@ -113,12 +135,26 @@ pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
         Some(img) => img,
         None => return out,
     };
-    let resized = image::imageops::resize(
-        &img,
-        cfg.size,
-        cfg.size,
-        image::imageops::FilterType::Nearest,
-    );
+    let filter = match cfg.filter.as_deref() {
+        Some("bicubic") => image::imageops::FilterType::CatmullRom,
+        Some("triangle") | Some("bilinear") => image::imageops::FilterType::Triangle,
+        _ => image::imageops::FilterType::Nearest,
+    };
+
+    let resized = if cfg.resize.as_deref() == Some("center") {
+        let short = h.min(w) as f32;
+        let crop_pct = cfg.crop_pct.unwrap_or(1.0).clamp(0.1, 1.0);
+        let target_short = (s as f32 / crop_pct).round();
+        let scale = target_short / short.max(1.0);
+        let rw = ((w as f32 * scale).round() as u32).max(s as u32);
+        let rh = ((h as f32 * scale).round() as u32).max(s as u32);
+        let tmp = image::imageops::resize(&img, rw, rh, filter);
+        let x0 = (rw - s as u32) / 2;
+        let y0 = (rh - s as u32) / 2;
+        image::imageops::crop_imm(&tmp, x0, y0, s as u32, s as u32).to_image()
+    } else {
+        image::imageops::resize(&img, cfg.size, cfg.size, filter)
+    };
 
     for y in 0..s {
         for x in 0..s {
@@ -161,11 +197,17 @@ pub fn top_k(logits: &[f32], labels: &[String], k: usize) -> Vec<SpeciesPredicti
 }
 
 /// Display form of a label: `"ABBOTTS BABBLER"` -> `"Abbotts Babbler"`.
-/// Mixed-case labels (e.g. scientific names) are left alone.
+/// Mixed-case labels (e.g. scientific names) are left alone apart from
+/// capitalising the genus, so `"ardea alba"` -> `"Ardea alba"`.
 pub fn prettify_label(raw: &str) -> String {
     let s = raw.replace('_', " ");
     if s.chars().any(|c| c.is_lowercase()) {
-        return s;
+        // Scientific names come back all-lowercase; capitalise the genus.
+        let mut chars = s.chars();
+        return match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => s,
+        };
     }
     s.split_whitespace()
         .map(|word| {
@@ -237,7 +279,8 @@ mod tests {
         let crop = solid(50, 40, 255);
         let cfg = SpeciesPreprocess::default();
         let buf = preprocess_crop(&crop, &cfg);
-        assert_eq!(buf.len(), 3 * 260 * 260);
+        let s = cfg.size as usize;
+        assert_eq!(buf.len(), 3 * s * s);
         // 255/255 = 1.0 -> (1 - mean) / std
         let expected = (1.0 - cfg.mean[0]) / cfg.std[0];
         assert!((buf[0] - expected).abs() < 1e-4, "got {}", buf[0]);
@@ -246,8 +289,10 @@ mod tests {
     #[test]
     fn preprocess_handles_empty_crop() {
         let empty = Array3::<u8>::zeros((0, 0, 3));
-        let buf = preprocess_crop(&empty, &SpeciesPreprocess::default());
-        assert_eq!(buf.len(), 3 * 260 * 260);
+        let cfg = SpeciesPreprocess::default();
+        let buf = preprocess_crop(&empty, &cfg);
+        let s = cfg.size as usize;
+        assert_eq!(buf.len(), 3 * s * s);
         assert!(buf.iter().all(|&v| v == 0.0));
     }
 
@@ -277,7 +322,7 @@ mod tests {
         let labels: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
         let top = top_k(&logits, &labels, 2);
         assert_eq!(top.len(), 2);
-        assert_eq!(top[0].name, "b"); // argmax, mixed-case labels untouched
+        assert_eq!(top[0].name, "B"); // argmax, one-letter labels are capitalised
         assert!(top[0].confidence > top[1].confidence);
         let total: f32 = top.iter().map(|p| p.confidence).sum();
         assert!(total <= 1.0 + 1e-6);
@@ -295,6 +340,32 @@ mod tests {
     fn prettify_only_touches_all_caps() {
         assert_eq!(prettify_label("ABBOTTS BABBLER"), "Abbotts Babbler");
         assert_eq!(prettify_label("Pycnonotus_goiavier"), "Pycnonotus goiavier");
+        // iNat21 scientific names are lowercase; only the genus is capitalised.
+        assert_eq!(prettify_label("ardea alba"), "Ardea alba");
+    }
+
+    #[test]
+    fn center_crop_preprocessing_keeps_aspect_ratio() {
+        let cfg = SpeciesPreprocess {
+            size: 224,
+            resize: Some("center".into()),
+            filter: Some("bicubic".into()),
+            crop_pct: Some(0.95),
+            ..SpeciesPreprocess::default()
+        };
+        // A tall crop, a wide crop and a square must all produce the same
+        // [3, s, s] buffer without panicking.
+        for (w, h) in [(80usize, 200usize), (200, 80), (120, 120), (5, 400)] {
+            let crop = Array3::<u8>::from_shape_fn((h, w, 3), |(y, x, c)| {
+                ((x * 3 + y * 7 + c * 11) % 256) as u8
+            });
+            let buf = preprocess_crop(&crop, &cfg);
+            assert_eq!(buf.len(), 3 * 224 * 224);
+            assert!(buf.iter().all(|v| v.is_finite()));
+        }
+        // Tiny crops still work (upscaled rather than producing an empty draw).
+        let tiny = solid(2, 2, 128);
+        assert_eq!(preprocess_crop(&tiny, &cfg).len(), 3 * 224 * 224);
     }
 
     #[test]

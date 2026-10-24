@@ -11,12 +11,12 @@ use birdsorter_core::analysis::saliency::SaliencyDetector;
 use birdsorter_core::analysis::scorer::{score_rules, TrainedScorer};
 use birdsorter_core::analysis::sharpness::{compute_features, Subject};
 use birdsorter_core::analysis::species::{SpeciesClassifier, SpeciesPreprocess};
-use birdsorter_core::analysis::yolo::YoloConfig;
+use birdsorter_core::analysis::yolo::{SliceConfig, SliceMode, YoloConfig};
 use birdsorter_core::data::library;
 use birdsorter_core::data::models;
 use birdsorter_core::data::registry;
-use birdsorter_core::data::settings::ScoreSettings;
-use birdsorter_core::data::{analysis_store, db, library::ScanReport};
+use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
+use birdsorter_core::data::{analysis_store, db, eye_labels, library::ScanReport};
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
 use birdsorter_core::io::hash::hash_file;
 use birdsorter_core::io::raw::RawDecoder;
@@ -33,6 +33,7 @@ fn usage() -> &'static str {
 Commands:
   hash <file>...              Print xxh3 content hashes (file identity)
   analyze <folder> [options]  Scan a folder and analyse every pending RAW
+      --force                   Re-analyse files that already have results
       --model <path.onnx>       Use a YOLO ONNX detector (needs a model file)
       --species-model <path.onnx>   Bird species classifier ONNX (optional)
       --species-labels <path.json>  Labels for the species classifier
@@ -40,10 +41,20 @@ Commands:
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
   bursts <folder> [--db <path>]  Print burst groups (by capture time)
+  export <folder> <dest> [options]  Copy (or move) labelled keepers to <dest>
+      --label <name>            Which label to export (default: sharp)
+      --move                    Move instead of copy
+      --db <path>               Override the library database location
+  export-eyelabels --out <file.jsonl> [--db <path>]  Dump eye/head keypoints for training
   train [--db <path>]         Train a verdict model from your labels
-  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG
-  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+  cleancache [--all] [--db <path>] [--cache <dir>]  Delete orphaned thumbnails
+      --all                     Clear the whole cache
+      --cache <dir>             Prune this cache dir instead of the default
+  thumb <raw> <out.jpg> [max] Extract the embedded preview as a JPEG  preview <raw> <out.jpg> [max] Render the analysis-resolution preview (for box alignment)
+      --develop                 Full RAW development (add --max-quality = VNG + RL)
   probe <raw> [--model <onnx>]  Decode one file and print detections + features
+      --imgsz <n>               Detector input size (default 640)
+      --slice auto|off|on|<n>   Sliced inference for distant birds
   selftest                    Run the analysis pipeline on a synthetic image (CI smoke)
   genimage <path> [w] [h]     Write a synthetic test photo (PNG/JPEG)
   version                     Print version
@@ -51,13 +62,26 @@ Commands:
 "
 }
 
+/// Route `tracing` diagnostics (GPU provider, model loading) to stderr,
+/// honouring `RUST_LOG` (default `warn`). This program's own output stays on
+/// stdout as plain `println!`.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).with_target(false).try_init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("hash") => cmd_hash(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("bursts") => cmd_bursts(&args[1..]),
+        Some("export") => cmd_export(&args[1..]),
+        Some("export-eyelabels") => cmd_export_eyelabels(&args[1..]),
+        Some("cleancache") => cmd_cleancache(&args[1..]),
         Some("train") => cmd_train(&args[1..]),
         Some("thumb") => cmd_thumb(&args[1..]),
         Some("preview") => cmd_preview(&args[1..]),
@@ -112,7 +136,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
     let max: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2400);
     if args.iter().any(|a| a == "--develop") {
         // Full RAW development with a high-quality demosaic (slow).
-        let algo = if args.iter().any(|a| a == "--bilinear") {
+        // `--max-quality` = the strongest available: VNG demosaic + RL deconvolution.
+        let max_quality = args.iter().any(|a| a == "--max-quality");
+        let algo = if max_quality {
+            birdsorter_core::io::develop::DemosaicAlgorithm::Vng
+        } else if args.iter().any(|a| a == "--bilinear") {
             birdsorter_core::io::develop::DemosaicAlgorithm::Bilinear
         } else if args.iter().any(|a| a == "--vng") {
             birdsorter_core::io::develop::DemosaicAlgorithm::Vng
@@ -121,7 +149,15 @@ fn cmd_preview(args: &[String]) -> ExitCode {
         } else {
             birdsorter_core::io::develop::DemosaicAlgorithm::Ahd
         };
-        let sharpen = !args.iter().any(|a| a == "--no-sharpen");
+        let sharpen = if max_quality {
+            birdsorter_core::io::develop::SharpenMode::Deconvolve
+        } else if args.iter().any(|a| a == "--no-sharpen") {
+            birdsorter_core::io::develop::SharpenMode::Off
+        } else if args.iter().any(|a| a == "--unsharp") {
+            birdsorter_core::io::develop::SharpenMode::Unsharp
+        } else {
+            birdsorter_core::io::develop::SharpenMode::Deconvolve
+        };
         let options = if args.iter().any(|a| a == "--linear") {
             birdsorter_core::io::develop::DevelopOptions::linear()
         } else {
@@ -192,11 +228,49 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     let mut file = None;
     let mut model = None;
     let mut no_detect = false;
+    let mut slice = SliceMode::default();
+    let mut imgsz = YoloConfig::default().input_size;
+    let mut region_batch = YoloConfig::default().region_batch;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = it.next().cloned(),
             "--no-detect" => no_detect = true,
+            "--imgsz" => {
+                imgsz = match it.next().and_then(|v| v.parse::<u32>().ok()) {
+                    Some(n) if n > 0 => n,
+                    _ => {
+                        eprintln!("probe: --imgsz needs a number");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            }
+            "--slice" => {
+                let v = it.next().map(String::as_str).unwrap_or("");
+                slice = match v {
+                    "off" | "none" => SliceMode::Off,
+                    "on" | "tiles" | "always" => SliceMode::Always(SliceConfig::default()),
+                    "smart" | "fallback" => SliceMode::Fallback(SliceConfig::default()),
+                    other => match other.parse::<usize>() {
+                        Ok(grid) if grid > 0 => {
+                            SliceMode::Always(SliceConfig { grid, overlap: 0.2 })
+                        }
+                        _ => {
+                            eprintln!("probe: --slice needs off|fallback|always|on|<grid>");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                };
+            }
+            "--region-batch" => {
+                region_batch = match it.next().and_then(|v| v.parse::<usize>().ok()) {
+                    Some(n) if n > 0 => n,
+                    _ => {
+                        eprintln!("probe: --region-batch needs a positive number");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            }
             other if other.starts_with("--") => {
                 eprintln!("probe: unknown option {other}");
                 return ExitCode::FAILURE;
@@ -205,10 +279,19 @@ fn cmd_probe(args: &[String]) -> ExitCode {
         }
     }
     let Some(file) = file else {
-        eprintln!("probe: usage: probe <raw> [--model <onnx>] [--no-detect]");
+        eprintln!(
+            "probe: usage: probe <raw> [--model <onnx>] [--no-detect] [--imgsz <n>] [--slice auto|off|on|<grid>] [--region-batch <n>]"
+        );
         return ExitCode::FAILURE;
     };
-    match run_probe(&file, model.as_deref(), no_detect) {
+    match run_probe(
+        &file,
+        model.as_deref(),
+        no_detect,
+        slice,
+        imgsz,
+        region_batch,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("probe failed: {e}");
@@ -217,7 +300,14 @@ fn cmd_probe(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_core::Result<()> {
+fn run_probe(
+    file: &str,
+    model: Option<&str>,
+    no_detect: bool,
+    slice: SliceMode,
+    imgsz: u32,
+    region_batch: usize,
+) -> birdsorter_core::Result<()> {
     let decoder = CompositeDecoder::new(vec![
         Box::new(RawDecoder::new(Some(2400))),
         Box::new(ImageCrateDecoder::new(Some(2400))),
@@ -231,12 +321,23 @@ fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_cor
     } else if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
         Box::new(OnnxDetector::from_file(
             Path::new(m),
-            YoloConfig::default(),
-            DevicePreference::Auto,
+            YoloConfig {
+                input_size: imgsz,
+                slice,
+                region_batch,
+                ..YoloConfig::default()
+            },
+            DevicePreference::from_setting(&DetectionSettings::load_default().device),
         )?)
-    } else if let Some(d) =
-        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
-    {
+    } else if let Some(d) = OnnxDetector::load_default(
+        YoloConfig {
+            input_size: imgsz,
+            slice,
+            region_batch,
+            ..YoloConfig::default()
+        },
+        DevicePreference::from_setting(&DetectionSettings::load_default().device),
+    )? {
         Box::new(d)
     } else {
         Box::new(SaliencyDetector::default())
@@ -276,8 +377,10 @@ fn run_probe(file: &str, model: Option<&str>, no_detect: bool) -> birdsorter_cor
         features.motion_directionality
     );
 
-    // Species identification of the first bird box (default model).
-    match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+    // Species identification of the first bird box (whatever model is installed).
+    match birdsorter_core::runtime::load_species_classifier(DevicePreference::from_setting(
+        &DetectionSettings::load_default().device,
+    )) {
         Ok(Some(classifier)) => {
             if let Some(bird) = dets.iter().find(|d| d.class_name == "bird") {
                 if let Some(crop) =
@@ -375,6 +478,216 @@ fn run_bursts(folder: &str, db_path: Option<&str>) -> birdsorter_core::Result<()
         );
     }
     Ok(())
+}
+
+/// Export keepers to a destination folder.
+fn cmd_export(args: &[String]) -> ExitCode {
+    use birdsorter_core::data::labels::UserLabel;
+    use birdsorter_core::io::export::{export_files, ExportMode};
+
+    let mut positional: Vec<String> = Vec::new();
+    let mut label = "sharp".to_string();
+    let mut predicted: Option<String> = None;
+    let mut mode = ExportMode::Copy;
+    let mut db_path: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--label" => match it.next() {
+                Some(v) => label = v.clone(),
+                None => {
+                    eprintln!("export: --label needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
+            // Select by the scorer's verdict instead of the user's label.
+            "--predicted" => match it.next() {
+                Some(v) => predicted = Some(v.clone()),
+                None => {
+                    eprintln!(
+                        "export: --predicted needs a value (sharp|uncertain|blurry|no_subject)"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--move" => mode = ExportMode::Move,
+            "--copy" => mode = ExportMode::Copy,
+            "--db" => db_path = it.next().cloned(),
+            other if other.starts_with("--") => {
+                eprintln!("export: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other => positional.push(other.to_string()),
+        }
+    }
+    let (Some(folder), Some(dest)) = (positional.first(), positional.get(1)) else {
+        eprintln!(
+            "export: usage: export <folder> <dest> [--label sharp] [--predicted sharp] [--move] [--db <path>]"
+        );
+        return ExitCode::FAILURE;
+    };
+    // Validate the arguments before touching the database.
+    let user_label: Option<UserLabel> = match predicted {
+        Some(_) => None,
+        None => match label.parse() {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("export: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    let run = || -> birdsorter_core::Result<()> {
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        db::init_schema(&conn)?;
+        let folder_id = library::add_folder(&conn, Path::new(folder))?;
+        let files = match (&predicted, user_label) {
+            (Some(pred), _) => library::files_with_predicted_label(&conn, folder_id, pred)?,
+            (None, Some(l)) => library::files_with_latest_label(&conn, folder_id, l)?,
+            (None, None) => Vec::new(),
+        };
+        if files.is_empty() {
+            let what = predicted.as_deref().unwrap_or(label.as_str());
+            println!("no files match '{what}' to export");
+            return Ok(());
+        }
+        let paths: Vec<std::path::PathBuf> = files.into_iter().map(|f| f.absolute_path).collect();
+        let report = export_files(&paths, Path::new(dest), mode)?;
+        println!(
+            "exported {} file(s) to {}",
+            report.exported,
+            report.destination.display()
+        );
+        for (path, why) in &report.failed {
+            eprintln!("  failed: {} ({why})", path.display());
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("export failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Write the hand-labelled eye/head keypoints as JSONL for the training tool.
+///
+/// Each line is one labelled file: its path, the analysis-image dimensions and
+/// the points in analysis pixels (see `EYE_MODEL.md`).
+fn cmd_export_eyelabels(args: &[String]) -> ExitCode {
+    let mut out: Option<String> = None;
+    let mut db_path: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => out = it.next().cloned(),
+            "--db" => db_path = it.next().cloned(),
+            other => {
+                eprintln!("export-eyelabels: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("export-eyelabels: --out <file.jsonl> is required");
+        return ExitCode::FAILURE;
+    };
+
+    let run = || -> birdsorter_core::Result<()> {
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        let rows = eye_labels::all_eye_labels(&conn)?;
+        let mut text = String::new();
+        for row in &rows {
+            let line = serde_json::to_string(row)
+                .map_err(|e| birdsorter_core::CoreError::Other(format!("serialize: {e}")))?;
+            text.push_str(&line);
+            text.push('\n');
+        }
+        std::fs::write(&out, &text)
+            .map_err(|e| birdsorter_core::CoreError::io(Path::new(&out), e))?;
+        let points: usize = rows.iter().map(|r| r.points.len()).sum();
+        println!(
+            "wrote {} labelled file(s), {points} point(s) to {out}",
+            rows.len()
+        );
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("export-eyelabels failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Delete orphaned thumbnails (cache GC).
+fn cmd_cleancache(args: &[String]) -> ExitCode {
+    use birdsorter_core::io::cache::ThumbCache;
+
+    let clear_all = args.iter().any(|a| a == "--all");
+    let opt = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let db_path = opt("--db");
+    // The cache is one shared directory, keyed by content hash — it is not tied
+    // to a database. Pruning it with a different library's hashes would delete
+    // that other library's thumbnails, so allow an explicit cache dir (e.g. for
+    // a test/CI library) and always print which directory is being pruned.
+    let cache_dir = opt("--cache");
+
+    let run = || -> birdsorter_core::Result<()> {
+        let cache = match &cache_dir {
+            Some(dir) => ThumbCache::new(dir),
+            None => ThumbCache::open_default()?,
+        };
+        println!("cache: {}", cache.root().display());
+        let before = cache.size_bytes();
+        if clear_all {
+            let n = cache.clear()?;
+            println!(
+                "cleared {n} cached thumbnails ({:.1} MB)",
+                before as f64 / 1e6
+            );
+            return Ok(());
+        }
+        let db_path = match &db_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => db::default_db_path()?,
+        };
+        let conn = db::connect(&db_path)?;
+        db::init_schema(&conn)?;
+        let live = library::all_content_hashes(&conn)?;
+        let n = cache.retain(&live)?;
+        let after = cache.size_bytes();
+        println!(
+            "removed {n} orphaned thumbnails ({:.1} MB -> {:.1} MB); {} still referenced",
+            before as f64 / 1e6,
+            after as f64 / 1e6,
+            live.len()
+        );
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cleancache failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Train a verdict model from the user's labels.
@@ -557,6 +870,7 @@ struct AnalyzeArgs {
     folder: String,
     model: Option<String>,
     no_detect: bool,
+    force: bool,
     db_path: Option<String>,
     species_model: Option<String>,
     species_labels: Option<String>,
@@ -566,6 +880,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut folder = None;
     let mut model = None;
     let mut no_detect = false;
+    let mut force = false;
     let mut db_path = None;
     let mut species_model = None;
     let mut species_labels = None;
@@ -581,6 +896,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
                 species_labels = Some(it.next().ok_or("--species-labels needs a path")?.clone())
             }
             "--no-detect" => no_detect = true,
+            "--force" => force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => folder = Some(other.to_string()),
         }
@@ -589,6 +905,7 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
         folder: folder.ok_or("expected a folder path")?,
         model,
         no_detect,
+        force,
         db_path,
         species_model,
         species_labels,
@@ -628,8 +945,18 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         updated,
         untouched,
         seen,
+        restored,
     } = library::scan_folder(&conn, folder_id)?;
-    println!("scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged)");
+    println!(
+        "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
+         {restored} restored)"
+    );
+
+    // `--force` recomputes files that already have results.
+    if args.force {
+        let cleared = analysis_store::clear_folder(&conn, folder_id)?;
+        println!("--force: cleared {cleared} stored result(s)");
+    }
 
     // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {
@@ -640,15 +967,21 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         .map(str::trim)
         .filter(|m| !m.is_empty())
     {
-        println!("using ONNX detector: {m}");
+        let det = DetectionSettings::load_default();
+        let device = DevicePreference::from_setting(&det.device);
+        println!("using ONNX detector: {m} (device: {})", det.device);
         Box::new(OnnxDetector::from_file(
             Path::new(m),
-            YoloConfig::default(),
-            DevicePreference::Auto,
+            det.yolo_config(),
+            device,
         )?)
-    } else if let Some(d) =
-        OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)?
-    {
+    } else if let Some(d) = {
+        let det = DetectionSettings::load_default();
+        OnnxDetector::load_default(
+            det.yolo_config(),
+            DevicePreference::from_setting(&det.device),
+        )?
+    } {
         println!("using installed detector (model manager)");
         Box::new(d)
     } else {
@@ -656,18 +989,20 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         Box::new(SaliencyDetector::default())
     };
 
-    // Species identification (optional): explicit flags, else the default model.
-    let species: Option<OnnxSpeciesClassifier> = if args.no_detect {
+    // Species identification (optional): explicit flags, else whatever species
+    // model is installed (a fixed-head ViT or an open-vocabulary CLIP bundle).
+    let species_device = DevicePreference::from_setting(&DetectionSettings::load_default().device);
+    let species: Option<Box<dyn SpeciesClassifier>> = if args.no_detect {
         None
     } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
-        Some(OnnxSpeciesClassifier::from_files(
+        Some(Box::new(OnnxSpeciesClassifier::from_files(
             Path::new(m),
             Path::new(l),
             SpeciesPreprocess::default(),
-            DevicePreference::Auto,
-        )?)
+            species_device,
+        )?) as Box<dyn SpeciesClassifier>)
     } else {
-        match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
+        match birdsorter_core::runtime::load_species_classifier(species_device) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("warning: species model could not be loaded: {e}");
@@ -677,8 +1012,8 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     };
     match &species {
         Some(c) => println!(
-            "species identification: enabled ({} species)",
-            c.labels().len()
+            "species identification: enabled ({} available)",
+            c.available()
         ),
         None => println!(
             "species identification: no model installed (use --species-model/--species-labels)"
@@ -707,12 +1042,20 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         },
         None => Box::new(RulesScorer(settings)),
     };
+    let eye = match birdsorter_core::runtime::load_eye_detector(DevicePreference::Cpu) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("warning: eye model failed to load ({e}); using the heuristic");
+            None
+        }
+    };
     let ctx = IngestContext {
         batch_size: 8,
         decode_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4),
-        species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
+        species: species.as_deref(),
+        eye: eye.as_deref(),
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 

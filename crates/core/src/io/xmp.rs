@@ -1,0 +1,268 @@
+//! XMP sidecar ratings.
+//!
+//! Star ratings are the one piece of metadata every photo tool agrees on:
+//! Lightroom, Bridge, darktable and ON1 all read/write `xmp:Rating` (0-5) in a
+//! `<name>.xmp` sidecar next to the RAW. Writing it there means a rating set in
+//! BirdSorter is visible in those tools (and vice versa) without ever touching
+//! the RAW itself.
+//!
+//! Existing sidecars are **merged, never replaced**: only the `xmp:Rating`
+//! attribute is changed, everything else (creator, EXIF, develop settings) is
+//! preserved verbatim. A sidecar we cannot parse safely is left alone.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::{CoreError, Result};
+
+static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let seq = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("xmp.tmp.{}.{}", std::process::id(), seq));
+    std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CoreError::io(path, e));
+    }
+    Ok(())
+}
+
+/// The sidecar path a RAW's rating belongs in.
+pub fn sidecar_path(raw: &Path) -> PathBuf {
+    raw.with_extension("xmp")
+}
+
+/// A minimal XMP document carrying just the rating.
+fn fresh_document(rating: u8) -> String {
+    format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"BirdSorter\">\n\
+         \x20<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
+         \x20 <rdf:Description rdf:about=\"\"\n\
+         \x20  xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n\
+         \x20  xmp:Rating=\"{rating}\"/>\n\
+         \x20</rdf:RDF>\n\
+         </x:xmpmeta>\n"
+    )
+}
+
+/// Replace the value of an `xmp:Rating=…` attribute, tolerating single quotes
+/// and whitespace around `=`.
+fn replace_attribute(text: &str, rating: u8) -> Option<String> {
+    let key = "xmp:Rating";
+    let mut search = 0;
+    while let Some(rel) = text[search..].find(key) {
+        let after = search + rel + key.len();
+        let rest = &text[after..];
+        let ws1 = rest.len() - rest.trim_start().len();
+        let eq = after + ws1;
+        if text[eq..].starts_with('=') {
+            let after_eq = eq + 1;
+            let ws2 = text[after_eq..].len() - text[after_eq..].trim_start().len();
+            let value_start = after_eq + ws2;
+            let bytes = text.as_bytes();
+            if value_start < bytes.len() {
+                let quote = bytes[value_start];
+                if quote == b'"' || quote == b'\'' {
+                    if let Some(end_rel) = text[value_start + 1..].find(quote as char) {
+                        let end = value_start + 1 + end_rel;
+                        let mut out = String::with_capacity(text.len() + 2);
+                        out.push_str(&text[..value_start + 1]);
+                        out.push_str(&rating.to_string());
+                        out.push_str(&text[end..]);
+                        return Some(out);
+                    }
+                }
+            }
+        }
+        search = after;
+    }
+    None
+}
+
+/// Replace an `<xmp:Rating>…</xmp:Rating>` element, if present.
+fn replace_element(text: &str, rating: u8) -> Option<String> {
+    let open = "<xmp:Rating>";
+    let start = text.find(open)? + open.len();
+    let end = text[start..].find("</xmp:Rating>")? + start;
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..start]);
+    out.push_str(&rating.to_string());
+    out.push_str(&text[end..]);
+    Some(out)
+}
+
+/// Insert the attribute into the first `<rdf:Description …>` start tag.
+fn insert_attribute(text: &str, rating: u8) -> Option<String> {
+    let tag = "<rdf:Description";
+    let start = text.find(tag)?;
+    let gt = text[start..].find('>')? + start;
+    let mut out = String::with_capacity(text.len() + 24);
+    out.push_str(&text[..gt]);
+    out.push_str(&format!("\n    xmp:Rating=\"{rating}\""));
+    out.push_str(&text[gt..]);
+    Some(out)
+}
+
+/// Merge `rating` into an existing XMP document, or `None` when it cannot be
+/// edited safely.
+fn merge(text: &str, rating: u8) -> Option<String> {
+    replace_attribute(text, rating)
+        .or_else(|| replace_element(text, rating))
+        .or_else(|| insert_attribute(text, rating))
+}
+
+/// Write `rating` (0-5) into the RAW's XMP sidecar, merging when one exists.
+pub fn write_rating(raw: &Path, rating: u8) -> Result<()> {
+    let rating = rating.min(5);
+    let sidecar = sidecar_path(raw);
+
+    if sidecar.is_file() {
+        let text = std::fs::read_to_string(&sidecar).map_err(|e| CoreError::io(&sidecar, e))?;
+        let Some(merged) = merge(&text, rating) else {
+            return Err(CoreError::Other(format!(
+                "{} has an XMP sidecar without an rdf:Description, refusing to overwrite it",
+                raw.display()
+            )));
+        };
+        if merged == text {
+            return Ok(());
+        }
+        atomic_write(&sidecar, merged.as_bytes())?;
+    } else {
+        if let Some(parent) = sidecar.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+        }
+        atomic_write(&sidecar, fresh_document(rating).as_bytes())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A trimmed-down copy of a real Lightroom/ON1 sidecar.
+    const EXISTING: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 7.0">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+   xmp:MetadataDate="2026-05-01T12:28:10+07:00"
+   xmp:Rating="5"
+   tiff:Make="Canon">
+   <dc:creator>
+    <rdf:Seq>
+     <rdf:li>Michael G</rdf:li>
+    </rdf:Seq>
+   </dc:creator>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+"#;
+
+    #[test]
+    fn replaces_single_quoted_and_spaced_attributes() {
+        let single = r#"<rdf:Description xmp:Rating='2' tiff:Make="Canon"/>"#;
+        let merged = merge(single, 5).unwrap();
+        assert!(merged.contains("xmp:Rating='5'"), "{merged}");
+        assert!(merged.contains("tiff:Make=\"Canon\""));
+
+        let spaced = r#"<rdf:Description xmp:Rating = "1"/>"#;
+        let merged = merge(spaced, 4).unwrap();
+        assert!(merged.contains("xmp:Rating = \"4\""), "{merged}");
+    }
+
+    #[test]
+    fn replaces_an_existing_attribute_and_keeps_everything_else() {
+        let merged = merge(EXISTING, 3).unwrap();
+        assert!(merged.contains("xmp:Rating=\"3"));
+        assert!(!merged.contains("xmp:Rating=\"5\""));
+        // Untouched neighbours.
+        assert!(merged.contains("xmp:MetadataDate=\"2026-05-01T12:28:10+07:00\""));
+        assert!(merged.contains("<rdf:li>Michael G</rdf:li>"));
+        assert!(merged.contains("tiff:Make=\"Canon\""));
+    }
+
+    #[test]
+    fn inserts_when_there_is_no_rating_yet() {
+        let no_rating = EXISTING.replace("   xmp:Rating=\"5\"\n", "");
+        let merged = merge(&no_rating, 4).unwrap();
+        assert!(merged.contains("xmp:Rating=\"4\""));
+        assert!(merged.contains("<rdf:li>Michael G</rdf:li>"));
+    }
+
+    #[test]
+    fn handles_the_element_form() {
+        let text = "<rdf:Description><xmp:Rating>2</xmp:Rating></rdf:Description>";
+        assert_eq!(
+            merge(text, 5).unwrap(),
+            "<rdf:Description><xmp:Rating>5</xmp:Rating></rdf:Description>"
+        );
+    }
+
+    #[test]
+    fn refuses_to_edit_an_unrecognisable_document() {
+        assert!(merge("not really xmp", 3).is_none());
+    }
+
+    #[test]
+    fn writes_a_fresh_sidecar_when_none_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("_5260921.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        write_rating(&raw, 5).unwrap();
+        let sidecar = sidecar_path(&raw);
+        assert_eq!(sidecar.file_name().unwrap(), "_5260921.xmp");
+        let text = std::fs::read_to_string(&sidecar).unwrap();
+        assert!(text.contains("xmp:Rating=\"5\""));
+        // Re-rating merges rather than duplicating.
+        write_rating(&raw, 2).unwrap();
+        let text = std::fs::read_to_string(&sidecar).unwrap();
+        assert!(text.contains("xmp:Rating=\"2\""));
+        assert!(!text.contains("xmp:Rating=\"5\""));
+    }
+
+    #[test]
+    fn a_malformed_sidecar_is_refused_and_left_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        let sidecar = sidecar_path(&raw);
+        std::fs::write(&sidecar, "not really xmp").unwrap();
+
+        let err = write_rating(&raw, 3).unwrap_err();
+        assert!(err.to_string().contains("refusing to overwrite"), "{err}");
+        // The user's file must survive verbatim.
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "not really xmp");
+    }
+
+    #[test]
+    fn the_rating_is_clamped_to_five() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        write_rating(&raw, 9).unwrap();
+        let text = std::fs::read_to_string(sidecar_path(&raw)).unwrap();
+        assert!(text.contains("xmp:Rating=\"5\""), "{text}");
+    }
+
+    #[test]
+    fn rewriting_the_same_rating_is_a_no_op_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        write_rating(&raw, 4).unwrap();
+        let sidecar = sidecar_path(&raw);
+        let before = std::fs::read_to_string(&sidecar).unwrap();
+
+        write_rating(&raw, 4).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), before);
+        // Only the RAW and its sidecar remain (no `.xmp.tmp.*`).
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+    }
+}

@@ -24,7 +24,9 @@ ENTRIES = [
 
 
 def main(src: Path, out: Path) -> int:
-    missing = [name for name in ENTRIES if not (src / name).is_file()]
+    entries = list(ENTRIES)
+
+    missing = [name for name in entries if not (src / name).is_file()]
     if missing:
         print(f"missing in {src}: {', '.join(missing)}", file=sys.stderr)
         return 1
@@ -32,11 +34,11 @@ def main(src: Path, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     # Stored (no compression): the onnx is already dense, and this keeps packing fast.
     with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as zf:
-        for name in ENTRIES:
+        for name in entries:
             zf.write(src / name, arcname=name)
 
     size_mb = out.stat().st_size / 1_000_000
-    print(f"wrote {out} ({size_mb:.1f} MB)")
+    print(f"wrote {out} ({size_mb:.1f} MB) with {len(entries)} files: {', '.join(entries)}")
     print("Upload this file as a release asset, then set the model's `url` + `sha256`.")
     return 0
 

@@ -1,34 +1,42 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import {
     inTauri,
     listFolders,
     addFolder,
-    scanFolder,
+    startScan,
+    cancelScan,
+    onScanProgress,
+    onScanDone,
+    onScanError,
     analyzeFolder,
     cancelAnalysis,
     queryFiles,
     getThumbnail,
-    previewImage,
-    analysisDetail,
-    setSpecies,
     labelFiles,
+    undoLabels,
+    rateFiles,
+    autoRate,
+    resetRatings,
+    trashFiles,
     getSettings,
     setSettings,
+    getDetectionSettings,
+    setDetectionSettings,
+    type DetectionSettings,
     rescoreFolder,
+    exportKeepers,
     train,
     scoreBreakdown,
     bursts,
     onProgress,
     onDone,
     onError,
-    FILTERS,
     matchesFilter,
     type FolderInfo,
     type FileEntry,
     type FilterKey,
     type UserLabel,
-    type AnalysisDetail,
     type ScoreSettings,
     type TrainResult,
     type ScoreBreakdown as Breakdown,
@@ -36,13 +44,23 @@
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
+  import About from "./lib/About.svelte";
+  import AppToolbar from "./lib/AppToolbar.svelte";
+  import FilterBar from "./lib/FilterBar.svelte";
+  import LabelBar from "./lib/LabelBar.svelte";
+  import PhotoGrid from "./lib/PhotoGrid.svelte";
+  import Review from "./lib/Review.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
   let files = $state<FileEntry[]>([]);
+  /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
+  const cleanups: (() => void)[] = [];
   let filter = $state<FilterKey>("all");
   let selected = $state<Set<number>>(new Set());
+  /// Index into `visible` of the tile that has keyboard focus (-1 = none).
+  let focusIndex = $state(-1);
   let thumbs = $state<Record<number, string>>({});
 
   // Thumbnail loading: deduplicated, queued, and limited to a few in flight.
@@ -51,18 +69,22 @@
   const requested = new Set<number>();
   const thumbQueue: number[] = [];
   let inflight = 0;
+  let thumbGeneration = 0;
   const MAX_INFLIGHT = 4;
 
   function pumpThumbs() {
     while (inflight < MAX_INFLIGHT && thumbQueue.length > 0) {
       const id = thumbQueue.shift()!;
+      const generation = thumbGeneration;
       inflight++;
       getThumbnail(id)
         .then((url) => {
+          // A folder switch bumps the generation; don't keep the old JPEG.
+          if (generation !== thumbGeneration) return;
           thumbs = { ...thumbs, [id]: url };
         })
         .catch(() => {
-          requested.delete(id); // allow a later retry
+          if (generation === thumbGeneration) requested.delete(id); // allow a later retry
         })
         .finally(() => {
           inflight--;
@@ -81,9 +103,12 @@
     thumbs = {};
     requested.clear();
     thumbQueue.length = 0;
+    thumbGeneration++;
   }
   let status = $state("");
   let busy = $state(false);
+  /// Long-running work shown as a progress bar (scan hashing, analysis).
+  let progress = $state<{ label: string; done: number; total: number } | null>(null);
   let newPath = $state("");
   let model = $state("");
 
@@ -93,42 +118,93 @@
     ),
   );
 
+  // --- virtualized grid ----------------------------------------------------
+  // Only the tiles in (and just around) the viewport are rendered, so a folder
+  // with thousands of images stays responsive.
+  let gridEl = $state<HTMLDivElement | undefined>(undefined);
+  let gridScrollTop = $state(0);
+  let gridViewportH = $state(700);
+  let gridW = $state(900);
+
+  const TILE_W = 200;
+  const TILE_GAP = 10;
+  const OVERSCAN_ROWS = 3;
+  /// Thumbnail (4:3) + meta row + gap.
+  const ROW_H = TILE_W * 0.75 + 34 + TILE_GAP;
+
+  const cols = $derived(Math.max(1, Math.floor((gridW + TILE_GAP) / (TILE_W + TILE_GAP))));
+  const rowCount = $derived(Math.max(1, Math.ceil(visible.length / cols)));
+  const firstRow = $derived(Math.max(0, Math.floor(gridScrollTop / ROW_H) - OVERSCAN_ROWS));
+  const lastRow = $derived(
+    Math.min(rowCount - 1, Math.ceil((gridScrollTop + gridViewportH) / ROW_H) + OVERSCAN_ROWS),
+  );
+  const slice = $derived(visible.slice(firstRow * cols, (lastRow + 1) * cols));
+  const topPad = $derived(firstRow * ROW_H);
+  const bottomPad = $derived(Math.max(0, (rowCount - lastRow - 1) * ROW_H));
+
+  $effect(() => {
+    const el = gridEl;
+    if (!el) return;
+    gridW = el.clientWidth;
+    gridViewportH = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      gridW = el.clientWidth;
+      gridViewportH = el.clientHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
+  /// The full burst groups (frame ids + winner), for the review compare view.
+  let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
 
   async function refreshBursts() {
-    if (!inTauri || activeFolder === null) {
+    const folder = activeFolder;
+    if (!inTauri || folder === null) {
       burstInfo = {};
+      burstGroups = [];
       return;
     }
     try {
-      const groups = await bursts(activeFolder);
-      const map: Record<number, { size: number; best: boolean }> = {};
-      for (const g of groups) {
-        for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
-      }
-      burstInfo = map;
+      const groups = await bursts(folder);
+      if (activeFolder !== folder) return;
+      burstGroups = groups;
+      applyBurstInfo(groups);
     } catch {
       burstInfo = {};
+      burstGroups = [];
     }
   }
 
-  // --- review view state ---------------------------------------------------
+  /// Rebuild the per-file burst badge map from the group list.
+  function applyBurstInfo(
+    groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+  ) {
+    const map: Record<number, { size: number; best: boolean }> = {};
+    for (const g of groups) {
+      for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
+    }
+    burstInfo = map;
+  }
+
+  // --- review view ---------------------------------------------------------
+  /// The file open in the review view (null = closed). The view itself lives in
+  /// `Review.svelte` and loads its own detail/preview.
   let reviewFile = $state<number | null>(null);
-  let detail = $state<AnalysisDetail | null>(null);
-  let previewUrl = $state("");
-  let previewEl = $state<HTMLImageElement | undefined>(undefined);
-  let natural = $state({ w: 1, h: 1 });
-  let selectedBox = $state(0);
-  let speciesInput = $state("");
-  let previewLoading = $state(false);
-  /// Preview render mode: fast (analysis res), full (native preview) or
-  /// develop (full RAW demosaic, slow but maximum detail).
-  let previewMode = $state<"fast" | "full" | "develop">("fast");
+  /// Bumped by App actions (e.g. undo) that change data the open review shows,
+  /// so the review re-reads its detail.
+  let reviewRefresh = $state(0);
+
+  function openReview(id: number) {
+    reviewFile = id;
+  }
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
   let showModels = $state(false);
+  let showAbout = $state(false);
   let showBreakdown = $state(false);
   let breakdown = $state<Breakdown | null>(null);
 
@@ -142,25 +218,36 @@
     }
   }
   let settings = $state<ScoreSettings | null>(null);
+  let detection = $state<DetectionSettings | null>(null);
   let settingsSaving = $state(false);
 
   async function openSettings() {
     try {
       settings = await getSettings();
+      detection = await getDetectionSettings();
       showSettings = true;
     } catch (e) {
       status = `error: ${e}`;
     }
   }
 
-  async function saveSettings(next: ScoreSettings) {
+  async function saveSettings(next: ScoreSettings, nextDetection: DetectionSettings) {
     settingsSaving = true;
     try {
+      const detectionChanged =
+        detection !== null &&
+        (detection.slice_mode !== nextDetection.slice_mode ||
+          detection.slice_grid !== nextDetection.slice_grid ||
+          detection.device !== nextDetection.device);
       await setSettings(next);
+      await setDetectionSettings(nextDetection);
       settings = next;
+      detection = nextDetection;
       if (activeFolder !== null) {
         const n = await rescoreFolder(activeFolder);
-        status = `settings saved · re-scored ${n} files`;
+        status = detectionChanged
+          ? `settings saved · re-scored ${n} · distant-bird change applies to the next analysis run`
+          : `settings saved · re-scored ${n} files`;
         await refreshFiles();
       } else {
         status = "settings saved";
@@ -186,175 +273,52 @@
     }
   }
 
-  // --- zoom / pan state ----------------------------------------------------
-  let stageEl = $state<HTMLDivElement | undefined>(undefined);
-  let zoom = $state(1);
-  let tx = $state(0);
-  let ty = $state(0);
-  let fit = $state({ w: 1, h: 1 });
-  let panning = false;
-  let panStart = { x: 0, y: 0, tx: 0, ty: 0 };
+  // --- undo ----------------------------------------------------------------
+  /// One reversible label action: the ids touched and the label each had before.
+  type UndoEntry = { ids: number[]; prev: (UserLabel | null)[] };
+  let undoStack = $state<UndoEntry[]>([]);
+  const canUndo = $derived(undoStack.length > 0);
 
-  const ZOOM_MIN = 1;
-  const ZOOM_MAX = 8;
-
-  /** Fit the image inside the stage (centred, scale 1) and optionally reset. */
-  function computeFit(reset = true) {
-    if (!stageEl) return;
-    const rect = stageEl.getBoundingClientRect();
-    const pad = 24;
-    const availW = Math.max(50, rect.width - pad);
-    const availH = Math.max(50, rect.height - pad);
-    const s = Math.min(availW / natural.w, availH / natural.h);
-    fit = { w: natural.w * s, h: natural.h * s };
-    if (reset) {
-      zoom = 1;
-      tx = (rect.width - fit.w) / 2;
-      ty = (rect.height - fit.h) / 2;
-    }
+  function pushUndo(ids: number[]) {
+    const prev = ids.map(
+      (id) => (files.find((f) => f.id === id)?.label ?? null) as UserLabel | null,
+    );
+    undoStack = [...undoStack.slice(-19), { ids, prev }];
   }
 
-  /** Zoom about a point in stage coordinates, keeping that point fixed. */
-  function zoomAt(px: number, py: number, factor: number) {
-    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor));
-    if (next === zoom) return;
-    const cx = (px - tx) / zoom;
-    const cy = (py - ty) / zoom;
-    zoom = next;
-    tx = px - cx * next;
-    ty = py - cy * next;
-  }
-
-  function zoomByFactor(factor: number) {
-    if (!stageEl) return;
-    const r = stageEl.getBoundingClientRect();
-    zoomAt(r.width / 2, r.height / 2, factor);
-  }
-
-  function resetZoom() {
-    computeFit(true);
-  }
-
-  function onWheel(e: WheelEvent) {
-    if (!stageEl) return;
-    e.preventDefault(); // never scroll the page behind the overlay
-    const rect = stageEl.getBoundingClientRect();
-    zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015));
-  }
-
-  function onPanStart(e: PointerEvent) {
-    if (!stageEl) return;
-    panning = true;
-    panStart = { x: e.clientX, y: e.clientY, tx, ty };
-    stageEl.setPointerCapture(e.pointerId);
-  }
-
-  function onPanMove(e: PointerEvent) {
-    if (!panning) return;
-    tx = panStart.tx + (e.clientX - panStart.x);
-    ty = panStart.ty + (e.clientY - panStart.y);
-  }
-
-  function onPanEnd(e: PointerEvent) {
-    if (!panning) return;
-    panning = false;
-    if (stageEl?.hasPointerCapture(e.pointerId)) {
-      stageEl.releasePointerCapture(e.pointerId);
-    }
-  }
-
-  // Species picks for the selected box, falling back to the file-level top-5.
-  const activeTop5 = $derived.by(() => {
-    if (!detail) return [] as [string, number][];
-    const box = detail.boxes[selectedBox];
-    return box && box.top5.length > 0 ? box.top5 : detail.top5;
-  });
-  // Boxes are in analysis coordinates; position them against those dims so they
-  // stay correct on previews of any resolution. Older rows have no stored dims,
-  // so assume the analysis long side was 2400 (its normal value).
-  const assumedAnalysis = $derived.by(() => {
-    const long = Math.max(natural.w, natural.h) || 1;
-    const s = 2400 / long;
-    return { w: natural.w * s, h: natural.h * s };
-  });
-  const boxW = $derived(detail?.imageWidth ?? assumedAnalysis.w);
-  const boxH = $derived(detail?.imageHeight ?? assumedAnalysis.h);
-
-  const picks = $derived(activeTop5.slice(0, 4));
-  const blanks = $derived(Math.max(0, 4 - picks.length));
-
-  async function openReview(id: number) {
-    reviewFile = id;
-    detail = null;
-    previewUrl = "";
-    selectedBox = 0;
-    speciesInput = "";
-    zoom = 1;
-    tx = 0;
-    ty = 0;
+  /// Revert the last label action: restore the previous label, or drop the row
+  /// for files that had none before.
+  async function undoLast() {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry) return;
+    undoStack = undoStack.slice(0, -1);
     try {
-      detail = await analysisDetail(id);
-    } catch (e) {
-      status = `error: ${e}`;
-    }
-    await renderPreview();
-  }
-
-  /// (Re)render the preview for the current file at the current resolution mode.
-  async function renderPreview() {
-    if (reviewFile === null) return;
-    previewLoading = true;
-    try {
-      previewUrl = await previewImage(reviewFile, previewMode);
-    } catch (e) {
-      status = `error: ${e}`;
-    } finally {
-      previewLoading = false;
-    }
-  }
-
-  function closeReview() {
-    reviewFile = null;
-    detail = null;
-    previewUrl = "";
-  }
-
-  async function nav(delta: number) {
-    if (reviewFile === null) return;
-    const idx = visible.findIndex((f) => f.id === reviewFile);
-    if (idx < 0) return;
-    const next = idx + delta;
-    if (next < 0 || next >= visible.length) return;
-    await openReview(visible[next].id);
-  }
-
-  async function refreshDetail() {
-    if (reviewFile !== null) detail = await analysisDetail(reviewFile);
-  }
-
-  async function chooseSpecies(name: string | null, conf?: number) {
-    if (reviewFile === null) return;
-    try {
-      await setSpecies(reviewFile, name, conf);
-      await refreshDetail();
+      const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
+      const byLabel = new Map<UserLabel, number[]>();
+      entry.ids.forEach((id, i) => {
+        const p = entry.prev[i];
+        if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
+      });
+      if (toClear.length > 0) await undoLabels(toClear);
+      for (const [label, ids] of byLabel) await labelFiles(ids, label);
       await refreshFiles();
+      // Keep an open review's label display in sync.
+      if (reviewFile !== null) reviewRefresh++;
+      status = `undid a label change on ${entry.ids.length} file(s)`;
     } catch (e) {
       status = `error: ${e}`;
     }
   }
 
-  async function submitBlank() {
-    const name = speciesInput.trim();
-    if (!name) return;
-    speciesInput = "";
-    await chooseSpecies(name, 1.0);
-  }
-
-  async function applyLabelToReview(label: UserLabel) {
-    if (reviewFile === null) return;
+  /// Move the selected files to the OS recycle bin.
+  async function trashSelected() {
+    if (selected.size === 0) return;
+    const n = selected.size;
+    if (!confirm(`Move ${n} file${n === 1 ? "" : "s"} to the trash?`)) return;
     try {
-      await labelFiles([reviewFile], label);
-      await refreshDetail();
+      const r = await trashFiles([...selected]);
+      status = `moved ${r.moved} to trash${r.failures.length ? ` · ${r.failures.length} failed` : ""}`;
+      setSelected(new Set());
       await refreshFiles();
     } catch (e) {
       status = `error: ${e}`;
@@ -363,6 +327,77 @@
 
   function setSelected(next: Set<number>) {
     selected = next;
+  }
+
+  // --- star ratings --------------------------------------------------------
+  /// Rate one file (0 clears). Updates the grid immediately, then persists.
+  async function rateOne(id: number, rating: number) {
+    try {
+      const r = await rateFiles([id], rating);
+      files = files.map((f) => (f.id === id ? { ...f, rating } : f));
+      if (r.xmpFailed.length > 0) {
+        status = `rated, but the XMP sidecar failed for ${r.xmpFailed.length} file(s)`;
+      }
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Rate every selected file.
+  async function rateSelected(rating: number) {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    try {
+      const r = await rateFiles(ids, rating);
+      files = files.map((f) => (selected.has(f.id) ? { ...f, rating } : f));
+      status =
+        `rated ${r.changed} file(s)` +
+        (r.xmpFailed.length ? ` · ${r.xmpFailed.length} XMP failed` : "");
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  async function autoStar() {
+    if (activeFolder === null) return;
+    if (
+      !confirm(
+        "Set stars for every analysed file from its verdict?\n\n" +
+          "sharp → 5 · uncertain → 3 · blurry → 1 · no subject → 0\n\n" +
+          "This also writes xmp:Rating into each file's XMP sidecar.",
+      )
+    ) {
+      return;
+    }
+    busy = true;
+    status = "auto-starring…";
+    try {
+      const r = await autoRate(activeFolder);
+      status =
+        `rated ${r.changed} file(s)` +
+        (r.xmpFailed.length ? ` · ${r.xmpFailed.length} XMP failed` : "");
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function resetStars() {
+    if (activeFolder === null) return;
+    if (!confirm("Clear the star rating on every file in this folder?")) return;
+    busy = true;
+    status = "resetting stars…";
+    try {
+      const r = await resetRatings(activeFolder);
+      status = `cleared ${r.changed} rating(s)`;
+      await refreshFiles();
+    } catch (e) {
+      status = `error: ${e}`;
+    } finally {
+      busy = false;
+    }
   }
 
   function toggle(id: number) {
@@ -379,10 +414,60 @@
     await refreshFiles();
   }
 
-  function onTileKey(e: KeyboardEvent, id: number) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      toggle(id);
+  /// Move keyboard focus to a visible-tile index and scroll its row into view.
+  /// The virtualized grid re-renders on scroll, then the focus effect below
+  /// lands on the element.
+  function focusTile(i: number) {
+    if (visible.length === 0) return;
+    const clamped = Math.max(0, Math.min(visible.length - 1, i));
+    focusIndex = clamped;
+    if (!gridEl) return;
+    const rowTop = Math.floor(clamped / cols) * ROW_H;
+    if (rowTop < gridEl.scrollTop) {
+      gridEl.scrollTop = rowTop;
+    } else if (rowTop + ROW_H > gridEl.scrollTop + gridEl.clientHeight) {
+      gridEl.scrollTop = rowTop + ROW_H - gridEl.clientHeight;
+    }
+  }
+
+  /// Grid keyboard handling: arrows move, Space selects, Enter opens the review.
+  function onTileKey(e: KeyboardEvent, idx: number, id: number) {
+    focusIndex = idx;
+    switch (e.key) {
+      case " ":
+        e.preventDefault();
+        toggle(id);
+        break;
+      case "Enter":
+        e.preventDefault();
+        openReview(id);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        focusTile(idx + 1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        focusTile(idx - 1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        focusTile(idx + cols);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        focusTile(idx - cols);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusTile(idx - (idx % cols));
+        break;
+      case "End":
+        e.preventDefault();
+        focusTile(idx - (idx % cols) + cols - 1);
+        break;
+      default:
+        break;
     }
   }
 
@@ -394,30 +479,36 @@
   }
 
   async function refreshFiles() {
-    if (activeFolder === null) {
+    const folder = activeFolder;
+    if (folder === null) {
       files = [];
       return;
     }
-    files = await queryFiles(activeFolder);
+    const rows = await queryFiles(folder);
+    // Ignore a stale response if the user switched folders while it loaded.
+    if (activeFolder !== folder) return;
+    files = rows;
     await refreshBursts();
   }
 
   async function addAndScan() {
     const path = newPath.trim();
-    if (!path) return;
+    if (!path || !inTauri) return;
     busy = true;
     try {
       const id = await addFolder(path);
-      const report = await scanFolder(id);
-      status = `scanned ${report.seen} files (${report.added} new, ${report.updated} updated)`;
       newPath = "";
       activeFolder = id;
       await refreshFolders();
-      await refreshFiles();
+      status = "scanning…";
+      progress = { label: "Scanning", done: 0, total: 0 };
+      // Fire-and-forget: progress/completion arrive as events, so the window
+      // keeps painting while thousands of files are hashed.
+      await startScan(id);
     } catch (e) {
       status = `error: ${e}`;
-    } finally {
       busy = false;
+      progress = null;
     }
   }
 
@@ -439,34 +530,89 @@
   }
 
   async function rescan() {
-    if (activeFolder === null) return;
+    if (activeFolder === null || !inTauri) return;
     busy = true;
+    status = "scanning…";
+    progress = { label: "Scanning", done: 0, total: 0 };
     try {
-      const report = await scanFolder(activeFolder);
-      status = `scanned ${report.seen} files (${report.added} new, ${report.updated} updated)`;
-      await refreshFiles();
+      await startScan(activeFolder);
     } catch (e) {
       status = `error: ${e}`;
-    } finally {
       busy = false;
+      progress = null;
     }
   }
 
   async function analyze() {
     if (activeFolder === null) return;
+    // If everything already has results, offer to recompute with the current
+    // detection/scoring settings — otherwise Analyze would silently do nothing.
+    const pending = files.filter((f) => !f.analyzed).length;
+    let force = false;
+    if (pending === 0 && files.length > 0) {
+      if (
+        !confirm(
+          `All ${files.length} files already have results.\n\n` +
+            "Re-analyse them all with the current detection and scoring settings?",
+        )
+      ) {
+        return;
+      }
+      force = true;
+    }
     busy = true;
     status = "analysing…";
+    progress = { label: "Analysing", done: 0, total: force ? files.length : pending };
     try {
-      await analyzeFolder(activeFolder, model.trim() || null);
+      await analyzeFolder(activeFolder, model.trim() || null, force);
     } catch (e) {
       status = `error: ${e}`;
       busy = false;
+      progress = null;
+    }
+  }
+
+  /// Delete stored results and analyse every file again.
+  async function reanalyzeAll() {
+    if (activeFolder === null) return;
+    if (
+      !confirm(
+        `Re-analyse every file in this folder?\n\nStored verdicts, boxes and species ` +
+          "IDs are replaced (your labels are kept).",
+      )
+    ) {
+      return;
+    }
+    busy = true;
+    status = "analysing…";
+    progress = { label: "Analysing", done: 0, total: files.length };
+    try {
+      await analyzeFolder(activeFolder, model.trim() || null, true);
+    } catch (e) {
+      status = `error: ${e}`;
+      busy = false;
+      progress = null;
     }
   }
 
   async function cancel() {
+    const scanning = progress?.label === "Scanning";
     try {
-      await cancelAnalysis();
+      // The progress label tells us which background job to stop.
+      if (scanning) await cancelScan();
+      else await cancelAnalysis();
+      status = "stopping…";
+      // A single slow file (or a rawler hang) can delay the backend's "stopped"
+      // event, which would leave the UI frozen and un-actionable. Un-stick the
+      // UI after a grace period; the backend keeps its own cancellation and a
+      // new run supersedes it.
+      window.setTimeout(() => {
+        if (busy) {
+          busy = false;
+          progress = null;
+          status = `${scanning ? "scan" : "analysis"} stopped (the current file may still be finishing)`;
+        }
+      }, 8000);
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -476,6 +622,7 @@
     if (selected.size === 0) return;
     const ids = [...selected];
     try {
+      pushUndo(ids);
       await labelFiles(ids, label);
       setSelected(new Set());
       await refreshFiles();
@@ -484,31 +631,101 @@
     }
   }
 
-  function scoreText(f: FileEntry): string {
-    return f.score === null ? "" : f.score.toFixed(2);
+  /// Copy keepers into a folder the user picks. Prefers the user's own "Sharp"
+  /// labels; falls back to the scorer's "sharp" verdicts when none exist.
+  async function exportKeepersFlow() {
+    if (activeFolder === null || !inTauri) return;
+    try {
+      const dest = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Export keepers to…",
+      });
+      if (typeof dest !== "string") return;
+      status = "exporting…";
+      let r = await exportKeepers(activeFolder, dest, { label: "sharp", mode: "copy" });
+      if (r.exported === 0) {
+        const usePredicted = confirm(
+          "No files are labelled Sharp.\n\nExport the files the scorer rated sharp instead?",
+        );
+        if (usePredicted) {
+          r = await exportKeepers(activeFolder, dest, { predicted: "sharp", mode: "copy" });
+        }
+      }
+      status = r.exported
+        ? `exported ${r.exported} keeper${r.exported === 1 ? "" : "s"} to ${r.destination}${
+            r.failed.length ? ` · ${r.failed.length} failed` : ""
+          }`
+        : "nothing to export";
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Label the winner of every burst as Sharp, so a shoot can be triaged burst
+  /// by burst. Files you have already labelled are left untouched.
+  async function keepBurstWinners() {
+    if (activeFolder === null || !inTauri) return;
+    let groups: { frames: number[]; best: number }[] = [];
+    try {
+      groups = await bursts(activeFolder);
+    } catch (e) {
+      status = `error: ${e}`;
+      return;
+    }
+    const winners = [
+      ...new Set(groups.filter((g) => g.frames.length > 1).map((g) => g.best)),
+    ];
+    // Never clobber a decision the user already made.
+    const unlabelled = winners.filter((id) => files.find((f) => f.id === id)?.label == null);
+    if (unlabelled.length === 0) {
+      status = winners.length
+        ? `all ${winners.length} burst winners are already labelled`
+        : "no multi-frame bursts in this folder";
+      return;
+    }
+    if (
+      !confirm(
+        `Label ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} as Sharp?\n\n` +
+          "Files you have already labelled are left untouched. Undo with Ctrl+Z.",
+      )
+    ) {
+      return;
+    }
+    try {
+      pushUndo(unlabelled);
+      await labelFiles(unlabelled, "sharp");
+      await refreshFiles();
+      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
   }
 
   onMount(async () => {
-    // Review-view keyboard shortcuts (J/K navigate, Esc closes, +/-/0 zoom).
-    window.addEventListener("keydown", (e) => {
-      if (reviewFile === null) return;
-      if (e.key === "Escape") closeReview();
-      else if (e.key === "j" || e.key === "ArrowRight") nav(1);
-      else if (e.key === "k" || e.key === "ArrowLeft") nav(-1);
-      else if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        zoomByFactor(1.25);
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        zoomByFactor(1 / 1.25);
-      } else if (e.key === "0") {
-        e.preventDefault();
-        resetZoom();
+    // App-level keyboard shortcut: undo (Ctrl+Z). The review view registers its
+    // own shortcuts while it is open.
+    const onKeydown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (typing) {
+        // Let the field handle everything except Escape, which just blurs it.
+        if (e.key === "Escape" && target) target.blur();
+        return;
       }
-    });
-
-    window.addEventListener("resize", () => {
-      if (reviewFile !== null) computeFit(true);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (canUndo) undoLast();
+      }
+    };
+    window.addEventListener("keydown", onKeydown);
+    cleanups.push(() => {
+      window.removeEventListener("keydown", onKeydown);
     });
 
     if (!inTauri) {
@@ -535,33 +752,82 @@
     await refreshFolders();
     await refreshFiles();
 
-    onProgress((p) => {
-      status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
-    });
-    onDone(async () => {
-      busy = false;
-      status = "done";
-      await refreshFiles();
-    });
-    onError((message) => {
-      busy = false;
-      status = `error: ${message}`;
-    });
+    const unlisteners = [
+      onProgress((p) => {
+        progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
+        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
+      }),
+      onDone(async () => {
+        busy = false;
+        progress = null;
+        status = "done";
+        await refreshFiles();
+      }),
+      onError((message) => {
+        busy = false;
+        progress = null;
+        status = `error: ${message}`;
+      }),
+      onScanProgress((p) => {
+        progress = { label: "Scanning", done: p.done, total: p.total };
+        status = p.total
+          ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
+          : "scanning…";
+      }),
+      onScanDone(async (r) => {
+        busy = false;
+        progress = null;
+        status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
+          r.restored ? `, ${r.restored} restored` : ""
+        })`;
+        await refreshFolders();
+        await refreshFiles();
+      }),
+      onScanError((message) => {
+        busy = false;
+        progress = null;
+        status = `scan error: ${message}`;
+      }),
+    ];
+    for (const pending of unlisteners) {
+      void pending.then((off) => cleanups.push(off)).catch(() => {});
+    }
   });
 
-  // Lazily fetch thumbnails for the visible tiles, a few at a time. This effect
-  // must NOT read `thumbs`, or every loaded image would re-trigger it and flood
-  // the backend (that is what froze the window).
+  onDestroy(() => {
+    for (const off of cleanups.splice(0)) {
+      try {
+        off();
+      } catch {
+        /* a failed teardown must not break unmount */
+      }
+    }
+  });
+
+  // Load thumbnails for the tiles actually on screen, a few at a time.
   $effect(() => {
     if (!inTauri || activeFolder === null) return;
-    for (const f of visible) enqueueThumb(f.id);
+    for (const f of slice) enqueueThumb(f.id);
     pumpThumbs();
+  });
+
+  // Land DOM focus on the tile the keyboard cursor points at. Reads `slice` so
+  // it re-runs once a scroll has mounted the target row.
+  $effect(() => {
+    const i = focusIndex;
+    const rendered = slice;
+    if (i < 0 || !gridEl || rendered.length === 0) return;
+    gridEl.querySelector<HTMLElement>(`[data-idx="${i}"]`)?.focus();
   });
 </script>
 
 <div class="app" class:review-open={reviewFile !== null}>
   <aside class="sidebar">
-    <h1>🐦 BirdSorter</h1>
+    <h1>
+      <button class="app-title" title="About BirdSorter" onclick={() => (showAbout = true)}>
+        🐦 BirdSorter
+      </button>
+    </h1>
 
     <div style="display:flex; gap:6px; margin-bottom:6px">
       <input
@@ -590,252 +856,114 @@
   </aside>
 
   <main class="main">
-    <div class="toolbar">
-      <button onclick={rescan} disabled={busy || activeFolder === null}>Rescan</button>
-      <button class="primary" onclick={analyze} disabled={busy || activeFolder === null}>
-        Analyze
-      </button>
-      <button onclick={cancel} disabled={!busy}>Cancel</button>
-      <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
-      <button onclick={openSettings} title="Scoring settings">Settings</button>
-      <button onclick={() => (showModels = true)} title="Manage models">Models</button>
-      <button onclick={retrain} title="Train a model from your labels">Retrain</button>
-      <div class="spacer"></div>
-      <span class="status">{status}</span>
-    </div>
+    <AppToolbar
+      {busy}
+      hasFolder={activeFolder !== null}
+      {status}
+      bind:model
+      onRescan={rescan}
+      onAnalyze={analyze}
+      onReanalyzeAll={reanalyzeAll}
+      onCancel={cancel}
+      onOpenSettings={openSettings}
+      onOpenModels={() => (showModels = true)}
+      onRetrain={retrain}
+      onExportKeepers={exportKeepersFlow}
+      onKeepBurstWinners={keepBurstWinners}
+    />
 
-    <div class="chips">
-      {#each FILTERS as f (f.key)}
-        <button class="chip" class:active={filter === f.key} onclick={() => (filter = f.key)}>
-          {f.label}
-        </button>
-      {/each}
-      <div class="spacer"></div>
-      <span class="status">{visible.length} shown · {selected.size} selected</span>
-      <button
-        onclick={() => setSelected(new Set(visible.map((f) => f.id)))}
-        disabled={visible.length === 0}>Select all</button
-      >
-    </div>
-
-    <div class="toolbar">
-      <span class="status">Mark selected:</span>
-      <button onclick={() => applyLabel("sharp")} disabled={selected.size === 0}>Sharp</button>
-      <button onclick={() => applyLabel("blurry")} disabled={selected.size === 0}>Blurry</button>
-      <button onclick={() => applyLabel("bokeh_ok")} disabled={selected.size === 0}>Bokeh OK</button>
-      <button onclick={() => applyLabel("reject")} disabled={selected.size === 0}>Reject</button>
-    </div>
-
-    <div class="grid">
-      {#if visible.length === 0}
-        <div class="empty">
-          {activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
-        </div>
-      {/if}
-      {#each visible as f (f.id)}
-        <div
-          class="tile"
-          class:selected={selected.has(f.id)}
-          role="button"
-          tabindex="0"
-          onclick={() => toggle(f.id)}
-          onkeydown={(e) => onTileKey(e, f.id)}
-          ondblclick={() => openReview(f.id)}
+    {#if progress}
+      <div class="progress">
+        <span class="status"
+          >{progress.label}{progress.total > 0
+            ? ` ${progress.done}/${progress.total}`
+            : "…"}</span
         >
-          <div class="thumb">
-            {#if thumbs[f.id]}
-              <img src={thumbs[f.id]} alt={f.filename} loading="lazy" />
-            {/if}
-          </div>
-          <div class="meta">
-            <span class="name" title={f.filename}>{f.filename}</span>
-            {#if burstInfo[f.id]}
-              <span
-                class="badge burst"
-                class:winner={burstInfo[f.id].best}
-                title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
-                >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
-              >
-            {/if}
-            {#if f.predicted}
-              <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
-              <span class="status">{scoreText(f)}</span>
-            {:else}
-              <span class="badge none">—</span>
-            {/if}
-          </div>
+        <div class="bar" class:indeterminate={progress.total === 0} role="progressbar"
+          aria-valuemin={0} aria-valuemax={progress.total || 0} aria-valuenow={progress.done}>
+          {#if progress.total > 0}
+            <div
+              class="fill"
+              style="width:{Math.min(100, (progress.done / progress.total) * 100)}%"
+            ></div>
+          {/if}
         </div>
-      {/each}
+        <button class="mini" onclick={cancel}>Stop</button>
+      </div>
+    {/if}
+
+    <FilterBar
+      bind:filter
+      shown={visible.length}
+      selectedCount={selected.size}
+      onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
+    />
+
+    <LabelBar
+      selectedCount={selected.size}
+      {busy}
+      hasFolder={activeFolder !== null}
+      onLabel={applyLabel}
+      onTrash={trashSelected}
+      onRate={rateSelected}
+      onAutoStar={autoStar}
+      onResetStars={resetStars}
+    />
+
+    <div
+      class="grid"
+      bind:this={gridEl}
+      onscroll={() => {
+        if (gridEl) gridScrollTop = gridEl.scrollTop;
+      }}
+    >
+      <PhotoGrid
+        {slice}
+        {cols}
+        {topPad}
+        {bottomPad}
+        {firstRow}
+        {thumbs}
+        {selected}
+        {focusIndex}
+        {burstInfo}
+        emptyText={activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
+        onFocus={(i) => (focusIndex = i)}
+        onToggle={toggle}
+        onOpen={openReview}
+        onRate={rateOne}
+        onKey={onTileKey}
+      />
     </div>
   </main>
 
   {#if reviewFile !== null}
-    <div class="review">
-      <div class="review-bar">
-        <strong>{detail?.filename ?? "loading…"}</strong>
-        {#if detail?.predicted}
-          <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
-          <span class="status">score {detail.score?.toFixed(3)}</span>
-          <button class="mini" onclick={openBreakdown} title="How is this score computed?">
-            Why?
-          </button>
-        {/if}
-        {#if detail?.hasBokeh}<span class="status">· bokeh</span>{/if}
-        {#if detail?.missFocusReason}<span class="status">· {detail.missFocusReason}</span>{/if}
-        {#if previewLoading}<span class="status">· rendering preview…</span>{/if}
-        <div class="spacer"></div>
-        <span class="status">{visible.findIndex((f) => f.id === reviewFile) + 1} / {visible.length}</span>
-        <button onclick={() => zoomByFactor(1 / 1.25)} title="Zoom out (-)">−</button>
-        <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
-        <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
-        <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
-        <select
-          class="modesel"
-          bind:value={previewMode}
-          onchange={renderPreview}
-          title="Preview resolution"
-        >
-          <option value="fast">Fast</option>
-          <option value="full">High-res</option>
-          <option value="develop">Developed</option>
-        </select>
-        <button onclick={() => nav(-1)}>‹ K</button>
-        <button onclick={() => nav(1)}>J ›</button>
-        <button onclick={closeReview}>Close (Esc)</button>
-      </div>
-
-      <div class="review-body">
-        <div class="preview">
-          {#if previewUrl}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="stage"
-              bind:this={stageEl}
-              onwheel={onWheel}
-              onpointerdown={onPanStart}
-              onpointermove={onPanMove}
-              onpointerup={onPanEnd}
-              onpointercancel={onPanEnd}
-            >
-              <div
-                class="imgwrap"
-                style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
-              >
-                <img
-                  src={previewUrl}
-                  alt={detail?.filename ?? ""}
-                  bind:this={previewEl}
-                  draggable="false"
-                  onload={() => {
-                    if (previewEl)
-                      natural = {
-                        w: previewEl.naturalWidth || 1,
-                        h: previewEl.naturalHeight || 1,
-                      };
-                    computeFit(true);
-                  }}
-                />
-                {#each detail?.boxes ?? [] as b, i (i)}
-                  <div
-                    class="box"
-                    class:sel={i === selectedBox}
-                    style="left:{(b.x / boxW) * 100}%; top:{(b.y / boxH) * 100}%; width:{(b.w / boxW) * 100}%; height:{(b.h / boxH) * 100}%"
-                    role="button"
-                    tabindex="0"
-                    onclick={() => (selectedBox = i)}
-                    onkeydown={(e) => e.key === "Enter" && (selectedBox = i)}
-                  >
-                    <span class="boxtag"
-                      >{b.class}{b.confidence
-                        ? ` ${(b.confidence * 100).toFixed(0)}%`
-                        : ""}</span
-                    >
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
-          {#if previewLoading}
-            <div class="loading">
-              <div class="spinner"></div>
-              <span
-                >rendering{previewMode === "develop"
-                  ? " developed"
-                  : previewMode === "full"
-                    ? " full-resolution"
-                    : ""} preview…</span
-              >
-            </div>
-          {/if}
-        </div>
-
-        <aside class="side">
-          <h3>Subject</h3>
-          {#if (detail?.boxes?.length ?? 0) === 0}
-            <p class="status">No subject box (whole-image score).</p>
-          {:else}
-            <p class="status">
-              Box {selectedBox + 1} of {detail?.boxes.length} — click a box to select
-            </p>
-          {/if}
-
-          <h3>Species</h3>
-          {#if detail?.species}
-            <p>
-              <span class="pill"
-                >{detail.species}{detail.speciesConfidence
-                  ? ` · ${(detail.speciesConfidence * 100).toFixed(0)}%`
-                  : ""}</span
-              >
-            </p>
-          {:else}
-            <p class="status">Not identified — pick a prediction or set the actual species:</p>
-          {/if}
-
-          <div class="picks">
-            {#each picks as pick, i (i)}
-              <button
-                class="pick"
-                onclick={() => chooseSpecies(pick[0], pick[1])}
-                title="confidence {(pick[1] * 100).toFixed(1)}%"
-              >
-                <span class="pickname">{pick[0]}</span>
-                <span class="conf">{(pick[1] * 100).toFixed(0)}%</span>
-              </button>
-            {/each}
-            {#each Array.from({ length: blanks }) as _, i (i)}
-              <button class="pick blank" disabled>pick {picks.length + i + 1}</button>
-            {/each}
-            <div class="other">
-              <input
-                placeholder="actual species…"
-                bind:value={speciesInput}
-                onkeydown={(e) => e.key === "Enter" && submitBlank()}
-              />
-              <button onclick={submitBlank} disabled={!speciesInput.trim()}>Set</button>
-            </div>
-            {#if detail?.species}
-              <button class="mini" onclick={() => chooseSpecies(null)}>Clear ID</button>
-            {/if}
-          </div>
-
-          <h3>Your label</h3>
-          <div class="picks">
-            <button class="pick" onclick={() => applyLabelToReview("sharp")}>Sharp</button>
-            <button class="pick" onclick={() => applyLabelToReview("blurry")}>Blurry</button>
-            <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")}>Bokeh OK</button>
-            <button class="pick" onclick={() => applyLabelToReview("reject")}>Reject</button>
-          </div>
-          {#if detail?.label}<p class="status">current: {detail.label}</p>{/if}
-        </aside>
-      </div>
-    </div>
+    <Review
+      fileId={reviewFile}
+      ids={visible.map((f) => f.id)}
+      {burstGroups}
+      rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
+      refreshToken={reviewRefresh}
+      {canUndo}
+      bind:status
+      onClose={() => (reviewFile = null)}
+      onNavigate={openReview}
+      onFilesChanged={refreshFiles}
+      onPushUndo={pushUndo}
+      onRate={rateOne}
+      onBurstGroups={(groups) => {
+        burstGroups = groups;
+        applyBurstInfo(groups);
+      }}
+      onOpenBreakdown={openBreakdown}
+      onUndo={undoLast}
+    />
   {/if}
 
-  {#if showSettings && settings}
+  {#if showSettings && settings && detection}
     <Settings
       {settings}
+      {detection}
       saving={settingsSaving}
       onSave={saveSettings}
       onClose={() => (showSettings = false)}
@@ -844,6 +972,10 @@
 
   {#if showModels}
     <ModelManager onClose={() => (showModels = false)} />
+  {/if}
+
+  {#if showAbout}
+    <About onClose={() => (showAbout = false)} />
   {/if}
 
   {#if showBreakdown && breakdown}

@@ -8,17 +8,16 @@ use ndarray::Array3;
 use rusqlite::Connection;
 
 use crate::analysis::detector::{BBox, Detection};
+use crate::analysis::eye::EyeDetector;
 use crate::analysis::scorer::{score_rules, ScoreResult};
-use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
-use crate::analysis::species::{crop_rgb, SpeciesClassifier};
-use crate::data::analysis_store::{upsert_analysis, AnalysisRecord, SubjectSpecies};
+use crate::analysis::sharpness::SharpnessFeatures;
+use crate::analysis::species::SpeciesClassifier;
+use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
 use crate::data::library;
 use crate::data::library::LibraryFile;
 use crate::data::settings::ScoreSettings;
+use crate::pipeline::stages;
 use crate::{CoreError, Result};
-
-/// Minimum bird-box side length worth classifying.
-const MIN_SPECIES_CROP: i32 = 24;
 
 /// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
 /// backends can implement them without depending on the pipeline.
@@ -100,6 +99,8 @@ pub struct IngestContext<'a> {
     pub decode_threads: usize,
     /// Optional species classifier; `None` disables identification.
     pub species: Option<&'a dyn SpeciesClassifier>,
+    /// Optional eye/head keypoint model; refines `eye_sharpness_worst`.
+    pub eye: Option<&'a dyn EyeDetector>,
 }
 
 impl<'a> IngestContext<'a> {
@@ -116,6 +117,7 @@ impl<'a> IngestContext<'a> {
             batch_size: 8,
             decode_threads: 1,
             species: None,
+            eye: None,
         }
     }
 
@@ -133,6 +135,7 @@ impl<'a> IngestContext<'a> {
 struct PendingItem {
     file_id: i64,
     name: String,
+    content_hash: String,
     rgb: Array3<u8>,
 }
 
@@ -183,12 +186,13 @@ fn run_sequential(
         }
         progress.current_file = lf.file.filename.clone();
 
-        match ctx.decoder.decode(&lf.absolute_path) {
+        match catch_decode(|| ctx.decoder.decode(&lf.absolute_path)) {
             Ok(img) => {
                 progress.decoded += 1;
                 batch.push(PendingItem {
                     file_id: lf.file.id,
                     name: lf.file.filename.clone(),
+                    content_hash: lf.file.content_hash.clone(),
                     rgb: img.rgb,
                 });
             }
@@ -253,7 +257,7 @@ fn run_parallel(
                     break;
                 }
                 let lf = &queue[i];
-                let res = decoder.decode(&lf.absolute_path);
+                let res = catch_decode(|| decoder.decode(&lf.absolute_path));
                 // Blocking send: backpressure keeps peak memory bounded.
                 if tx.send((i, res)).is_err() {
                     break;
@@ -275,6 +279,7 @@ fn run_parallel(
                     batch.push(PendingItem {
                         file_id: lf.file.id,
                         name: lf.file.filename.clone(),
+                        content_hash: lf.file.content_hash.clone(),
                         rgb: img.rgb,
                     });
                 }
@@ -302,6 +307,28 @@ fn run_parallel(
     })
 }
 
+/// Decode through a panic boundary: a single bad file (or a bug in a decoder
+/// backend) must not take down a multi-thousand-file run.
+fn catch_decode(f: impl FnOnce() -> Result<DecodedImage>) -> Result<DecodedImage> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => Err(CoreError::Other(
+            "decoder panicked on this file (skipped)".into(),
+        )),
+    }
+}
+
+/// Analyse one item through a panic boundary, for the same reason as
+/// [`catch_decode`] — feature extraction runs on untrusted image geometry.
+fn catch_analyze(f: impl FnOnce() -> Result<AnalysisRecord>) -> Result<AnalysisRecord> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => Err(CoreError::Other(
+            "analysis panicked on this file (skipped)".into(),
+        )),
+    }
+}
+
 fn flush_batch(
     conn: &Connection,
     ctx: &IngestContext<'_>,
@@ -312,15 +339,33 @@ fn flush_batch(
         return Ok(());
     }
     let images: Vec<&Array3<u8>> = batch.iter().map(|b| &b.rgb).collect();
-    let detections = match ctx.detector.detect_batch(&images) {
-        Ok(d) if d.len() == batch.len() => d,
-        // A detector failure (or a shape mismatch) degrades to "no subject"
-        // for this batch rather than failing the run.
+    let detections = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ctx.detector.detect_batch(&images)
+    })) {
+        Ok(Ok(d)) if d.len() == batch.len() => d,
+        // A detector failure (or panic, or a shape mismatch) degrades to
+        // "no subject" for this batch rather than failing the run.
         _ => vec![Vec::new(); batch.len()],
     };
 
     for (item, dets) in batch.iter().zip(detections) {
-        let record = match analyze_one(item, dets, ctx.scorer, ctx.species) {
+        // Stop promptly on cancel: a long batch must not keep working after the
+        // user asked it to stop.
+        if ctx.cancelled() {
+            break;
+        }
+        let record = match catch_analyze(|| {
+            let mut record = analyze_one(
+                item.file_id,
+                &item.rgb,
+                dets,
+                ctx.scorer,
+                ctx.species,
+                ctx.eye,
+            )?;
+            record.analyzed_content_hash = Some(item.content_hash.clone());
+            Ok(record)
+        }) {
             Ok(record) => record,
             Err(e) => {
                 progress.failed += 1;
@@ -345,113 +390,98 @@ fn flush_batch(
 /// Build the analysis record for one image: evaluate every detected subject and
 /// keep the sharpest (mirrors the prototype's "best of N subjects").
 fn analyze_one(
-    item: &PendingItem,
+    file_id: i64,
+    rgb: &Array3<u8>,
     dets: Vec<Detection>,
     scorer: &dyn VerdictScorer,
     species: Option<&dyn SpeciesClassifier>,
+    eye: Option<&dyn EyeDetector>,
 ) -> Result<AnalysisRecord> {
-    let all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
+    let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
-    let (features, best_bbox, subject_class) = if dets.is_empty() {
-        (compute_features(&item.rgb, None), None, None)
-    } else {
-        let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
-        for det in &dets {
-            let subject = Subject {
-                bbox: det.bbox,
-                area_px: det.area_px,
-            };
-            let f = compute_features(&item.rgb, Some(subject));
-            let sharp = f.tenengrad_subject.max(f.laplacian_subject);
-            if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
-                best = Some((f, det.bbox, det.class_name.clone(), sharp));
-            }
-        }
-        match best {
-            Some((f, bbox, class, _)) => (f, Some(bbox), Some(class)),
-            None => (compute_features(&item.rgb, None), None, None),
-        }
-    };
+    let pick = stages::select_subject(rgb, &dets, eye);
+    let score = scorer.score(&pick.features)?;
 
-    let score = scorer.score(&features)?;
-
-    let (img_h, img_w, _) = item.rgb.dim();
-
-    // Species identification for each detected bird subject.
-    let mut subject_species: Vec<SubjectSpecies> = Vec::new();
-    let mut species_name: Option<String> = None;
-    let mut species_confidence: Option<f32> = None;
-    let mut species_top5: Vec<(String, f32)> = Vec::new();
-
-    if let Some(classifier) = species {
-        if classifier.available() && !dets.is_empty() {
-            // Crops to classify: bird boxes big enough to be worth upscaling.
-            let crops: Vec<(usize, Array3<u8>)> = dets
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| {
-                    d.class_name == "bird"
-                        && d.bbox.w >= MIN_SPECIES_CROP
-                        && d.bbox.h >= MIN_SPECIES_CROP
-                })
-                .filter_map(|(i, d)| crop_rgb(&item.rgb, d.bbox).map(|c| (i, c)))
-                .collect();
-
-            // One entry per detected box (parallel to `all_bboxes`).
-            let mut per_box: Vec<SubjectSpecies> = dets
-                .iter()
-                .map(|d| SubjectSpecies {
-                    bbox: d.bbox.to_array(),
-                    species: None,
-                    confidence: None,
-                    top5: Vec::new(),
-                    class: Some(d.class_name.clone()),
-                })
-                .collect();
-
-            if !crops.is_empty() {
-                let refs: Vec<&Array3<u8>> = crops.iter().map(|(_, c)| c).collect();
-                let results = classifier.identify_batch(&refs)?;
-                for ((i, _), res) in crops.iter().zip(results) {
-                    if let Some(id) = res {
-                        if let Some(entry) = per_box.get_mut(*i) {
-                            let best = id.best();
-                            entry.species = best.map(|b| b.name.clone());
-                            entry.confidence = best.map(|b| b.confidence);
-                            entry.top5 = id
-                                .top
-                                .iter()
-                                .map(|b| (b.name.clone(), b.confidence))
-                                .collect();
-                        }
-                    }
-                }
-            }
-
-            // Top-level summary = the first identified subject.
-            if let Some(first) = per_box.iter().find(|p| p.species.is_some()) {
-                species_name = first.species.clone();
-                species_confidence = first.confidence;
-                species_top5 = first.top5.clone();
-            }
-            subject_species = per_box;
-        }
-    }
+    let (img_h, img_w, _) = rgb.dim();
+    let outcome = stages::classify_species(rgb, &dets, species)?;
+    let mut per_box = outcome.per_box;
+    stages::subject_first(&mut all_bboxes, &mut per_box, pick.bbox);
 
     Ok(AnalysisRecord {
-        file_id: item.file_id,
-        features,
+        file_id,
+        features: pick.features,
         score,
-        subject_bbox: best_bbox,
-        subject_class,
+        subject_bbox: pick.bbox,
+        subject_class: pick.class,
         all_bboxes,
-        species_name,
-        species_confidence,
-        species_top5,
-        subject_species,
+        species_name: outcome.name,
+        species_confidence: outcome.confidence,
+        species_top5: outcome.top5,
+        subject_species: per_box,
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
+        analyzed_content_hash: None,
     })
+}
+
+/// Decode one file and (re)analyse it, optionally adding the subject box the
+/// user drew and/or dropping boxes the user removed.
+///
+/// The box set is read back from storage and edited, rather than re-detected,
+/// so adding a box keeps every other bird (and earlier removals stay removed).
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_file_with(
+    conn: &Connection,
+    file: &LibraryFile,
+    decoder: &dyn ImageDecoder,
+    detector: &dyn SubjectDetector,
+    scorer: &dyn VerdictScorer,
+    species: Option<&dyn SpeciesClassifier>,
+    eye: Option<&dyn EyeDetector>,
+    manual_box: Option<BBox>,
+    exclude: &[BBox],
+) -> Result<AnalysisRecord> {
+    let img = decoder.decode(&file.absolute_path)?;
+    let (h, w, _) = img.rgb.dim();
+    let stored = stored_detections(conn, file.file.id)?;
+    // A manual box or an exclusion edits the stored set; a fresh detection pass
+    // only runs for a plain re-identify.
+    let detected = if manual_box.is_none() && exclude.is_empty() {
+        detector
+            .detect_batch(&[&img.rgb])?
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let dets =
+        stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
+    let mut record = analyze_one(file.file.id, &img.rgb, dets, scorer, species, eye)?;
+    record.analyzed_content_hash = Some(file.file.content_hash.clone());
+    upsert_analysis(conn, &record)?;
+    Ok(record)
+}
+
+/// The boxes currently stored for a file, with their classes (detected `bird`
+/// vs. user-drawn `manual`) recovered from the parallel species entries.
+fn stored_detections(conn: &Connection, file_id: i64) -> Result<Vec<Detection>> {
+    let Some(row) = crate::data::analysis_store::get_analysis(conn, file_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(row
+        .bboxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let class = row
+                .subject_species
+                .get(i)
+                .and_then(|s| s.class.clone())
+                .unwrap_or_else(|| "bird".to_string());
+            Detection::new(*b, class, 1.0)
+        })
+        .collect())
 }
 
 /// Convenience helper for callers that only have settings, not a scorer object.
@@ -826,7 +856,8 @@ mod tests {
         let (_dir, conn) = setup(1);
         let fid = folder_id(&conn);
         let decoder = FakeDecoder::new();
-        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        // Big enough to clear MIN_SPECIES_CROP.
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 160, 160)]);
         let scorer = PanicFreeScorer(ScoreSettings::default());
         let species = FakeSpecies;
         let ctx = IngestContext {
@@ -847,7 +878,75 @@ mod tests {
         assert_eq!(row.subject_species.len(), 1);
         assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
         assert_eq!(row.subject_species[0].top5.len(), 2);
-        assert_eq!(row.subject_species[0].bbox, [32, 32, 64, 64]);
+        assert_eq!(row.subject_species[0].bbox, [32, 32, 160, 160]);
+    }
+
+    #[test]
+    fn drawn_box_is_added_without_losing_other_birds() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![
+            subject_at(32, 32, 160, 160),
+            subject_at(300, 300, 160, 160),
+        ]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let species = FakeSpecies;
+        let ctx = IngestContext {
+            species: Some(&species),
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        let lf = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let file_id = lf.file.id;
+
+        // Draw a third box on empty space: both birds must survive.
+        let record = analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            Some(&species),
+            None,
+            Some(BBox::new(600, 600, 160, 160)),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(record.all_bboxes.len(), 3);
+        assert_eq!(record.subject_bbox, Some(BBox::new(600, 600, 160, 160)));
+        assert_eq!(record.subject_class.as_deref(), Some("manual"));
+
+        // Stored best-first, with per-subject species parallel to the boxes.
+        let row = crate::data::analysis_store::get_analysis(&conn, file_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.bboxes[0], BBox::new(600, 600, 160, 160));
+        assert_eq!(row.bboxes.len(), 3);
+        assert_eq!(row.subject_species[0].bbox, [600, 600, 160, 160]);
+        assert_eq!(row.subject_species[0].species.as_deref(), Some("Test Bird"));
+        assert_eq!(row.subject_species[0].class.as_deref(), Some("manual"));
+
+        // Drawing over an existing bird replaces it instead of duplicating.
+        let record = analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            Some(&species),
+            None,
+            Some(BBox::new(48, 48, 140, 140)),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(record.all_bboxes.len(), 3, "third box replaced, not added");
+        assert!(!record.all_bboxes.contains(&BBox::new(32, 32, 160, 160)));
     }
 
     #[test]
@@ -867,7 +966,8 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(row.species_name.is_none());
-        assert!(row.subject_species.is_empty());
+        assert_eq!(row.subject_species.len(), 1);
+        assert_eq!(row.subject_species[0].class.as_deref(), Some("bird"));
     }
 
     #[test]

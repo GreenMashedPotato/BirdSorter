@@ -79,15 +79,14 @@ pub fn features_to_vector(f: &SharpnessFeatures) -> [f32; 12] {
 /// Consensus of the independent subject estimators (Laplacian, Tenengrad, FFT,
 /// and Brenner when present).
 fn voted_subject_sharp(f: &SharpnessFeatures) -> f32 {
-    let mut parts = vec![
-        f.tenengrad_subject,
-        f.laplacian_subject,
-        f.fft_high_freq_subject,
-    ];
+    // Fixed-size accumulator avoids a heap allocation for 3-4 values.
+    let mut sum = f.tenengrad_subject + f.laplacian_subject + f.fft_high_freq_subject;
+    let mut n = 3usize;
     if f.brenner_subject > 0.0 {
-        parts.push(f.brenner_subject);
+        sum += f.brenner_subject;
+        n += 1;
     }
-    parts.iter().sum::<f32>() / parts.len() as f32
+    sum / n as f32
 }
 
 /// A human-readable trace of how the rule scorer reached its verdict. Powers the
@@ -539,6 +538,78 @@ mod tests {
         let v = features_to_vector(&f);
         for (i, item) in v.iter().enumerate() {
             assert!((*item - (i as f32 + 1.0) / 100.0).abs() < 1e-6, "index {i}");
+        }
+    }
+
+    proptest::proptest! {
+        /// The score must always be a valid probability-like number, for any
+        /// feature vector the extractor can produce.
+        #[test]
+        fn score_is_always_in_unit_range(
+            laplacian_subject in 0.0f32..1.0,
+            tenengrad_subject in 0.0f32..1.0,
+            fft_subject in 0.0f32..1.0,
+            brenner_subject in 0.0f32..1.0,
+            ratio in 0.0f32..50.0,
+            edge_dist in 0.0f32..1.0,
+            center_edge in 0.0f32..10.0,
+            motion in 0.0f32..1.0,
+            eye in 0.0f32..1.0,
+            has_subject in proptest::bool::ANY,
+        ) {
+            let f = SharpnessFeatures {
+                has_subject,
+                laplacian_subject,
+                tenengrad_subject,
+                fft_high_freq_subject: fft_subject,
+                brenner_subject,
+                subject_to_bg_ratio: ratio,
+                subject_edge_distance: edge_dist,
+                center_edge_ratio: center_edge,
+                motion_directionality: motion,
+                eye_sharpness_worst: eye,
+                ..Default::default()
+            };
+            let r = score_rules(&f, &ScoreSettings::default());
+            proptest::prop_assert!((0.0..=1.0).contains(&r.score), "score {}", r.score);
+            proptest::prop_assert!(matches!(
+                r.label.as_str(),
+                "sharp" | "uncertain" | "blurry" | "no_subject"
+            ));
+        }
+
+        /// A sharper subject can never score lower than a duller one when every
+        /// other input is identical.
+        #[test]
+        fn score_is_monotonic_in_subject_sharpness(
+            a in 0.0f32..0.9,
+            delta in 0.001f32..0.1,
+        ) {
+            let base = SharpnessFeatures {
+                has_subject: true,
+                subject_edge_distance: 1.0,
+                center_edge_ratio: 1.0,
+                subject_to_bg_ratio: 1.0,
+                laplacian_subject: a,
+                tenengrad_subject: a,
+                fft_high_freq_subject: a,
+                ..Default::default()
+            };
+            let better = SharpnessFeatures {
+                laplacian_subject: a + delta,
+                tenengrad_subject: a + delta,
+                fft_high_freq_subject: a + delta,
+                ..base.clone()
+            };
+            let s = ScoreSettings::default();
+            let rb = score_rules(&base, &s);
+            let rg = score_rules(&better, &s);
+            proptest::prop_assert!(
+                rg.score + 1e-4 >= rb.score,
+                "sharper {} scored below duller {}",
+                rg.score,
+                rb.score
+            );
         }
     }
 }

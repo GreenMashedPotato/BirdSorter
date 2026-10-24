@@ -20,6 +20,14 @@ use sha2::{Digest, Sha256};
 
 use crate::{CoreError, Result};
 
+const MAX_MODEL_ARCHIVE_ENTRIES: usize = 32;
+const MAX_MODEL_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Upper bound on a downloaded model artifact (the species bundle is ~818 MB).
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DOWNLOAD_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
 /// Feature tier a model unlocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,17 +85,20 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             files: vec!["bird_det_v1.onnx".into()],
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 10_700_000,
+            size_bytes: 10_600_000,
             tier: Tier::T1,
             tags: vec!["detector".into(), "birds".into()],
         },
         ModelSpec {
             key: "bird_species".into(),
-            display_name: "Bird species (ViT, 526 classes, int8)".into(),
-            description: "ViT-B/16 fine-tuned on 526 bird species, int8 (~85 MB). \
-                          Shipped as a zip: model + labels + preprocessing meta."
+            display_name: "Bird species (iNaturalist 2021, 10,000 species)".into(),
+            description: "THE bird-ID model: ConvNeXt-Large fine-tuned on iNaturalist 2021 - \
+                          ~10,000 species globally, with strong South-East Asian / Indonesian \
+                          coverage (bulbuls, sunbirds, kingfishers, drongos, swifts, raptors). \
+                          Build the bundle with tools/export_inat21.py. ~817 MB fp32 (ONNX \
+                          Runtime's int8 quantiser rejects this head)."
                 .into(),
-            artifact: "bird_species.zip".into(),
+            artifact: "bird_species_inat21.zip".into(),
             unpack: true,
             files: vec![
                 "bird_species.onnx".into(),
@@ -96,14 +107,46 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             ],
             url: String::new(),
             sha256: String::new(),
-            size_bytes: 85_000_000,
+            size_bytes: 818_000_000,
             tier: Tier::T2,
             tags: vec![
                 "species".into(),
                 "birds".into(),
-                "vit".into(),
-                "int8".into(),
+                "inat21".into(),
+                "global".into(),
             ],
+        },
+        ModelSpec {
+            key: "bird_eye".into(),
+            display_name: "Bird eye / head landmarks".into(),
+            description: "Optional ONNX keypoint model that locates the eye/head so focus \
+                          can be judged where it matters. Install a trained bundle; the \
+                          heuristic in core::analysis::sharpness is used until then."
+                .into(),
+            artifact: "bird_eye.zip".into(),
+            unpack: true,
+            files: vec!["bird_eye.onnx".into(), "bird_eye.meta.json".into()],
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 8_000_000,
+            tier: Tier::T2,
+            tags: vec!["eye".into(), "birds".into()],
+        },
+        ModelSpec {
+            key: "bird_detector_v2".into(),
+            display_name: "Bird detector v2 (fine-tuned) [not trained yet]".into(),
+            description: "Planned single-class bird detector fine-tuned for small/distant \
+                          birds (the COCO bird class misses many). Needs a labelled \
+                          detection dataset and a training run."
+                .into(),
+            artifact: "bird_det_v2.onnx".into(),
+            unpack: false,
+            files: vec!["bird_det_v2.onnx".into()],
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 12_000_000,
+            tier: Tier::T1,
+            tags: vec!["detector".into(), "birds".into(), "planned".into()],
         },
     ]
 }
@@ -168,14 +211,37 @@ pub struct HttpFetcher;
 
 impl Fetcher for HttpFetcher {
     fn fetch(&self, url: &str) -> Result<Vec<u8>> {
-        let mut response = ureq::get(url)
+        // Bounded download: explicit timeouts and a response-size limit so a
+        // stalled or hostile server cannot exhaust memory or hang the app.
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(DOWNLOAD_CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(DOWNLOAD_RESPONSE_TIMEOUT))
+            .timeout_global(Some(DOWNLOAD_TOTAL_TIMEOUT))
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let mut response = agent
+            .get(url)
             .call()
             .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))?;
         response
             .body_mut()
+            .with_config()
+            .limit(MAX_DOWNLOAD_BYTES)
             .read_to_vec()
             .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))
     }
+}
+
+/// Reject an artifact larger than the install limit, so a local import cannot
+/// read an unbounded file into memory (the HTTP fetcher caps downloads already).
+fn check_artifact_size(label: &str, len: u64) -> Result<()> {
+    if len > MAX_DOWNLOAD_BYTES {
+        return Err(CoreError::Other(format!(
+            "model artifact '{label}' exceeds the {} MiB limit",
+            MAX_DOWNLOAD_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
@@ -196,11 +262,23 @@ fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
 /// Install already-fetched artifact bytes: verify, then unzip or write.
 pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<PathBuf>> {
     verify(spec, bytes)?;
+    check_artifact_size(&spec.key, bytes.len() as u64)?;
     std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
 
     if spec.unpack {
+        let staging = dir.join(format!(".{}.staging-{}", spec.key, std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| CoreError::io(&staging, e))?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|e| CoreError::Other(format!("bad zip for '{}': {e}", spec.key)))?;
+        if archive.len() > MAX_MODEL_ARCHIVE_ENTRIES {
+            return Err(CoreError::Other(format!(
+                "model archive '{}' has too many entries",
+                spec.key
+            )));
+        }
+        let mut total_uncompressed = 0u64;
+        let mut seen = std::collections::HashSet::new();
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
@@ -212,10 +290,42 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
             if file.is_dir() {
                 continue;
             }
-            let dest = dir.join(name);
+            let name = name.to_string_lossy().to_string();
+            if !spec.files.iter().any(|expected| expected == &name) {
+                return Err(CoreError::Other(format!(
+                    "unexpected file '{}' in model archive '{}'",
+                    name, spec.key
+                )));
+            }
+            if !seen.insert(name.clone()) {
+                return Err(CoreError::Other(format!(
+                    "duplicate file '{}' in model archive '{}'",
+                    name, spec.key
+                )));
+            }
+            total_uncompressed = total_uncompressed.saturating_add(file.size());
+            if total_uncompressed > MAX_MODEL_ARCHIVE_BYTES {
+                return Err(CoreError::Other(format!(
+                    "model archive '{}' expands beyond the size limit",
+                    spec.key
+                )));
+            }
+            let dest = staging.join(&name);
             let mut out = std::fs::File::create(&dest).map_err(|e| CoreError::io(&dest, e))?;
             std::io::copy(&mut file, &mut out).map_err(|e| CoreError::io(&dest, e))?;
         }
+        if !spec.files.iter().all(|expected| seen.contains(expected)) {
+            return Err(CoreError::Other(format!(
+                "model archive '{}' is missing required files",
+                spec.key
+            )));
+        }
+        for expected in &spec.files {
+            let src = staging.join(expected);
+            let dest = dir.join(expected);
+            std::fs::rename(&src, &dest).map_err(|e| CoreError::io(&dest, e))?;
+        }
+        let _ = std::fs::remove_dir_all(&staging);
     } else {
         let final_path = model_path(dir, spec);
         let tmp = final_path.with_extension("part");
@@ -233,12 +343,33 @@ pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<V
             spec.key
         )));
     }
+    // A remote artifact must be checksum-pinned: an unpinned download is a
+    // supply-chain hole (any server/CDN compromise becomes arbitrary model code).
+    if spec.sha256.is_empty() {
+        return Err(CoreError::Other(format!(
+            "model '{}' has a download URL but no pinned SHA-256; refusing to fetch it",
+            spec.key
+        )));
+    }
+    if !(spec.url.starts_with("https://") || spec.url.starts_with("http://")) {
+        return Err(CoreError::Other(format!(
+            "model '{}' has an unsupported download URL scheme",
+            spec.key
+        )));
+    }
     let bytes = fetcher.fetch(&spec.url)?;
     install_bytes(dir, spec, &bytes)
 }
 
 /// Install a model from a local file (a `.zip` bundle or a single `.onnx`).
 pub fn import_file(dir: &Path, spec: &ModelSpec, source: &Path) -> Result<Vec<PathBuf>> {
+    // Stat before reading: never pull a multi-GB file into memory just to
+    // reject it (a downloaded artifact is capped by the fetcher; a local
+    // import was not).
+    let len = std::fs::metadata(source)
+        .map_err(|e| CoreError::io(source, e))?
+        .len();
+    check_artifact_size(&source.display().to_string(), len)?;
     let bytes = std::fs::read(source).map_err(|e| CoreError::io(source, e))?;
     install_bytes(dir, spec, &bytes)
 }
@@ -260,7 +391,13 @@ pub fn remove(dir: &Path, spec: &ModelSpec) -> Result<usize> {
 }
 
 /// Default directory for downloaded models: `<user data>/BirdSorter/models`.
+///
+/// `BIRDSORTER_MODEL_DIR` overrides it, which is how tests (and a portable
+/// install) point at a different set of models.
 pub fn default_model_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("BIRDSORTER_MODEL_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
         .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
     Ok(dirs.data_dir().join("models"))
@@ -358,6 +495,18 @@ mod tests {
     }
 
     #[test]
+    fn unpinned_remote_download_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = single_file_spec("https://example/m.onnx", b"weights");
+        spec.sha256 = String::new();
+        let fetcher = FakeFetcher {
+            responses: HashMap::from([(spec.url.clone(), b"weights".to_vec())]),
+        };
+        let err = download(dir.path(), &spec, &fetcher).unwrap_err();
+        assert!(err.to_string().contains("no pinned SHA-256"), "{err}");
+    }
+
+    #[test]
     fn checksum_mismatch_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let mut spec = single_file_spec("https://example/m.onnx", b"good");
@@ -365,6 +514,35 @@ mod tests {
         let err = install_bytes(dir.path(), &spec, b"good").unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"));
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn an_oversized_artifact_is_rejected() {
+        // The check guards `std::fs::read`, so a file that only *claims* to be
+        // huge is enough to exercise it.
+        assert!(check_artifact_size("ok.onnx", MAX_DOWNLOAD_BYTES).is_ok());
+        let err = check_artifact_size("big.onnx", MAX_DOWNLOAD_BYTES + 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds the"), "{err}");
+    }
+
+    #[test]
+    fn a_leftover_part_file_is_not_a_usable_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"weights";
+        let spec = single_file_spec("https://example/m.onnx", payload);
+        // A download interrupted between writing `.part` and renaming.
+        std::fs::write(dir.path().join("test.onnx.part"), payload).unwrap();
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn a_successful_install_leaves_no_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"weights";
+        let spec = single_file_spec("https://example/m.onnx", payload);
+        install_bytes(dir.path(), &spec, payload).unwrap();
+        assert!(dir.path().join("test.onnx").is_file());
+        assert!(!dir.path().join("test.onnx.part").exists());
     }
 
     #[test]
@@ -381,6 +559,81 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(status(dir.path(), &spec), ModelStatus::Ready);
         assert_eq!(std::fs::read(dir.path().join("a.onnx")).unwrap(), b"model");
+    }
+
+    #[test]
+    fn zip_entries_cannot_escape_the_model_directory() {
+        let outer = tempfile::tempdir().unwrap();
+        let dir = outer.path().join("models");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Traversal entries are flattened to their file name and land inside.
+        let zip = zip_bundle(
+            "b",
+            &[("../../a.onnx", b"model"), ("../a.labels.json", b"[]")],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        install_bytes(&dir, &spec, &zip).unwrap();
+        assert!(dir.join("a.onnx").is_file());
+        assert!(
+            !outer.path().join("a.onnx").exists(),
+            "an entry must not escape the model directory"
+        );
+    }
+
+    #[test]
+    fn zip_with_an_unexpected_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = zip_bundle(
+            "b",
+            &[
+                ("a.onnx", b"m"),
+                ("a.labels.json", b"[]"),
+                ("evil.exe", b"x"),
+            ],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("unexpected file"), "{err}");
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn zip_entries_that_flatten_to_the_same_file_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Distinct archive names, but flattening collapses both to `a.onnx`.
+        let zip = zip_bundle(
+            "b",
+            &[
+                ("sub1/a.onnx", b"1"),
+                ("sub2/a.onnx", b"2"),
+                ("a.labels.json", b"[]"),
+            ],
+        );
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("duplicate file"), "{err}");
+    }
+
+    #[test]
+    fn zip_missing_a_required_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Only one of the two expected files is present.
+        let zip = zip_bundle("b", &[("a.onnx", b"m")]);
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("missing required files"), "{err}");
+        assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
+    }
+
+    #[test]
+    fn zip_with_too_many_entries_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..40).map(|i| format!("f{i}.onnx")).collect();
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x"[..])).collect();
+        let zip = zip_bundle("b", &entries);
+        let spec = bundle_spec("https://example/b.zip", &zip);
+        let err = install_bytes(dir.path(), &spec, &zip).unwrap_err();
+        assert!(err.to_string().contains("too many entries"), "{err}");
     }
 
     #[test]

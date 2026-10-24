@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -33,6 +33,8 @@ const DDL: &[&str] = &[
         imported_at         TEXT NOT NULL,
         trashed_at          TEXT,
         captured_at         TEXT,
+        rating              INTEGER NOT NULL DEFAULT 0,
+        burst_winner        INTEGER NOT NULL DEFAULT 0,
         UNIQUE(folder_id, relative_path)
     )",
     "CREATE INDEX IF NOT EXISTS idx_files_hash    ON files(content_hash)",
@@ -50,6 +52,8 @@ const DDL: &[&str] = &[
         model_version       TEXT NOT NULL,
         species_name        TEXT,
         species_confidence  REAL,
+        species_override_name TEXT,
+        species_override_confidence REAL,
         species_top5_json   TEXT,
         edge_sharpness_grid TEXT,
         eye_sharpness_worst REAL,
@@ -57,7 +61,8 @@ const DDL: &[&str] = &[
         miss_focus_reason   TEXT,
         subject_species_json TEXT,
         image_width         INTEGER,
-        image_height        INTEGER
+        image_height        INTEGER,
+        analyzed_content_hash TEXT
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -69,6 +74,36 @@ const DDL: &[&str] = &[
         created_at  TEXT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_labels_file ON labels(file_id)",
+    "CREATE TABLE IF NOT EXISTS species_overrides (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        species_name TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS eye_labels (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        x           INTEGER NOT NULL,
+        y           INTEGER NOT NULL,
+        kind        TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_eye_labels_file ON eye_labels(file_id)",
+    "CREATE TABLE IF NOT EXISTS subject_boxes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        x           INTEGER NOT NULL,
+        y           INTEGER NOT NULL,
+        w           INTEGER NOT NULL,
+        h           INTEGER NOT NULL,
+        class_name  TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        confidence  REAL,
+        is_subject  INTEGER NOT NULL DEFAULT 0,
+        ordinal     INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_subject_boxes_file ON subject_boxes(file_id)",
     "CREATE TABLE IF NOT EXISTS models (
         version       TEXT PRIMARY KEY,
         trained_at    TEXT NOT NULL,
@@ -194,7 +229,119 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
              ALTER TABLE analysis ADD COLUMN image_height INTEGER;",
         )?;
     }
+    if from < 9 {
+        // v8 -> v9: 0-5 star rating, mirrored into an XMP sidecar.
+        conn.execute_batch("ALTER TABLE files ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    if from < 10 {
+        // v9 -> v10: a manually chosen burst winner overrides the sharpest frame
+        // (the sharpest is not always the best pose).
+        conn.execute_batch(
+            "ALTER TABLE files ADD COLUMN burst_winner INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if from < 11 {
+        // v10 -> v11: tie an analysis result to the exact file content.
+        conn.execute_batch(
+            "ALTER TABLE analysis ADD COLUMN analyzed_content_hash TEXT;
+             UPDATE analysis
+                SET analyzed_content_hash = (
+                    SELECT content_hash FROM files WHERE files.id = analysis.file_id
+                );",
+        )?;
+    }
+    if from < 12 {
+        // v11 -> v12: preserve user species corrections separately from model output.
+        conn.execute_batch(
+            "ALTER TABLE analysis ADD COLUMN species_override_name TEXT;
+             ALTER TABLE analysis ADD COLUMN species_override_confidence REAL;",
+        )?;
+    }
+    if from < 13 {
+        // v12 -> v13: make user species overrides survive analysis-row deletion.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS species_overrides (
+                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                 species_name TEXT NOT NULL,
+                 confidence REAL NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT OR IGNORE INTO species_overrides(file_id, species_name, confidence, updated_at)
+                 SELECT file_id, species_override_name,
+                        COALESCE(species_override_confidence, 1.0), analyzed_at
+                   FROM analysis
+                  WHERE species_override_name IS NOT NULL;",
+        )?;
+    }
+    if from < 14 {
+        // v13 -> v14: normalize subject boxes into their own table so box
+        // provenance (detector vs. manual) no longer depends on species output.
+        // The table is created by DDL for every version; backfill old rows.
+        backfill_subject_boxes(conn)?;
+    }
     conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
+    Ok(())
+}
+
+/// Copy JSON box lists into the normalized `subject_boxes` table.
+///
+/// Best-first ordering is preserved; the first box is marked `is_subject`.
+fn backfill_subject_boxes(conn: &Connection) -> Result<()> {
+    /// `(file_id, boxes_json, subject_class, species_json)`
+    type LegacyRow = (i64, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<LegacyRow> = conn
+        .prepare(
+            "SELECT file_id, subject_bbox_json, subject_class, subject_species_json
+               FROM analysis",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let now = crate::data::now_iso();
+    for (file_id, boxes_json, subject_class, species_json) in rows {
+        let Some(boxes_json) = boxes_json else {
+            continue;
+        };
+        let boxes: Vec<[i32; 4]> = serde_json::from_str(&boxes_json).unwrap_or_default();
+        if boxes.is_empty() {
+            continue;
+        }
+        let species: Vec<serde_json::Value> = species_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        for (i, b) in boxes.iter().enumerate() {
+            let class = species
+                .get(i)
+                .and_then(|v| v.get("class"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| if i == 0 { subject_class.clone() } else { None })
+                .unwrap_or_else(|| "bird".to_string());
+            let source = if class == "manual" {
+                "manual"
+            } else {
+                "detector"
+            };
+            conn.execute(
+                "INSERT INTO subject_boxes
+                   (file_id, x, y, w, h, class_name, source, confidence, is_subject, ordinal, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10)",
+                rusqlite::params![
+                    file_id,
+                    b[0],
+                    b[1],
+                    b[2],
+                    b[3],
+                    class,
+                    source,
+                    (i == 0) as i32,
+                    i as i64,
+                    now
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -249,6 +396,9 @@ mod tests {
             "labels",
             "models",
             "schema_version",
+            "eye_labels",
+            "species_overrides",
+            "subject_boxes",
         ] {
             assert!(tables.contains(&expected.to_string()), "missing {expected}");
         }
@@ -321,6 +471,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn migration_backfills_subject_boxes_from_json() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Insert an analysis row with legacy JSON boxes, then drop the
+        // normalized rows and rewind the version to simulate a v13 library.
+        conn.execute_batch(
+            "INSERT INTO folders (id, path, added_at) VALUES (1, '/x', 'now');
+             INSERT INTO files (id, folder_id, relative_path, filename, content_hash,
+                                filesize, mtime, format, imported_at)
+                VALUES (1, 1, 'a.cr3', 'a.cr3', 'h', 1, 0.0, 'CR3', 'now');
+             INSERT INTO analysis (file_id, features_json, sharpness_score, subject_bbox_json,
+                                   subject_class, predicted_label, analyzed_at, model_version,
+                                   subject_species_json)
+                VALUES (1, '{}', 0.5, '[[10,20,30,40],[1,2,3,4]]', 'bird', 'sharp', 'now', 'rules-v1',
+                        '[{\"bbox\":[10,20,30,40],\"species\":null,\"confidence\":null,\"top5\":[],\"class\":\"manual\"},{\"bbox\":[1,2,3,4],\"species\":null,\"confidence\":null,\"top5\":[],\"class\":\"bird\"}]');
+             DELETE FROM subject_boxes;
+             UPDATE schema_version SET version = 13;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+
+        let rows: Vec<(i64, i64)> = conn
+            .prepare(
+                "SELECT is_subject, ordinal FROM subject_boxes WHERE file_id = 1 ORDER BY ordinal",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1, 0), (0, 1)]);
+        let source: String = conn
+            .query_row(
+                "SELECT source FROM subject_boxes WHERE file_id = 1 AND ordinal = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "manual");
     }
 
     #[test]

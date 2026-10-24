@@ -24,13 +24,23 @@ demosaic.workspace = true
 sha2.workspace = true
 ureq.workspace = true
 zip.workspace = true
+trash.workspace = true
+tracing.workspace = true
 rawler = "0.6.0"
-ort = { version = "2.0.0-rc.9", features = ["ndarray", "download-binaries"] }
+# Pinned exactly: ort-sys 2.0.0-rc.13 stopped publishing x86_64-apple-darwin
+# ONNX Runtime binaries, which breaks Intel macOS. rc.11 targets ORT API 23,
+# still shipped for Intel macOS. Do not widen this without a Mac to test on.
+ort = { version = "=2.0.0-rc.11", features = ["ndarray", "download-binaries"] }
 
 [dev-dependencies]
 approx.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "analysis"
+harness = false
 
 [features]
 default = []

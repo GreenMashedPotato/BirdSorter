@@ -29,13 +29,23 @@ demosaic = "0.3"
 sha2 = "0.10"
 ureq = "3"
 zip = "2"
+trash = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # --- dev ---
 approx = "0.5"
 proptest = "1"
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Benchmarks want optimised code but not the release profile's slow LTO.
+[profile.bench]
+lto = false
+codegen-units = 16
+opt-level = 3
