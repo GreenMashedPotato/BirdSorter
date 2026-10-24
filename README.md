@@ -11,9 +11,6 @@ groups bursts, and (optionally) identifies species.
 with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
 providers — no CUDA install, no driver hunting, and models download on demand.
 
-See [`plan.md`](./plan.md) for the full architecture, performance budgets, test
-plan and roadmap.
-
 ## Status
 
 Early. The headless Rust core is underway (M1 of the plan):
@@ -139,5 +136,5 @@ collapsed to a constant in the `ort` runtime while being correct under
 
 ## Licence
 
-Provisional: AGPL-3.0-or-later (see the licence discussion in `plan.md` — the
-choice is coupled to the object-detection model we ship).
+Provisional: AGPL-3.0-or-later (the choice is coupled to the object-detection
+model we ship).

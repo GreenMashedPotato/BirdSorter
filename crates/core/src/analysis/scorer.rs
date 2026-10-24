@@ -76,21 +76,6 @@ pub fn features_to_vector(f: &SharpnessFeatures) -> [f32; 12] {
     ]
 }
 
-/// The bbox-sharpness signal is inflated by the subject/background boundary
-/// when bokeh is present. Blend in the 3x3 grid's interior evidence.
-fn grid_corrected_sharpness(f: &SharpnessFeatures, bbox_sharp: f32) -> f32 {
-    let grid = &f.edge_sharpness_grid;
-    if !grid.iter().flatten().any(|&v| v != 0.0) {
-        return bbox_sharp;
-    }
-    let centre = grid[1][1];
-    let mut cross = [grid[0][1], grid[1][0], grid[1][2], grid[2][1]];
-    cross.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let cross_median = (cross[1] + cross[2]) / 2.0;
-    let interior = 0.65 * centre + 0.35 * cross_median;
-    0.30 * bbox_sharp + 0.70 * interior
-}
-
 /// Consensus of the independent subject estimators (Laplacian, Tenengrad, FFT,
 /// and Brenner when present).
 fn voted_subject_sharp(f: &SharpnessFeatures) -> f32 {
@@ -105,39 +90,203 @@ fn voted_subject_sharp(f: &SharpnessFeatures) -> f32 {
     parts.iter().sum::<f32>() / parts.len() as f32
 }
 
-/// Apply miss-focus penalties. Returns `(adjusted_sharpness, reason)`.
-fn apply_miss_focus_penalty(
-    f: &SharpnessFeatures,
-    s: &ScoreSettings,
-    sharp: f32,
-) -> (f32, Option<&'static str>) {
-    // Framing issue first: it supersedes focus reasons.
-    if s.off_frame_enabled >= 0.5 && f.subject_edge_distance < s.off_frame_threshold {
-        return (sharp * s.off_frame_penalty, Some(MISS_FOCUS_OFF_FRAME));
-    }
-    if f.center_edge_ratio > s.edge_blur_ratio {
-        return (sharp * s.edge_blur_penalty, Some(MISS_FOCUS_EDGE_BLUR));
-    }
-    if s.motion_blur_enabled >= 0.5 && f.motion_directionality > s.motion_directionality_threshold {
-        return (sharp * s.motion_blur_penalty, Some(MISS_FOCUS_MOTION_BLUR));
-    }
-    let eye = f.eye_sharpness_worst;
-    if eye > 0.0 && eye < s.eye_soft_critical {
-        return (sharp.min(0.20), Some(MISS_FOCUS_EYE_SOFTNESS));
-    }
-    if eye > 0.0 && eye < s.eye_soft_mild {
-        return (sharp * s.eye_soft_penalty, Some(MISS_FOCUS_EYE_SOFTNESS));
-    }
-    (sharp, None)
+/// A human-readable trace of how the rule scorer reached its verdict. Powers the
+/// "how is this score computed?" panel and makes the rules easy to tune.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreExplanation {
+    pub has_subject: bool,
+    /// `(feature name, value)` in [`FEATURE_ORDER`].
+    pub features: Vec<(String, f32)>,
+    pub voted_subject_sharp: f32,
+    pub grid_centre: f32,
+    pub grid_cross_median: f32,
+    pub grid_corrected: f32,
+    pub subject_to_bg_ratio: f32,
+    pub bokeh_threshold: f32,
+    pub has_bokeh: bool,
+    pub penalty: Option<String>,
+    /// Multiplier applied by the penalty (`None` for the eye-critical clamp).
+    pub penalty_multiplier: Option<f32>,
+    pub adjusted_sharpness: f32,
+    pub final_label: String,
+    pub final_score: f32,
+    pub steps: Vec<String>,
 }
 
-fn label_for(sharp: f32, s: &ScoreSettings) -> &'static str {
-    if sharp > s.sharp_threshold {
+/// Compute the verdict *and* every intermediate value behind it.
+pub fn explain_rules(f: &SharpnessFeatures, s: &ScoreSettings) -> ScoreExplanation {
+    let features: Vec<(String, f32)> = FEATURE_ORDER
+        .iter()
+        .copied()
+        .zip(features_to_vector(f))
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+    let has_bokeh = f.has_subject && f.subject_to_bg_ratio > s.bokeh_ratio;
+    let mut steps: Vec<String> = Vec::new();
+
+    if !f.has_subject {
+        let score = f.tenengrad_full.max(f.laplacian_full);
+        steps.push(format!(
+            "No subject detected → score = max(tenengrad_full {:.3}, laplacian_full {:.3}) = {score:.3}",
+            f.tenengrad_full, f.laplacian_full
+        ));
+        return ScoreExplanation {
+            has_subject: false,
+            features,
+            voted_subject_sharp: score,
+            grid_centre: 0.0,
+            grid_cross_median: 0.0,
+            grid_corrected: score,
+            subject_to_bg_ratio: f.subject_to_bg_ratio,
+            bokeh_threshold: s.bokeh_ratio,
+            has_bokeh: false,
+            penalty: None,
+            penalty_multiplier: None,
+            adjusted_sharpness: score,
+            final_label: "no_subject".to_string(),
+            final_score: score,
+            steps,
+        };
+    }
+
+    let bbox = voted_subject_sharp(f);
+    steps.push(format!(
+        "Voted subject sharpness = mean(tenengrad {:.3}, laplacian {:.3}, fft {:.3}{}) = {bbox:.3}",
+        f.tenengrad_subject,
+        f.laplacian_subject,
+        f.fft_high_freq_subject,
+        if f.brenner_subject > 0.0 {
+            format!(", brenner {:.3}", f.brenner_subject)
+        } else {
+            String::new()
+        }
+    ));
+
+    let grid = &f.edge_sharpness_grid;
+    let grid_any = grid.iter().flatten().any(|&v| v != 0.0);
+    let (centre, cross_median, grid_corrected) = if grid_any {
+        let centre = grid[1][1];
+        let mut cross = [grid[0][1], grid[1][0], grid[1][2], grid[2][1]];
+        cross.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let cm = (cross[1] + cross[2]) / 2.0;
+        let interior = 0.65 * centre + 0.35 * cm;
+        (centre, cm, 0.30 * bbox + 0.70 * interior)
+    } else {
+        (0.0, 0.0, bbox)
+    };
+    if grid_any {
+        steps.push(format!(
+            "3×3 grid interior: centre {centre:.3}, cross median {cross_median:.3} → corrected {grid_corrected:.3}"
+        ));
+    } else {
+        steps.push("No grid data → corrected sharpness = voted sharpness".to_string());
+    }
+
+    let eye = f.eye_sharpness_worst;
+    let (adjusted, penalty, multiplier) =
+        if s.off_frame_enabled >= 0.5 && f.subject_edge_distance < s.off_frame_threshold {
+            steps.push(format!(
+                "Off-frame: edge distance {:.3} < {:.3} → ×{:.2}",
+                f.subject_edge_distance, s.off_frame_threshold, s.off_frame_penalty
+            ));
+            (
+                grid_corrected * s.off_frame_penalty,
+                Some(MISS_FOCUS_OFF_FRAME.to_string()),
+                Some(s.off_frame_penalty),
+            )
+        } else if f.center_edge_ratio > s.edge_blur_ratio {
+            steps.push(format!(
+                "Edge blur: centre/edge {:.2} > {:.2} → ×{:.2}",
+                f.center_edge_ratio, s.edge_blur_ratio, s.edge_blur_penalty
+            ));
+            (
+                grid_corrected * s.edge_blur_penalty,
+                Some(MISS_FOCUS_EDGE_BLUR.to_string()),
+                Some(s.edge_blur_penalty),
+            )
+        } else if s.motion_blur_enabled >= 0.5
+            && f.motion_directionality > s.motion_directionality_threshold
+        {
+            steps.push(format!(
+                "Motion blur: directionality {:.2} > {:.2} → ×{:.2}",
+                f.motion_directionality, s.motion_directionality_threshold, s.motion_blur_penalty
+            ));
+            (
+                grid_corrected * s.motion_blur_penalty,
+                Some(MISS_FOCUS_MOTION_BLUR.to_string()),
+                Some(s.motion_blur_penalty),
+            )
+        } else if eye > 0.0 && eye < s.eye_soft_critical {
+            steps.push(format!(
+                "Eye soft (critical): {eye:.3} < {:.3} → capped at 0.20",
+                s.eye_soft_critical
+            ));
+            (
+                grid_corrected.min(0.20),
+                Some(MISS_FOCUS_EYE_SOFTNESS.to_string()),
+                None,
+            )
+        } else if eye > 0.0 && eye < s.eye_soft_mild {
+            steps.push(format!(
+                "Eye soft (mild): {eye:.3} < {:.3} → ×{:.2}",
+                s.eye_soft_mild, s.eye_soft_penalty
+            ));
+            (
+                grid_corrected * s.eye_soft_penalty,
+                Some(MISS_FOCUS_EYE_SOFTNESS.to_string()),
+                Some(s.eye_soft_penalty),
+            )
+        } else {
+            steps.push("No miss-focus penalty applied".to_string());
+            (grid_corrected, None, None)
+        };
+
+    let label = if adjusted > s.sharp_threshold {
         "sharp"
-    } else if sharp > s.uncertain_threshold {
+    } else if adjusted > s.uncertain_threshold {
         "uncertain"
     } else {
         "blurry"
+    };
+    steps.push(format!(
+        "Label: {adjusted:.3} vs sharp>{:.2} / uncertain>{:.2} → {label}",
+        s.sharp_threshold, s.uncertain_threshold
+    ));
+    let score = if label == "sharp" {
+        (adjusted + 0.1 * f.fft_high_freq_subject).min(1.0)
+    } else {
+        adjusted
+    };
+    if label == "sharp" {
+        steps.push(format!(
+            "Sharp bonus: +0.1·fft_subject {:.3} → {score:.3}",
+            f.fft_high_freq_subject
+        ));
+    }
+    if has_bokeh {
+        steps.push(format!(
+            "Bokeh flagged: subject/bg ratio {:.2} > {:.2}",
+            f.subject_to_bg_ratio, s.bokeh_ratio
+        ));
+    }
+
+    ScoreExplanation {
+        has_subject: true,
+        features,
+        voted_subject_sharp: bbox,
+        grid_centre: centre,
+        grid_cross_median: cross_median,
+        grid_corrected,
+        subject_to_bg_ratio: f.subject_to_bg_ratio,
+        bokeh_threshold: s.bokeh_ratio,
+        has_bokeh,
+        penalty,
+        penalty_multiplier: multiplier,
+        adjusted_sharpness: adjusted,
+        final_label: label.to_string(),
+        final_score: score,
+        steps,
     }
 }
 
@@ -145,25 +294,71 @@ fn label_for(sharp: f32, s: &ScoreSettings) -> &'static str {
 ///
 /// No subject -> `"no_subject"`, score = full-image sharpness (for sorting).
 /// Subject    -> judge the subject region only, with grid-interior correction
-///               and miss-focus penalties applied.
+///               and miss-focus penalties applied. Delegates to
+///               [`explain_rules`] so the verdict and the trace never diverge.
 pub fn score_rules(f: &SharpnessFeatures, s: &ScoreSettings) -> ScoreResult {
-    let has_bokeh = f.has_subject && f.subject_to_bg_ratio > s.bokeh_ratio;
+    let e = explain_rules(f, s);
+    ScoreResult {
+        score: e.final_score,
+        label: e.final_label,
+        has_bokeh: e.has_bokeh,
+        model_version: "rules-v1".to_string(),
+        miss_focus_reason: e.penalty,
+    }
+}
 
-    if !f.has_subject {
-        let score = f.tenengrad_full.max(f.laplacian_full);
-        return ScoreResult::new(score, "no_subject", false, None);
+// ---------------------------------------------------------------------------
+// Trained-model scorer
+// ---------------------------------------------------------------------------
+
+/// Wraps a trained linear model with the same interface as [`score_rules`].
+pub struct TrainedScorer {
+    model: crate::learning::trainer::LinearModel,
+    bokeh_ratio: f32,
+}
+
+impl TrainedScorer {
+    /// Load a model from disk.
+    pub fn load(path: &std::path::Path) -> crate::Result<Self> {
+        Ok(Self {
+            model: crate::learning::trainer::LinearModel::load(path)?,
+            bokeh_ratio: ScoreSettings::default().bokeh_ratio,
+        })
     }
 
-    let sharp = voted_subject_sharp(f);
-    let sharp = grid_corrected_sharpness(f, sharp);
-    let (sharp, reason) = apply_miss_focus_penalty(f, s, sharp);
-    let label = label_for(sharp, s);
-    let score = if label == "sharp" {
-        (sharp + 0.1 * f.fft_high_freq_subject).min(1.0)
-    } else {
-        sharp
-    };
-    ScoreResult::new(score, label, has_bokeh, reason)
+    pub fn version(&self) -> &str {
+        &self.model.version
+    }
+
+    pub fn classes(&self) -> &[String] {
+        &self.model.classes
+    }
+
+    /// Score a feature vector. Subjects only — the trained model has no
+    /// `no_subject` class, so those short-circuit to whole-image sharpness.
+    pub fn score_features(&self, f: &SharpnessFeatures) -> ScoreResult {
+        if !f.has_subject {
+            let score = f.tenengrad_full.max(f.laplacian_full);
+            return ScoreResult::new(score, "no_subject", false, None);
+        }
+        let x = features_to_vector(f);
+        let (idx, probs) = self.model.predict(&x);
+        let label = self
+            .model
+            .classes
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "uncertain".to_string());
+        let score = self
+            .model
+            .class_index("sharp")
+            .and_then(|i| probs.get(i).copied())
+            .unwrap_or_else(|| probs.iter().cloned().fold(0.0, f32::max));
+        let mut result = ScoreResult::new(score, &label, false, None);
+        result.has_bokeh = f.subject_to_bg_ratio > self.bokeh_ratio;
+        result.model_version = self.model.version.clone();
+        result
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +494,29 @@ mod tests {
         };
         let r = score_rules(&f, &s);
         assert!(r.miss_focus_reason.is_none());
+    }
+
+    #[test]
+    fn explanation_matches_the_verdict_and_traces_steps() {
+        let f = sharp_subject();
+        let s = ScoreSettings::default();
+        let e = explain_rules(&f, &s);
+        let r = score_rules(&f, &s);
+        assert_eq!(e.final_label, r.label);
+        assert!((e.final_score - r.score).abs() < 1e-6);
+        assert_eq!(e.features.len(), 12);
+        assert!(e.features.iter().any(|(n, _)| n == "tenengrad_subject"));
+        assert!(!e.steps.is_empty());
+        assert!(e.penalty.is_none());
+    }
+
+    #[test]
+    fn explanation_reports_the_applied_penalty() {
+        let mut f = sharp_subject();
+        f.center_edge_ratio = 3.0;
+        let e = explain_rules(&f, &ScoreSettings::default());
+        assert_eq!(e.penalty.as_deref(), Some(MISS_FOCUS_EDGE_BLUR));
+        assert_eq!(e.penalty_multiplier, Some(0.70));
     }
 
     #[test]

@@ -18,24 +18,34 @@ use std::sync::Mutex;
 use base64::Engine as _;
 use birdsorter_core::analysis::detector::SubjectDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
+use birdsorter_core::analysis::scorer::{explain_rules, ScoreExplanation};
 use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::analysis::yolo::YoloConfig;
+use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::ScoreSettings;
 use birdsorter_core::data::{analysis_store, db, labels, library};
 use birdsorter_core::io::cache::ThumbCache;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder, ImageDecoder};
+use birdsorter_core::io::develop::develop_preview;
 use birdsorter_core::io::raw::RawDecoder;
 use birdsorter_core::io::thumb::{cached, encode_rgb_jpeg, render_key, thumbnail_cached};
-use birdsorter_core::pipeline::{ingest_folder, CancelToken, IngestContext, RulesScorer};
-use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
+use birdsorter_core::learning::trainer;
+use birdsorter_core::pipeline::{
+    ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
+};
+use birdsorter_core::runtime::{
+    DevicePreference, OnnxDetector, OnnxSpeciesClassifier, DETECTOR_ONNX,
+};
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Long side used for analysis decodes.
 const ANALYSIS_LONG_SIDE: u32 = 2400;
 /// Long side of grid thumbnails.
 const THUMB_LONG_SIDE: u32 = 512;
+/// Long side of the "Developed" preview (full demosaic is 45 MP / ~60 MB JPEG).
+const DEVELOP_MAX_LONG_SIDE: u32 = 6000;
 /// Upper bound on parallel decode workers during analysis, so the desktop stays
 /// responsive on high-core-count machines.
 const MAX_DECODE_THREADS: usize = 8;
@@ -141,6 +151,9 @@ struct AnalysisDetailDto {
     top5: Vec<(String, f32)>,
     boxes: Vec<BoxDto>,
     model_version: Option<String>,
+    /// Dimensions of the image the boxes are expressed in.
+    image_width: Option<u32>,
+    image_height: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +232,21 @@ fn thumbnail_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
-/// High-resolution preview for the review view. Decoded with the *same* decoder
-/// and resolution as analysis, so detection boxes line up 1:1 with the image.
-fn preview_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, String> {
+/// A deferred, cache-miss render: produces encoded JPEG bytes.
+type RenderFn = Box<dyn FnOnce() -> birdsorter_core::Result<Vec<u8>>>;
+
+/// Preview for the review view. Modes:
+/// - `"fast"` (default): analysis resolution (2400 px) — boxes align 1:1.
+/// - `"full"`: the largest embedded preview at native resolution (fast, ~1.4 s).
+/// - `"develop"`: full RAW demosaic (slow, ~2.5 s) — maximum real detail.
+///
+/// Each mode is cached separately.
+fn preview_impl(
+    cache_root: &Path,
+    db_path: &Path,
+    file: i64,
+    mode: &str,
+) -> Result<String, String> {
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
@@ -229,17 +254,42 @@ fn preview_impl(cache_root: &Path, db_path: &Path, file: i64) -> Result<String, 
     drop(conn);
 
     let cache = ThumbCache::new(cache_root.to_path_buf());
-    let key = render_key(&lf.file.content_hash, ANALYSIS_LONG_SIDE);
-    let bytes = cached(&cache, &key, || {
-        let decoder = CompositeDecoder::new(vec![
-            Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-            Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-        ]);
-        let img = decoder.decode(&lf.absolute_path)?;
-        encode_rgb_jpeg(&img.rgb, 85)
-    })
-    .map_err(err)?;
+    let hash = lf.file.content_hash.clone();
+    let path = lf.absolute_path.clone();
 
+    let (key, render): (String, RenderFn) = match mode {
+        "develop" => (
+            render_key(&hash, 1),
+            Box::new(move || {
+                let rgb = develop_preview(&path, DEVELOP_MAX_LONG_SIDE)?;
+                encode_rgb_jpeg(&rgb, 92)
+            }),
+        ),
+        "full" => (
+            render_key(&hash, 0),
+            Box::new(move || {
+                let decoder = CompositeDecoder::new(vec![
+                    Box::new(RawDecoder::new(None)),
+                    Box::new(ImageCrateDecoder::new(None)),
+                ]);
+                let img = decoder.decode(&path)?;
+                encode_rgb_jpeg(&img.rgb, 92)
+            }),
+        ),
+        _ => (
+            render_key(&hash, ANALYSIS_LONG_SIDE),
+            Box::new(move || {
+                let decoder = CompositeDecoder::new(vec![
+                    Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+                    Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
+                ]);
+                let img = decoder.decode(&path)?;
+                encode_rgb_jpeg(&img.rgb, 85)
+            }),
+        ),
+    };
+
+    let bytes = cached(&cache, &key, render).map_err(err)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
@@ -268,6 +318,8 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
             top5: Vec::new(),
             boxes: Vec::new(),
             model_version: None,
+            image_width: None,
+            image_height: None,
         });
     };
 
@@ -310,6 +362,8 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         top5: a.species_top5.clone(),
         boxes,
         model_version: Some(a.model_version.clone()),
+        image_width: a.image_width,
+        image_height: a.image_height,
     })
 }
 
@@ -351,10 +405,15 @@ async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, Stri
 
 /// Higher-resolution preview for the review view, as a data URL.
 #[tauri::command]
-async fn preview_image(state: State<'_, AppState>, file: i64) -> Result<String, String> {
+async fn preview_image(
+    state: State<'_, AppState>,
+    file: i64,
+    mode: Option<String>,
+) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
-    blocking(move || preview_impl(&cache_root, &db_path, file)).await
+    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    blocking(move || preview_impl(&cache_root, &db_path, file, &mode)).await
 }
 
 /// Full analysis detail (verdict, boxes, species) for the review view.
@@ -365,6 +424,71 @@ async fn analysis_detail(
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
     blocking(move || analysis_detail_impl(&db_path, file)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BreakdownDto {
+    file_id: i64,
+    stored_label: Option<String>,
+    stored_score: Option<f32>,
+    model_version: Option<String>,
+    explanation: ScoreExplanation,
+}
+
+/// Every intermediate value behind a file's sharpness verdict.
+#[tauri::command]
+async fn score_breakdown(state: State<'_, AppState>, file: i64) -> Result<BreakdownDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+        let Some(a) = analysis else {
+            return Err("file has not been analyzed yet".to_string());
+        };
+        let settings = ScoreSettings::load_default();
+        let explanation = explain_rules(&a.features, &settings);
+        Ok(BreakdownDto {
+            file_id: file,
+            stored_label: Some(a.predicted_label.clone()),
+            stored_score: Some(a.sharpness_score),
+            model_version: Some(a.model_version.clone()),
+            explanation,
+        })
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BurstDto {
+    frames: Vec<i64>,
+    best: i64,
+    size: usize,
+}
+
+/// Burst groups for a folder (by EXIF capture time).
+#[tauri::command]
+async fn bursts(state: State<'_, AppState>, folder: i64) -> Result<Vec<BurstDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let bursts = birdsorter_core::analysis::burst::folder_bursts(
+            &conn,
+            folder,
+            birdsorter_core::analysis::burst::DEFAULT_GAP_SECONDS,
+        )
+        .map_err(err)?;
+        Ok(bursts
+            .into_iter()
+            .map(|b| BurstDto {
+                frames: b.frames,
+                best: b.best,
+                size: b.size,
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Set or clear the species override for a file.
@@ -431,15 +555,20 @@ fn run_analysis(
         Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
     ]);
 
-    let detector: Box<dyn SubjectDetector> = match model {
-        Some(m) if !m.trim().is_empty() => Box::new(
+    let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => Box::new(
             OnnxDetector::from_file(Path::new(m), YoloConfig::default(), DevicePreference::Auto)
                 .map_err(err)?,
         ),
-        _ => Box::new(SaliencyDetector::default()),
+        None => match OnnxDetector::load_default(YoloConfig::default(), DevicePreference::Auto)
+            .map_err(err)?
+        {
+            Some(d) => Box::new(d),
+            None => Box::new(SaliencyDetector::default()),
+        },
     };
 
-    let scorer = RulesScorer(ScoreSettings::load_default());
+    let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
     let species = match OnnxSpeciesClassifier::load_default(DevicePreference::Auto) {
         Ok(s) => s,
         Err(e) => {
@@ -456,7 +585,7 @@ fn run_analysis(
         decode_threads: threads,
         cancel: Some(cancel),
         species: species.as_ref().map(|s| s as &dyn SpeciesClassifier),
-        ..IngestContext::new(&decoder, detector.as_ref(), &scorer)
+        ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
     let handle = app.clone();
@@ -484,6 +613,79 @@ fn cancel_analysis(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Model manager
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelStatusDto {
+    key: String,
+    display_name: String,
+    description: String,
+    tier: String,
+    size_bytes: u64,
+    status: String,
+    files: Vec<String>,
+    url: String,
+}
+
+#[tauri::command]
+async fn models_status() -> Result<Vec<ModelStatusDto>, String> {
+    blocking(|| {
+        let dir = registry::default_model_dir().map_err(err)?;
+        Ok(registry::builtin_models()
+            .into_iter()
+            .map(|s| {
+                let status = registry::status(&dir, &s);
+                ModelStatusDto {
+                    key: s.key.clone(),
+                    display_name: s.display_name.clone(),
+                    description: s.description.clone(),
+                    tier: format!("{:?}", s.tier).to_lowercase(),
+                    size_bytes: s.size_bytes,
+                    status: format!("{status:?}").to_lowercase(),
+                    files: s.files.clone(),
+                    url: s.url.clone(),
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn download_model(key: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        let paths = registry::download(&dir, &spec, &registry::HttpFetcher).map_err(err)?;
+        Ok(paths.len())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn import_model(key: String, path: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        let paths = registry::import_file(&dir, &spec, std::path::Path::new(&path)).map_err(err)?;
+        Ok(paths.len())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remove_model(key: String) -> Result<usize, String> {
+    blocking(move || {
+        let spec = registry::spec_by_key(&key).ok_or_else(|| format!("unknown model '{key}'"))?;
+        let dir = registry::default_model_dir().map_err(err)?;
+        registry::remove(&dir, &spec).map_err(err)
+    })
+    .await
+}
+
 /// Current scoring thresholds.
 #[tauri::command]
 fn get_settings() -> ScoreSettings {
@@ -502,10 +704,82 @@ async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<usize, Strin
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
-        let settings = ScoreSettings::load_default();
-        analysis_store::rescore_folder(&conn, folder, &settings).map_err(err)
+        let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
+        rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)
     })
     .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrainResultDto {
+    version: String,
+    n_samples: usize,
+    cv_accuracy: f32,
+    classes: Vec<String>,
+}
+
+/// Train a verdict model from the user's labels, then re-score the folder.
+#[tauri::command]
+async fn train(state: State<'_, AppState>, folder: Option<i64>) -> Result<TrainResultDto, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let (ok, why) = trainer::can_train(&conn, trainer::MIN_PER_CLASS).map_err(err)?;
+        if !ok {
+            return Err(why);
+        }
+        let dir = registry::default_model_dir().map_err(err)?;
+        let result = trainer::train(&conn, &dir).map_err(err)?;
+        // Apply the freshly trained model to the current folder immediately.
+        if let Some(folder) = folder {
+            let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
+            let _ = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+        }
+        Ok(TrainResultDto {
+            version: result.version,
+            n_samples: result.n_samples,
+            cv_accuracy: result.cv_accuracy,
+            classes: result.classes,
+        })
+    })
+    .await
+}
+
+/// Copy the bundled detector into the model directory on first run, so the app
+/// has subject detection without any download. Species models stay on-demand.
+fn seed_bundled_models(app: &AppHandle) {
+    let Ok(dir) = registry::default_model_dir() else {
+        return;
+    };
+    let dest = dir.join(DETECTOR_ONNX);
+    if dest.is_file() {
+        return;
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(res) = app.path().resolve(
+        format!("models/{DETECTOR_ONNX}"),
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        candidates.push(res);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("models").join(DETECTOR_ONNX));
+            candidates.push(parent.join(DETECTOR_ONNX));
+        }
+    }
+    candidates.push(PathBuf::from("models").join(DETECTOR_ONNX));
+
+    for src in candidates {
+        if src.is_file()
+            && std::fs::create_dir_all(&dir).is_ok()
+            && std::fs::copy(&src, &dest).is_ok()
+        {
+            return;
+        }
+    }
 }
 
 fn main() {
@@ -517,6 +791,11 @@ fn main() {
     let _ = open(&db_path);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            seed_bundled_models(app.handle());
+            Ok(())
+        })
         .manage(AppState {
             db_path,
             cache,
@@ -530,13 +809,20 @@ fn main() {
             thumbnail,
             preview_image,
             analysis_detail,
+            score_breakdown,
+            bursts,
             set_species,
             label_files,
             analyze_folder,
             cancel_analysis,
             get_settings,
             set_settings,
-            rescore
+            rescore,
+            train,
+            models_status,
+            download_model,
+            import_model,
+            remove_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running BirdSorter");

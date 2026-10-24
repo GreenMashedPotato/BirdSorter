@@ -4,6 +4,7 @@ pub mod analysis_store;
 pub mod db;
 pub mod labels;
 pub mod library;
+pub mod models;
 pub mod registry;
 pub mod settings;
 

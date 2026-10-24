@@ -20,8 +20,10 @@ rusqlite.workspace = true
 walkdir.workspace = true
 time.workspace = true
 image.workspace = true
+demosaic.workspace = true
 sha2.workspace = true
 ureq.workspace = true
+zip.workspace = true
 rawler = "0.6.0"
 ort = { version = "2.0.0-rc.9", features = ["ndarray", "download-binaries"] }
 

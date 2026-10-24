@@ -16,6 +16,9 @@
     getSettings,
     setSettings,
     rescoreFolder,
+    train,
+    scoreBreakdown,
+    bursts,
     onProgress,
     onDone,
     onError,
@@ -27,8 +30,13 @@
     type UserLabel,
     type AnalysisDetail,
     type ScoreSettings,
+    type TrainResult,
+    type ScoreBreakdown as Breakdown,
   } from "./lib/api";
   import Settings from "./lib/Settings.svelte";
+  import ModelManager from "./lib/ModelManager.svelte";
+  import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
@@ -79,7 +87,31 @@
   let newPath = $state("");
   let model = $state("");
 
-  const visible = $derived(files.filter((f) => matchesFilter(f, filter)));
+  const visible = $derived(
+    files.filter((f) =>
+      filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+    ),
+  );
+
+  /// Burst membership per file: `{ size, best }`.
+  let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
+
+  async function refreshBursts() {
+    if (!inTauri || activeFolder === null) {
+      burstInfo = {};
+      return;
+    }
+    try {
+      const groups = await bursts(activeFolder);
+      const map: Record<number, { size: number; best: boolean }> = {};
+      for (const g of groups) {
+        for (const id of g.frames) map[id] = { size: g.size, best: id === g.best };
+      }
+      burstInfo = map;
+    } catch {
+      burstInfo = {};
+    }
+  }
 
   // --- review view state ---------------------------------------------------
   let reviewFile = $state<number | null>(null);
@@ -90,9 +122,25 @@
   let selectedBox = $state(0);
   let speciesInput = $state("");
   let previewLoading = $state(false);
+  /// Preview render mode: fast (analysis res), full (native preview) or
+  /// develop (full RAW demosaic, slow but maximum detail).
+  let previewMode = $state<"fast" | "full" | "develop">("fast");
 
   // --- settings ------------------------------------------------------------
   let showSettings = $state(false);
+  let showModels = $state(false);
+  let showBreakdown = $state(false);
+  let breakdown = $state<Breakdown | null>(null);
+
+  async function openBreakdown() {
+    if (reviewFile === null) return;
+    try {
+      breakdown = await scoreBreakdown(reviewFile);
+      showBreakdown = true;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
   let settings = $state<ScoreSettings | null>(null);
   let settingsSaving = $state(false);
 
@@ -122,6 +170,19 @@
       status = `error: ${e}`;
     } finally {
       settingsSaving = false;
+    }
+  }
+
+  async function retrain() {
+    status = "training…";
+    try {
+      const r: TrainResult = await train(activeFolder);
+      status = `trained ${r.version} · ${r.nSamples} labels · ${r.classes.length} classes · CV ${(
+        r.cvAccuracy * 100
+      ).toFixed(1)}%`;
+      await refreshFiles();
+    } catch (e) {
+      status = `retrain: ${e}`;
     }
   }
 
@@ -208,6 +269,17 @@
     const box = detail.boxes[selectedBox];
     return box && box.top5.length > 0 ? box.top5 : detail.top5;
   });
+  // Boxes are in analysis coordinates; position them against those dims so they
+  // stay correct on previews of any resolution. Older rows have no stored dims,
+  // so assume the analysis long side was 2400 (its normal value).
+  const assumedAnalysis = $derived.by(() => {
+    const long = Math.max(natural.w, natural.h) || 1;
+    const s = 2400 / long;
+    return { w: natural.w * s, h: natural.h * s };
+  });
+  const boxW = $derived(detail?.imageWidth ?? assumedAnalysis.w);
+  const boxH = $derived(detail?.imageHeight ?? assumedAnalysis.h);
+
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
 
@@ -217,14 +289,23 @@
     previewUrl = "";
     selectedBox = 0;
     speciesInput = "";
-    previewLoading = true;
     zoom = 1;
     tx = 0;
     ty = 0;
     try {
-      const [d, url] = await Promise.all([analysisDetail(id), previewImage(id)]);
-      detail = d;
-      previewUrl = url;
+      detail = await analysisDetail(id);
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+    await renderPreview();
+  }
+
+  /// (Re)render the preview for the current file at the current resolution mode.
+  async function renderPreview() {
+    if (reviewFile === null) return;
+    previewLoading = true;
+    try {
+      previewUrl = await previewImage(reviewFile, previewMode);
     } catch (e) {
       status = `error: ${e}`;
     } finally {
@@ -318,6 +399,7 @@
       return;
     }
     files = await queryFiles(activeFolder);
+    await refreshBursts();
   }
 
   async function addAndScan() {
@@ -336,6 +418,23 @@
       status = `error: ${e}`;
     } finally {
       busy = false;
+    }
+  }
+
+  async function browseForFolder() {
+    if (!inTauri) return;
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a shoot folder",
+      });
+      if (typeof selected === "string") {
+        newPath = selected;
+        await addAndScan();
+      }
+    } catch (e) {
+      status = `error: ${e}`;
     }
   }
 
@@ -464,7 +563,7 @@
   <aside class="sidebar">
     <h1>🐦 BirdSorter</h1>
 
-    <div style="display:flex; gap:6px; margin-bottom:12px">
+    <div style="display:flex; gap:6px; margin-bottom:6px">
       <input
         placeholder="folder path…"
         bind:value={newPath}
@@ -472,6 +571,9 @@
       />
       <button onclick={addAndScan} disabled={busy}>Add</button>
     </div>
+    <button style="width:100%; margin-bottom:12px" onclick={browseForFolder} disabled={busy}>
+      Browse… (folder picker)
+    </button>
 
     {#each folders as folder (folder.id)}
       <div
@@ -496,6 +598,8 @@
       <button onclick={cancel} disabled={!busy}>Cancel</button>
       <input placeholder="model .onnx (optional)" bind:value={model} style="width:220px" />
       <button onclick={openSettings} title="Scoring settings">Settings</button>
+      <button onclick={() => (showModels = true)} title="Manage models">Models</button>
+      <button onclick={retrain} title="Train a model from your labels">Retrain</button>
       <div class="spacer"></div>
       <span class="status">{status}</span>
     </div>
@@ -545,6 +649,14 @@
           </div>
           <div class="meta">
             <span class="name" title={f.filename}>{f.filename}</span>
+            {#if burstInfo[f.id]}
+              <span
+                class="badge burst"
+                class:winner={burstInfo[f.id].best}
+                title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
+                >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
+              >
+            {/if}
             {#if f.predicted}
               <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>
               <span class="status">{scoreText(f)}</span>
@@ -564,6 +676,9 @@
         {#if detail?.predicted}
           <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
           <span class="status">score {detail.score?.toFixed(3)}</span>
+          <button class="mini" onclick={openBreakdown} title="How is this score computed?">
+            Why?
+          </button>
         {/if}
         {#if detail?.hasBokeh}<span class="status">· bokeh</span>{/if}
         {#if detail?.missFocusReason}<span class="status">· {detail.missFocusReason}</span>{/if}
@@ -574,6 +689,16 @@
         <span class="status" style="min-width:44px; text-align:center">{Math.round(zoom * 100)}%</span>
         <button onclick={() => zoomByFactor(1.25)} title="Zoom in (+)">+</button>
         <button onclick={resetZoom} title="Reset zoom (0)">Fit</button>
+        <select
+          class="modesel"
+          bind:value={previewMode}
+          onchange={renderPreview}
+          title="Preview resolution"
+        >
+          <option value="fast">Fast</option>
+          <option value="full">High-res</option>
+          <option value="develop">Developed</option>
+        </select>
         <button onclick={() => nav(-1)}>‹ K</button>
         <button onclick={() => nav(1)}>J ›</button>
         <button onclick={closeReview}>Close (Esc)</button>
@@ -581,9 +706,7 @@
 
       <div class="review-body">
         <div class="preview">
-          {#if !previewUrl}
-            <div class="empty">rendering preview…</div>
-          {:else}
+          {#if previewUrl}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="stage"
@@ -596,7 +719,7 @@
             >
               <div
                 class="imgwrap"
-                style="width:{fit.w}px; height:{fit.h}px; transform: translate({tx}px, {ty}px) scale({zoom})"
+                style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
               >
                 <img
                   src={previewUrl}
@@ -616,7 +739,7 @@
                   <div
                     class="box"
                     class:sel={i === selectedBox}
-                    style="left:{(b.x / natural.w) * 100}%; top:{(b.y / natural.h) * 100}%; width:{(b.w / natural.w) * 100}%; height:{(b.h / natural.h) * 100}%"
+                    style="left:{(b.x / boxW) * 100}%; top:{(b.y / boxH) * 100}%; width:{(b.w / boxW) * 100}%; height:{(b.h / boxH) * 100}%"
                     role="button"
                     tabindex="0"
                     onclick={() => (selectedBox = i)}
@@ -630,6 +753,19 @@
                   </div>
                 {/each}
               </div>
+            </div>
+          {/if}
+
+          {#if previewLoading}
+            <div class="loading">
+              <div class="spinner"></div>
+              <span
+                >rendering{previewMode === "develop"
+                  ? " developed"
+                  : previewMode === "full"
+                    ? " full-resolution"
+                    : ""} preview…</span
+              >
             </div>
           {/if}
         </div>
@@ -703,6 +839,21 @@
       saving={settingsSaving}
       onSave={saveSettings}
       onClose={() => (showSettings = false)}
+    />
+  {/if}
+
+  {#if showModels}
+    <ModelManager onClose={() => (showModels = false)} />
+  {/if}
+
+  {#if showBreakdown && breakdown}
+    <ScoreBreakdown
+      {breakdown}
+      onClose={() => (showBreakdown = false)}
+      onOpenSettings={async () => {
+        showBreakdown = false;
+        await openSettings();
+      }}
     />
   {/if}
 </div>

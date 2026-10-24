@@ -67,6 +67,8 @@ export interface AnalysisDetail {
   top5: [string, number][];
   boxes: Box[];
   modelVersion: string | null;
+  imageWidth: number | null;
+  imageHeight: number | null;
 }
 
 /** Scoring thresholds (mirrors `birdsorter_core::data::settings::ScoreSettings`). */
@@ -136,9 +138,10 @@ export async function getThumbnail(file: number): Promise<string> {
   return invoke("thumbnail", { file });
 }
 
-/** Higher-resolution preview for the review view. */
-export async function previewImage(file: number): Promise<string> {
-  return invoke("preview_image", { file });
+/** Preview for the review view. `mode`: "fast" (analysis res), "full"
+ *  (native embedded preview) or "develop" (full RAW demosaic, slow). */
+export async function previewImage(file: number, mode = "fast"): Promise<string> {
+  return invoke("preview_image", { file, mode });
 }
 
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {
@@ -165,6 +168,76 @@ export async function setSettings(settings: ScoreSettings): Promise<void> {
 /** Recompute verdicts for a folder from stored features (no re-decode). */
 export async function rescoreFolder(folder: number): Promise<number> {
   return invoke("rescore", { folder });
+}
+
+export interface TrainResult {
+  version: string;
+  nSamples: number;
+  cvAccuracy: number;
+  classes: string[];
+}
+
+/** Train a verdict model from the user's labels (and re-score the folder). */
+export async function train(folder: number | null): Promise<TrainResult> {
+  return invoke("train", { folder });
+}
+
+export interface ModelStatus {
+  key: string;
+  displayName: string;
+  description: string;
+  tier: string;
+  sizeBytes: number;
+  status: string;
+  files: string[];
+  url: string;
+}
+
+export async function modelsStatus(): Promise<ModelStatus[]> {
+  return invoke("models_status");
+}
+
+export async function downloadModel(key: string): Promise<number> {
+  return invoke("download_model", { key });
+}
+
+export async function importModel(key: string, path: string): Promise<number> {
+  return invoke("import_model", { key, path });
+}
+
+export async function removeModel(key: string): Promise<number> {
+  return invoke("remove_model", { key });
+}
+
+export interface ScoreExplanation {
+  hasSubject: boolean;
+  features: [string, number][];
+  votedSubjectSharp: number;
+  gridCentre: number;
+  gridCrossMedian: number;
+  gridCorrected: number;
+  subjectToBgRatio: number;
+  bokehThreshold: number;
+  hasBokeh: boolean;
+  penalty: string | null;
+  penaltyMultiplier: number | null;
+  adjustedSharpness: number;
+  finalLabel: string;
+  finalScore: number;
+  steps: string[];
+}
+
+export interface ScoreBreakdown {
+  fileId: number;
+  storedLabel: string | null;
+  storedScore: number | null;
+  modelVersion: string | null;
+  explanation: ScoreExplanation;
+}
+
+/** Every intermediate value behind a file's sharpness verdict. */
+export async function scoreBreakdown(file: number): Promise<ScoreBreakdown> {
+  return invoke("score_breakdown", { file });
 }
 
 export async function labelFiles(
@@ -197,6 +270,7 @@ export const FILTERS = [
   { key: "blurry", label: "Blurry" },
   { key: "no_subject", label: "No subject" },
   { key: "bokeh", label: "Bokeh" },
+  { key: "burst", label: "Burst winners" },
 ] as const;
 
 export type FilterKey = (typeof FILTERS)[number]["key"];
@@ -209,7 +283,20 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return !f.analyzed;
     case "bokeh":
       return f.hasBokeh;
+    case "burst":
+      return true; // handled in the view (needs the burst map)
     default:
       return f.predicted === key;
   }
+}
+
+export interface Burst {
+  frames: number[];
+  best: number;
+  size: number;
+}
+
+/** Burst groups for a folder (by EXIF capture time). */
+export async function bursts(folder: number): Promise<Burst[]> {
+  return invoke("bursts", { folder });
 }
