@@ -116,11 +116,11 @@ roughly describes the code surface.
 | 13 | ✅ XMP beyond ratings: labels, keywords, merge/backup, Stem vs Full naming (shipped 2026-10-22) | LightCraft `xmp_merge.rs`, `sidecar.rs` | P2 | Small–medium |
 | 14 | Guided-filter tone mapping, dehaze, tone curve, defringe, luminance-range + radial masks, crop/straighten (brush/linear masks and crop open) | LightCraft `crates/pipeline`, PhotoCraft `algo` | P2 | Medium–large |
 | 15 | ✅ Presets with amount, partial groups, selection sync and one-step undo (shipped 2026-10-23) | LightCraft `develop/src/presets.rs` | P2 | Medium |
-| 16 | Ingest: copy/move, templates, duplicate preview, watched folders | LightCraft `engine/src/import.rs` | P2 | Medium |
+| 16 | 🟡 Ingest: copy/move, templates, duplicate preview, watched folders (copy + per-day folders shipped 2026-10-23; move, templates, duplicate check and watching open) | LightCraft `engine/src/import.rs` | P2 | Medium |
 | 17 | 🟡 Model manager: licence gate, provenance, resumable fetch, **model identity per analysis (shipped 2026-10-22)** | LightCraft `docs/faces.md`, `crates/fetch` | P2 | Small |
-| 18 | Export: richer tokens, resize modes, output sharpening, watermark, metadata policy | LightCraft `engine/src/export.rs`, `rename.rs` | P2 | Small |
+| 18 | 🟡 Export: richer tokens, resize modes, output sharpening, watermark, metadata policy (edited-image long-edge sizes shipped 2026-10-23) | LightCraft `engine/src/export.rs`, `rename.rs` | P2 | Small |
 | 19 | Command registry + MCP/control channel | LightCraft `engine/cmd/mod.rs`, `crates/mcp` | P2 | Medium–large |
-| 20 | Undo across ratings, boxes, burst winners, species overrides | LightCraft inverse-op model | P3 | Small–medium |
+| 20 | 🟡 Undo across ratings, boxes, burst winners, species overrides (ratings, flags, colours, preset sync, species overrides and burst winners shipped 2026-10-23; manual subject boxes open) | LightCraft inverse-op model | P3 | Small–medium |
 | 21 | Pinned test corpus, numeric floors, scorecard/perf budgets | PhotoCraft `docs/development.md`, `photocraft-corpus` | P3 | Small |
 | 22 | Contact-sheet / proof-sheet PDF | LightCraft `contact_sheet.rs` | P3 | Small–medium |
 | 23 | GPS reading, GPX interpolation, offline reverse geocoding | LightCraft `crates/geocode`, `meta/src/gpx.rs` | P3 | Medium |

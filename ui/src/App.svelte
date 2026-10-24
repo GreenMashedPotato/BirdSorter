@@ -4,6 +4,7 @@
     inTauri,
     listFolders,
     addFolder,
+    importFolder,
     startScan,
     cancelScan,
     onScanProgress,
@@ -46,6 +47,9 @@
     onDone,
     onError,
     matchesFilter,
+    setSpecies,
+    setBurstWinner,
+    type SpeciesUndo,
     type FolderInfo,
     type FileEntry,
     type ExportLayout,
@@ -395,12 +399,22 @@
     | { kind: "rating"; values: { id: number; rating: number }[] }
     | { kind: "flag"; values: { id: number; flag: string | null }[] }
     | { kind: "color"; values: { id: number; color: string | null }[] }
-    | { kind: "edits"; values: { id: number; adjustments: Adjustments | null }[] };
+    | { kind: "edits"; values: { id: number; adjustments: Adjustments | null }[] }
+    | { kind: "species"; id: number; prev: SpeciesUndo }
+    | { kind: "burst"; id: number; wasManual: boolean };
   let undoStack = $state<UndoEntry[]>([]);
   const canUndo = $derived(undoStack.length > 0);
 
   function pushUndoEntry(entry: UndoEntry) {
     undoStack = [...undoStack.slice(-19), entry];
+  }
+
+  /// Group ids by their previous value. Appending in place matters: a fresh
+  /// `[...group, id]` per item copies the array once per file.
+  function pushGroup<T>(groups: Map<T, number[]>, key: T, id: number) {
+    const group = groups.get(key);
+    if (group) group.push(id);
+    else groups.set(key, [id]);
   }
 
   function pushUndo(ids: number[]) {
@@ -462,7 +476,7 @@
         const byLabel = new Map<UserLabel, number[]>();
         entry.ids.forEach((id, i) => {
           const p = entry.prev[i];
-          if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
+          if (p) pushGroup(byLabel, p, id);
         });
         if (toClear.length > 0) await undoLabels(toClear);
         for (const [label, ids] of byLabel) await labelFiles(ids, label);
@@ -470,14 +484,14 @@
       } else if (entry.kind === "rating") {
         const byRating = new Map<number, number[]>();
         for (const { id, rating } of entry.values) {
-          byRating.set(rating, [...(byRating.get(rating) ?? []), id]);
+          pushGroup(byRating, rating, id);
         }
         for (const [rating, ids] of byRating) await rateFiles(ids, rating);
         status = `undid a rating change on ${entry.values.length} file(s)`;
       } else if (entry.kind === "flag") {
         const byFlag = new Map<string | null, number[]>();
         for (const { id, flag } of entry.values) {
-          byFlag.set(flag, [...(byFlag.get(flag) ?? []), id]);
+          pushGroup(byFlag, flag, id);
         }
         for (const [flag, ids] of byFlag) await setFlag(ids, flag);
         status = `undid a flag change on ${entry.values.length} file(s)`;
@@ -487,10 +501,22 @@
           else await clearEdits(id);
         }
         status = `undid a preset sync on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "species") {
+        await setSpecies(entry.id, entry.prev.species, entry.prev.confidence ?? undefined);
+        status = entry.prev.species
+          ? `undid a species change — back to ${entry.prev.species}`
+          : "undid a species change";
+      } else if (entry.kind === "burst") {
+        const groups = await setBurstWinner(entry.id, entry.wasManual);
+        burstGroups = groups;
+        applyBurstInfo(groups);
+        status = entry.wasManual
+          ? "undid a burst winner change — manual winner restored"
+          : "undid a burst winner change";
       } else {
         const byColor = new Map<string | null, number[]>();
         for (const { id, color } of entry.values) {
-          byColor.set(color, [...(byColor.get(color) ?? []), id]);
+          pushGroup(byColor, color, id);
         }
         for (const [color, ids] of byColor) await setColor(ids, color);
         status = `undid a colour change on ${entry.values.length} file(s)`;
@@ -828,6 +854,38 @@
       await addFolderAndScan(folder);
     } catch (e) {
       status = `error: ${e}`;
+    }
+  }
+
+  /// Offload a card: copy the chosen source into the chosen library folder
+  /// (one subfolder per capture day), then add and scan it. The card keeps its
+  /// originals; nothing is overwritten.
+  async function importFromCard() {
+    if (!inTauri) return;
+    try {
+      const source = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Import photos from…",
+      });
+      if (typeof source !== "string") return;
+      const dest = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Copy photos into…",
+      });
+      if (typeof dest !== "string") return;
+
+      busy = true;
+      status = `importing from ${folderLabel(source)}…`;
+      const r = await importFolder(source, dest);
+      const failed = r.failed.length ? ` · ${r.failed.length} failed` : "";
+      busy = false;
+      await addFolderAndScan(dest);
+      status = `imported ${r.copied} file${r.copied === 1 ? "" : "s"} into ${folderLabel(dest)} (${r.skipped} already there)${failed}`;
+    } catch (e) {
+      status = `error: ${e}`;
+      busy = false;
     }
   }
 
@@ -1286,6 +1344,8 @@
         progress = null;
         status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
           r.restored ? `, ${r.restored} restored` : ""
+        }${r.relinked ? `, ${r.relinked} moved` : ""}${
+          r.missing ? `, ${r.missing} no longer on disk` : ""
         })${primaryLabel ? ` · ${primaryLabel}` : ""}`;
         await refreshFolders();
         await refreshFiles();
@@ -1356,6 +1416,14 @@
     </div>
     <button style="width:100%; margin-bottom:12px" onclick={browseForFolder} disabled={busy}>
       Browse… (folder picker)
+    </button>
+    <button
+      style="width:100%; margin-bottom:12px"
+      onclick={importFromCard}
+      disabled={busy}
+      title="Copy photos from a card into the library, one folder per capture day"
+    >
+      Import from card…
     </button>
 
     <div
@@ -1532,6 +1600,9 @@
       onFilesChanged={refreshFiles}
       onPushUndo={pushUndo}
       onPushEditsUndo={pushEditsUndo}
+      onPushSpeciesUndo={(id, prev) => pushUndoEntry({ kind: "species", id, prev })}
+      onPushBurstUndo={(id, wasManual) =>
+        pushUndoEntry({ kind: "burst", id, wasManual })}
       onRate={rateOne}
       onBurstGroups={(groups) => {
         burstGroups = groups;

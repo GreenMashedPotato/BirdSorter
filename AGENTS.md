@@ -71,7 +71,8 @@ cd ui && npm test && npm run check && npm run build
 - **Analysis is tied to the file content hash.** Replacing a file makes it
   pending instead of showing stale results.
 - **No panics on user input.** Return typed `CoreError`s; no `unwrap`/`expect`
-  in production paths. No `unsafe`.
+  in production paths. No `unsafe` without a documented `SAFETY` argument — the
+  letterbox resize in `analysis/yolo.rs` is the only site that has one.
 - **HEIC is opt-in.** The `heic` Cargo feature is off by default (HEVC patents
   are a distributor's call) and its decoder runs under `catch_unwind`; see
   `docs/HEIC.md`.
@@ -94,3 +95,7 @@ cd ui && npm install && npm run build
 Models: `%APPDATA%\BirdSorter\data\models\` (`bird_det_v1.onnx`,
 `bird_species.onnx` + labels/meta). `BIRDSORTER_MODEL_DIR` overrides;
 `BIRDSORTER_DATA_DIR` or a `portable.flag` next to the executable runs portable.
+
+Agent bridge: debug builds register `tauri-plugin-mcp-bridge` (ws://127.0.0.1:9223)
+so an MCP client can screenshot the window, drive the DOM and read console + IPC
+logs. Release builds never start it.

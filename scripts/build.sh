@@ -23,7 +23,7 @@ while [ $# -gt 0 ]; do
     --bundle) BUNDLE=1 ;;
     --skip-gates) SKIP_GATES=1 ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)

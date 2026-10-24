@@ -82,6 +82,34 @@ describe("preview and edit commands", () => {
       mode: "full",
       adjustments,
       dest: "C:\\out\\shot_edited.jpg",
+      maxEdge: null,
+      denoise: null,
+    });
+  });
+
+  it("passes an export size limit through to the backend", async () => {
+    invokeMock.mockResolvedValueOnce("C:\\out\\shot.jpg");
+    await exportEdited(7, "fast", DEFAULT_ADJUSTMENTS, "C:\\out\\shot.jpg", 2048);
+    expect(invokeMock).toHaveBeenCalledWith("export_edited", {
+      file: 7,
+      mode: "fast",
+      adjustments: DEFAULT_ADJUSTMENTS,
+      dest: "C:\\out\\shot.jpg",
+      maxEdge: 2048,
+      denoise: null,
+    });
+  });
+
+  it("passes the AI-denoise strength to the export", async () => {
+    invokeMock.mockResolvedValueOnce("C:\\out\\shot.jpg");
+    await exportEdited(7, "fast", DEFAULT_ADJUSTMENTS, "C:\\out\\shot.jpg", null, 0.6);
+    expect(invokeMock).toHaveBeenCalledWith("export_edited", {
+      file: 7,
+      mode: "fast",
+      adjustments: DEFAULT_ADJUSTMENTS,
+      dest: "C:\\out\\shot.jpg",
+      maxEdge: null,
+      denoise: 0.6,
     });
   });
 });

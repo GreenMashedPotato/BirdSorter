@@ -42,6 +42,10 @@ export interface ScanReport {
   updated: number;
   untouched: number;
   restored: number;
+  /** Rows matched to a renamed file by content hash (analysis kept). */
+  relinked: number;
+  /** Rows soft-deleted because the file is no longer on disk. */
+  missing: number;
 }
 
 export interface ScanProgress {
@@ -153,6 +157,24 @@ export async function listFolders(): Promise<FolderInfo[]> {
 
 export async function addFolder(path: string): Promise<number> {
   return invoke("add_folder", { path });
+}
+
+/** What one card-import run did. */
+export interface ImportReport {
+  copied: number;
+  /** Files already in the destination with the same name and size. */
+  skipped: number;
+  bytes: number;
+  /** `"<path>: <reason>"` for files that could not be copied. */
+  failed: string[];
+}
+
+/**
+ * Copy photos from a card/folder into the library, grouped by capture day.
+ * Originals are copied, never moved, and nothing is overwritten.
+ */
+export async function importFolder(source: string, dest: string): Promise<ImportReport> {
+  return invoke("import_folder", { source, dest });
 }
 
 /** Start a scan. It runs on a background thread: progress arrives through
@@ -275,6 +297,25 @@ export async function previewAdjusted(
   return invoke("preview_adjusted", { file, mode, adjustments });
 }
 
+/** True when an AI denoise model is installed. */
+export async function denoiseAvailable(): Promise<boolean> {
+  return invoke("denoise_available");
+}
+
+/**
+ * Preview with AI denoise. `strength` (0..1) blends the model's output toward
+ * the untouched preview; `0` skips the model entirely. The model runs once per
+ * photo and is cached on disk, so strength changes are cheap afterwards.
+ */
+export async function previewDenoised(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+  strength: number,
+): Promise<string> {
+  return invoke("preview_denoised", { file, mode, adjustments, strength });
+}
+
 /**
  * A native-resolution rectangle of the cached preview, for windowed 1:1
  * rendering. Coordinates are source pixels; the caller snaps them to a 256 px
@@ -307,26 +348,50 @@ export async function clearEdits(file: number): Promise<number> {
   return invoke("clear_edits", { file });
 }
 
-/** Write an edited preview as JPEG or lossless TIFF (by destination suffix). */
+/**
+ * Write an edited preview as JPEG or lossless TIFF (by destination suffix).
+ * `maxEdge` downscales the written file (long side, px); omit to keep the
+ * preview's own resolution. `denoise` applies the review's AI-denoise strength
+ * (0..1) to the exported pixels — the same blend the preview shows.
+ */
 export async function exportEdited(
   file: number,
   mode: string,
   adjustments: Adjustments,
   dest: string,
+  maxEdge?: number | null,
+  denoise?: number | null,
 ): Promise<string> {
-  return invoke("export_edited", { file, mode, adjustments, dest });
+  return invoke("export_edited", {
+    file,
+    mode,
+    adjustments,
+    dest,
+    maxEdge: maxEdge ?? null,
+    denoise: denoise ?? null,
+  });
 }
 
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {
   return invoke("analysis_detail", { file });
 }
 
-/** Set (or clear, with `null`) the species override for a file. */
+/** The override that was in place before a species change, for undo. */
+export interface SpeciesUndo {
+  /** `null` means the previous state had no user override. */
+  species: string | null;
+  confidence: number | null;
+}
+
+/**
+ * Set (or clear, with `null`) the species override for a file. Returns the
+ * override that was in place before the call, so the caller can undo it.
+ */
 export async function setSpecies(
   file: number,
   species: string | null,
   confidence?: number,
-): Promise<void> {
+): Promise<SpeciesUndo> {
   return invoke("set_species", { file, species, confidence: confidence ?? null });
 }
 

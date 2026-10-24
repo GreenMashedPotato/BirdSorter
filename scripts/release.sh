@@ -23,7 +23,7 @@ while [ $# -gt 0 ]; do
     --models) MODELS=1 ;;
     --allow-dirty) ALLOW_DIRTY=1 ;;
     -h|--help)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -41,14 +41,24 @@ fi
 
 VERSION="$(node "$ROOT/scripts/version.mjs" show)"
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)"
+DIRTY=0
 
-if [ "$ALLOW_DIRTY" -eq 0 ] && [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
-  echo "error: the working tree is dirty; commit or stash first (or pass --allow-dirty)" >&2
-  git -C "$ROOT" status --short
-  exit 1
+if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+  if [ "$ALLOW_DIRTY" -eq 0 ]; then
+    echo "error: the working tree has uncommitted changes; a release must come from a commit." >&2
+    echo "       commit or stash them, or build anyway for a local smoke test:" >&2
+    echo '         .\scripts\release.ps1 --allow-dirty      (bash: scripts/release.sh --allow-dirty)' >&2
+    echo "       a dirty build is stamped \"dirty\": true in release-manifest.json." >&2
+    echo "--- $(git -C "$ROOT" status --porcelain | wc -l | tr -d ' ') changed file(s):" >&2
+    git -C "$ROOT" status --short
+    exit 1
+  fi
+  # The artifact then does not contain the commit it is stamped with; record it
+  # in the manifest so nobody publishes it by accident.
+  DIRTY=1
 fi
 
-echo "==> BirdSorter $VERSION ($COMMIT), $([ "$MODELS" -eq 1 ] && echo 'with species model' || echo 'detector only')"
+echo "==> BirdSorter $VERSION ($COMMIT$([ "$DIRTY" -eq 1 ] && echo ', dirty'), $([ "$MODELS" -eq 1 ] && echo 'with species model' || echo 'detector only'))"
 run_gates
 build_ui
 
@@ -61,12 +71,12 @@ echo "==> tauri ${ARGS[*]}"
 tauri_build "${ARGS[@]}"
 
 BUNDLE_DIR="$ROOT/target/release/bundle"
-node - "$BUNDLE_DIR" "$VERSION" "$COMMIT" "$MODELS" <<'NODE'
+node - "$BUNDLE_DIR" "$VERSION" "$COMMIT" "$MODELS" "$DIRTY" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const [bundleDir, version, commit, models] = process.argv.slice(2);
+const [bundleDir, version, commit, models, dirty] = process.argv.slice(2);
 
 function walk(dir) {
   const files = [];
@@ -101,6 +111,7 @@ fs.writeFileSync(path.join(bundleDir, "SHA256SUMS.txt"), sums);
 const manifest = {
   version,
   commit,
+  dirty: dirty === "1",
   builtAt: new Date().toISOString(),
   flavour: models === "1" ? "models" : "detector-only",
   artifacts,

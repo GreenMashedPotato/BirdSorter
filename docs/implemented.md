@@ -130,6 +130,65 @@ state and open work, see [progress.md](./progress.md) and
 
 ## Change log
 
+- **AI denoise (2026-10-23, preview + CLI)**: a NAFNet-SIDD model (MIT, 114 MB,
+  checksum-pinned) can now reduce noise on the review preview and headless via
+  `birdsorter denoise`. The engine tiles with a Hann window (512 px, 32 px
+  context), the model runs once per photo and is cached on disk, and the
+  **strength slider (0–100 %)** blends the result toward the original
+  (`orig + s·(denoised − orig)`) — residual re-injection, so it can never invent
+  detail and never re-runs the network. Denoised pixels never reach sharpness,
+  the scorer, bursts or species ID.
+- **Denoise on the GPU (2026-10-23)**: the denoise model now uses the GPU
+  execution provider when the build has one (DirectML/CoreML, `Auto` with a CPU
+  fallback) instead of being pinned to CPU. Measured on a 2400×1601 preview:
+  **12.6 s on a 28-core CPU vs 1.5–1.9 s on an RTX 5060 Ti (DirectML) — ~7×**,
+  with numerically identical output. `birdsorter denoise` gained
+  `--device auto|cpu|gpu` and `--tile <px>` for measurement.
+- **Denoise on export (2026-10-23)**: "Export image…" now writes the same
+  AI-denoise blend you see in the review — `export_edited` takes the strength and
+  applies it before the optional resize, so the JPEG/TIFF matches the preview.
+  Measured 19 s for a 44.8 MP preview on DirectML. Exporting *keepers* is a file
+  copy of the RAW and never denoises, by design.
+- **Unstable denoise tiles (2026-10-23)**: NAFNet explodes on near-black, flat
+  tiles (output up to ±8× the valid range), which showed up as a checkerboard
+  block one tile wide over a backlit bird. Tiles whose output is more than 2 %
+  out of range are retried at a lifted exposure and the gain removed; if the
+  retry is also unstable the tile keeps its original pixels. Three unit tests
+  cover retry, give-up and the single-run happy path; verified on the 44.8 MP
+  preview that produced the artifact. `DENOISE_CACHE_VERSION` bumped to 2. Measured on a 2400×1601 preview (3.8 MP):
+  **13.4 s release** on this CPU (3.5 s/MP) for the first run, then ~1 s per
+  strength change from the cached output. 8 tiling/blending unit tests; see
+  `DENOISE_PLAN.md` for what is still open (export-time denoise, SCUNet, deblur).
+- **Import from card (2026-10-23)**: a new **Import from card…** button copies a
+  chosen source folder into a chosen library folder, one subfolder per EXIF
+  capture day (`undated/` when there is none), then adds and scans it. Files are
+  copied, never moved, and never overwritten: a same-name/same-size file counts
+  as already imported, anything else gets the ` (1)` suffix. Non-photo files are
+  skipped. Also available headless: `birdsorter import <source> <dest> [--flat]`.
+  Six core tests plus a real-CR3 CLI run (23 MB copied into `2026-10-16/`, second
+  run skipped it).
+- **Underexposed crops are lifted before species ID (2026-10-23)**: a crop whose
+  mean luma is below 0.16 is brightened toward 0.30 (max 4× ≈ +2 stops) before
+  the classifier's normalisation. Pure black is left alone and brighter crops are
+  untouched, so a silhouette or a night shot is not washed out. The preview,
+  sharpness metrics and verdicts never see the lift. Tests cover the gain curve
+  and the normalised tensor.
+- **Export sizes for edited images (2026-10-23)**: "Export image…" can write a
+  downscaled copy (Full size / 3840 / 2048 / 1600 / 1200 px long edge, Lanczos3)
+  without touching the original or the cached preview. The choice is persisted
+  per machine; the backend clamps the request to 64–8192 px.
+- **Edited-export guard (2026-10-23)**: "Export image…" refuses any destination
+  that is not `.jpg/.jpeg/.tif/.tiff` and never overwrites — a collision gets the
+  batch exporter's ` (1)` suffix instead. The save dialog was the only guard
+  before, so a mistyped name could put JPEG bytes over a RAW original. Two
+  desktop tests cover the rejection and the suffix.
+- **Undo coverage extended (2026-10-23)**: Ctrl+Z now also reverts a species
+  override (restoring the absence of an override, not an override equal to the
+  model's guess) and a burst-winner choice. `set_species` returns the previous
+  override so the client can restore it exactly.
+- **Settings writes are atomic (2026-10-23)**: all three settings files write
+  through a temp file + rename, and an unreadable file now logs a warning
+  instead of being silently replaced by defaults.
 - **Undo coverage**: Ctrl+Z now reverts the last label, rating, flag or colour
   change; bulk updates are grouped by their previous value.
 - **Colour labels** (schema v17): red / yellow / green / blue on `6`–`9`, a

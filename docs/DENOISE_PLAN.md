@@ -1,10 +1,55 @@
 # Denoise plan (future feature)
 
-**Status:** proposal — nothing here is implemented. This is the brief to pick up
-later, not a description of shipped code.
-**Last updated:** 2026-10-22
+**Status:** **partially shipped (2026-10-23).** The preview toggle with a
+strength blend, the tiled engine, the ONNX runtime wrapper, the registry entry
+and `birdsorter denoise` are implemented. Export-time denoise, the SCUNet
+"better" bundle, deblur and the CFA/linear-light work below are still proposals.
+**Last updated:** 2026-10-23
 **Related:** [`MODELS.md`](./MODELS.md) (model contract), [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 (pipeline), [`rule.md`](./rule.md) §7 (model rules).
+
+---
+
+## 0. What shipped, and where it deviates from this plan
+
+| Planned | Shipped |
+|---|---|
+| Tiling, Hann blending, f32 accumulator | `crates/core/src/io/denoise.rs` — plane-unit-tested with a fake model |
+| Session wrapper, provider fallback | `crates/core/src/runtime/denoise.rs` on the existing `OnnxSession` |
+| Registry entry + checksum-pinned download | `denoise_srgb` (`Tier::T2`) → FerrumPix NAFNet export, SHA pinned |
+| CLI, no UI (M0) | `birdsorter denoise <in> <out> [--strength] [--model]` |
+| Preview toggle + strength sliders (M1) | **"AI denoise" slider** in the review's Adjust panel (`0–100 %`) |
+| Strength = residual re-injection (§9.3) | `blend_strength()`: `out = orig + s·(denoised − orig)` |
+| Export-time denoise (M2) | **shipped for edited-image export**: "Export image…" applies the review's strength to the written JPEG/TIFF (`export_edited`). Keeper export copies RAW files, so it cannot denoise — by design |
+| CPU-first (§3, §7) | **deviates deliberately:** denoise runs on the GPU when the build has a provider (measured **7× faster**), CPU otherwise |
+
+Deviations worth knowing:
+
+- **One NAFNet model, not NAFNet + SCUNet.** The default is NAFNet-SIDD-width32
+  (MIT), exported as a **single 114 MB fp32 file with folded weights** by the
+  FerrumPix Models project (`nafnet-v1.onnx`, SHA-256 `052c9238…395d`), rather
+  than a 17-file export chain. Opset 18, IR 10, dynamic H/W, output rounded to a
+  multiple of 16 — verified against ORT 1.23 locally.
+- **The strength slider does not re-run the network.** The model output for a
+  photo is computed once and cached as a JPEG (`<cache>/denoise/{hash}@v4@{mode}.jpg`),
+  then every slider move blends two decoded images. Cached denoised previews are
+  **not** yet pruned or counted against the 4 GiB budget (marked `shortcut:` in
+  `preview.rs`).
+- **No per-photo persistence yet.** The strength lives in the review session; it
+  is not part of `Adjustments`, so it does not survive reopening the photo and is
+  not applied by export.
+- **Name collision avoided:** the existing classical slider is still "Denoise";
+  the model-backed one is "AI denoise".
+- **Unstable tiles are retried, then left alone.** NAFNet's attention branches
+  divide by a feature mean, so a near-black, flat tile (a bird silhouette against
+  bright sky) can make the output explode far outside `[0, 1]` — visible as a
+  checkerboard block exactly one tile wide. Every tile's output is now checked
+  (>2 % of pixels outside `[-0.02, 1.02]` = unusable); such a tile is re-run at a
+  lifted exposure (target mean 0.25, ≤8×) and the gain divided back out, and if
+  that also fails the tile keeps its original pixels. Verified on a 44.8 MP
+  CR3 preview where a tile over the bird's body previously exploded.
+  `DENOISE_CACHE_VERSION` is now 2, so stale outputs are ignored.
+
 
 ---
 
@@ -235,6 +280,14 @@ Reference tile counts (6000×4000, 24 MP): 512 / pad 32 → 13 × 9 = **117 tile
 **These are estimates to validate on the CI bench, not measurements.** They exist
 to set the product decision, not to be quoted.
 
+> **Measured 2026-10-23** on an RTX 5060 Ti / 28-core CPU, 2400×1601 preview
+> (3.8 MP), tile 512, NAFNet-SIDD-w32:
+> **CPU 12.6 s (3.3 s/MP) · DirectML 1.5–1.9 s (0.4–0.5 s/MP)** — about 7×.
+> Tile size barely matters on GPU (512 is fastest; 768/1024/1280 were 0.46–0.51
+> s/MP), and CPU and GPU outputs are numerically identical (max per-pixel
+> difference 2/255, JPEG rounding). A 24 MP export therefore lands around
+> **12 s on the GPU** and ~80 s on CPU.
+
 | Surface | Model | Tiles | Per tile (8-core CPU) | Total (est.) |
 |---|---|---|---|---|
 | Preview 2 MP | NAFNet-w32 | ~10 | 0.15–0.5 s | **2–6 s** |
@@ -288,9 +341,9 @@ Each milestone is independently shippable and testable.
 
 | M | Deliverable | Acceptance |
 |---|---|---|
-| **M0** | `tools/export_denoise.py` → opset 17 fp32 ONNX for NAFNet-SIDD-w32; `birdsorter denoise` CLI; no UI | Output matches the PyTorch reference within 1e-3 on a fixed crop; runs on CPU with `ort` rc.11 |
-| **M1** | Preview toggle + luma/colour/detail sliders; 2 MP only | ≤ 6 s on the bench machine; toggle is instant to cancel; no cache corruption |
-| **M2** | Export-time full-res denoise for keepers | 24 MP in ≤ 60 s CPU; cancelled export leaves no file; SHA/DB untouched |
+| **M0** ✅ | `tools/export_denoise.py` → opset 17 fp32 ONNX for NAFNet-SIDD-w32; `birdsorter denoise` CLI; no UI | Shipped instead as a pinned single-file export (FerrumPix, opset 18); CLI verified on a real CR3 preview |
+| **M1** ✅ | Preview toggle + luma/colour/detail sliders; 2 MP only | Shipped as one "AI denoise" strength slider on the full preview (2400 px): 13.4 s for 3.8 MP on CPU, cached per photo; later slider moves blend from cache |
+| **M2** ✅ | Export-time denoise on the edited-render export (`export_edited`) | Ships as an option on "Export image…": the review's strength is applied to the written JPEG/TIFF. Measured 19 s for a 44.8 MP preview on DirectML (~0.43 s/MP); keeper export stays a file copy |
 | **M3** | Model Manager entries + `denoise_better` (SCUNet) + "Install from file…" | Licence/About text shown; checksum enforced; portable mode works |
 | **M4** | Colour-space correctness: linear vs sRGB A/B, 16-bit path | No clipping/banding on 14-bit sources; documented |
 | **M5** | *(optional)* `denoise_deblur` bundle, CFA-domain (`rawler` CFA + PMRID-style) | Only if M1–M4 show real demand |

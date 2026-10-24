@@ -5,6 +5,8 @@
     analysisDetail,
     addEyePoint,
     clearEdits,
+    previewDenoised,
+    denoiseAvailable,
     clearEyePoints,
     DEFAULT_ADJUSTMENTS,
     exportEdited,
@@ -29,6 +31,7 @@
     type Adjustments,
     type AnalysisDetail,
     type EyePoint,
+    type SpeciesUndo,
     type UserLabel,
   } from "./api";
   import { lumaHistogram } from "./histogram";
@@ -48,7 +51,7 @@
     upsertPreset,
     type DevelopPreset,
   } from "./presets";
-  import { loadAutoAdvance, saveAutoAdvance } from "./workflow";
+  import { loadAutoAdvance, saveAutoAdvance, loadExportEdge, saveExportEdge, EXPORT_EDGES } from "./workflow";
   import Filmstrip from "./Filmstrip.svelte";
 
   // The open file plus everything the review needs from App. App owns the
@@ -78,6 +81,8 @@
     onBurstGroups,
     onOpenBreakdown,
     onUndo,
+    onPushSpeciesUndo = () => {},
+    onPushBurstUndo = () => {},
   }: {
     fileId: number;
     /** Visible file ids, in display order (for navigation). */
@@ -126,6 +131,10 @@
     ) => void;
     onOpenBreakdown: () => void;
     onUndo: () => void;
+    /** The species override that was replaced, for Ctrl+Z. */
+    onPushSpeciesUndo?: (id: number, prev: SpeciesUndo) => void;
+    /** Whether this file was already a manual winner before the toggle. */
+    onPushBurstUndo?: (id: number, wasManual: boolean) => void;
   } = $props();
 
   let detail = $state<AnalysisDetail | null>(null);
@@ -159,6 +168,12 @@
     dehaze: true,
   });
   let autoAdvance = $state(loadAutoAdvance());
+  /// Long-edge limit for "Export image…" (`"0"` = the preview's own size).
+  let exportEdge = $state(String(loadExportEdge()));
+  /// AI denoise strength, `0` = off. Blends toward the untouched preview, so the
+  /// network only runs once per photo (its output is cached on disk).
+  let denoiseStrength = $state(0);
+  let denoiseReady = $state(false);
   let adjustTimer: ReturnType<typeof setTimeout> | undefined;
   let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
   /// Guards against out-of-order adjusted-preview responses.
@@ -550,6 +565,7 @@
     const clear = isManualWinner;
     try {
       const groups = await setBurstWinner(fileId, !clear);
+      onPushBurstUndo(fileId, clear);
       onBurstGroups(groups);
       status = clear
         ? "burst winner cleared — back to the sharpest frame"
@@ -1160,7 +1176,9 @@
       });
       if (typeof dest !== "string") return;
       status = "exporting edited image…";
-      status = `exported ${await exportEdited(fileId, previewMode, adjustments, dest)}`;
+      const edge = Number(exportEdge) || null;
+      const denoise = denoiseStrength > 0.001 ? denoiseStrength : null;
+      status = `exported ${await exportEdited(fileId, previewMode, adjustments, dest, edge, denoise)}`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -1172,9 +1190,12 @@
     const render = ++previewRender;
     previewLoading = true;
     try {
-      const nextPreview = adjusted
-        ? await previewAdjusted(id, previewMode, adjustments)
-        : await previewImage(id, previewMode);
+      const nextPreview =
+        denoiseReady && denoiseStrength > 0.001
+          ? await previewDenoised(id, previewMode, adjustments, denoiseStrength)
+          : adjusted
+            ? await previewAdjusted(id, previewMode, adjustments)
+            : await previewImage(id, previewMode);
       if (request !== reviewRequest || fileId !== id || render !== previewRender) return;
       previewUrl = nextPreview;
       previewIsBase = true;
@@ -1207,7 +1228,9 @@
 
   async function chooseSpecies(name: string | null, conf?: number) {
     try {
-      await setSpecies(fileId, name, conf);
+      const unchanged = (detail?.species ?? null) === name;
+      const previous = await setSpecies(fileId, name, conf);
+      if (!unchanged) onPushSpeciesUndo(fileId, previous);
       await refreshDetail();
       await onFilesChanged();
     } catch (e) {
@@ -1325,6 +1348,11 @@
   }
 
   onMount(() => {
+    void denoiseAvailable()
+      .then((ready) => (denoiseReady = ready))
+      .catch(() => {
+        /* no model manager in a plain browser dev server */
+      });
     const onKeydown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing =
@@ -1614,6 +1642,26 @@
               <span class="val">{adjustments[c.key].toFixed(2)}</span>
             </div>
           {/each}
+          {#if denoiseReady}
+            <div class="row">
+              <label for="adj-denoise-ai" title="Model output blended toward the original">
+                AI denoise
+              </label>
+              <input
+                id="adj-denoise-ai"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={denoiseStrength}
+                oninput={(e) => {
+                  denoiseStrength = Number(e.currentTarget.value);
+                  scheduleAdjustmentSave();
+                }}
+              />
+              <span class="val">{Math.round(denoiseStrength * 100)}%</span>
+            </div>
+          {/if}
           <div class="row curve-row">
             <span class="curve-title">Curve</span>
             <svg class="curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve">
@@ -1702,6 +1750,16 @@
           </div>
           <p class="status">Saved per photo — originals and sidecars are untouched.</p>
           <div class="row end">
+            <label for="export-edge">Size</label>
+            <select
+              id="export-edge"
+              bind:value={exportEdge}
+              onchange={() => saveExportEdge(Number(exportEdge))}
+            >
+              {#each EXPORT_EDGES as edge (edge)}
+                <option value={String(edge)}>{edge === 0 ? "Full size" : `${edge} px`}</option>
+              {/each}
+            </select>
             <button class="mini" onclick={exportEditedImage}>Export image…</button>
           </div>
         </div>
