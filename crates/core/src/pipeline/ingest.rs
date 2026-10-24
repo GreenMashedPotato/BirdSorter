@@ -438,7 +438,7 @@ fn analyze_one(
     let score = scorer.score(&pick.features)?;
 
     let (img_h, img_w, _) = rgb.dim();
-    let outcome = stages::classify_species(rgb, &dets, species)?;
+    let outcome = stages::classify_species(rgb, &dets, species, pick.bbox)?;
     let mut per_box = outcome.per_box;
     stages::subject_first(&mut all_bboxes, &mut per_box, pick.bbox);
 
