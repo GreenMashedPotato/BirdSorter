@@ -304,20 +304,25 @@ mod tests {
         assert!(!out.contains("Users"), "leaked a home path:\n{out}");
         assert!(!out.contains("PC\\"), "leaked the username:\n{out}");
         // The home prefix is shown as `~` instead.
-        assert!(out.contains("~\\AppData\\Roaming\\BirdSorter\\data"));
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(out.contains(&format!("~{sep}AppData\\Roaming\\BirdSorter\\data")));
         // Crash-log text is scrubbed too.
         assert!(out.contains("[panic] boom at ~"));
     }
 
     #[test]
     fn paths_outside_home_keep_only_a_tail() {
-        let p = Path::new("D:\\shoots\\2026\\july\\bird.cr3");
-        assert_eq!(
-            redact_path(p, Some("C:\\Users\\PC")),
-            "…\\2026\\july\\bird.cr3"
-        );
+        // Built with `join` so the components split the same way everywhere.
+        let p = Path::new("D")
+            .join("shoots")
+            .join("2026")
+            .join("july")
+            .join("bird.cr3");
+        let sep = std::path::MAIN_SEPARATOR;
+        let expected = format!("…{sep}2026{sep}july{sep}bird.cr3");
+        assert_eq!(redact_path(&p, Some("C:\\Users\\PC")), expected);
         // No home configured: still no drive root.
-        assert_eq!(redact_path(p, None), "…\\2026\\july\\bird.cr3");
+        assert_eq!(redact_path(&p, None), expected);
     }
 
     #[test]
