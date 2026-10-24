@@ -1,213 +1,118 @@
 # BirdSorter
 
-A **bird-photography-first RAW culling app** for **Windows and macOS**, built with
-Tauri v2 (Rust core + Svelte UI).
+A RAW culling app for bird photographers. It scores every shot for sharpness,
+groups bursts, and gets the sharp frame with the eye in focus to the top of the
+pile — on Windows or macOS, without an NVIDIA GPU.
 
-It scores every shot for sharpness with a subject-aware pipeline so a sharp bird
-against creamy bokeh is correctly kept, weighs eye focus above everything else,
-groups bursts, and (optionally) identifies species.
+**[github.com/GreenMashedPotato/BirdSorter](https://github.com/GreenMashedPotato/BirdSorter)**
 
-**Built to run well without an NVIDIA GPU.** Inferencing goes through ONNX Runtime
-with automatic CoreML (macOS) / DirectML (any Windows GPU) / CPU execution
-providers — no CUDA install, no driver hunting, and models download on demand.
+[![CI](https://github.com/GreenMashedPotato/BirdSorter/actions/workflows/ci.yml/badge.svg)](https://github.com/GreenMashedPotato/BirdSorter/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
-## Status
+## Features
 
-Early. The headless Rust core is underway (M1 of the plan):
+- **Subject-aware scoring** — the bird is measured, not the bokeh behind it.
+  Laplacian, Tenengrad, FFT and local-contrast features are computed per subject
+  box, with eye focus weighted heaviest, so a sharp bird against creamy
+  background is not thrown away.
+- **Burst grouping** — capture-time and similarity grouping with best-of-burst,
+  plus exposure-bracket detection.
+- **Species identification** (optional, off by default) — a 10,000-class
+  iNaturalist model with a manual override that always wins.
+- **Review view** — high-resolution preview, zoom/pan to 1:1, subject boxes, AF
+  frame where the camera records one, EXIF strip, and keyboard culling.
+- **Non-destructive develop** — exposure, white balance, tone curve, local
+  masks, clarity/dehaze and denoise on the cached preview, with per-photo edits
+  and named presets. The RAW file and its sidecars are never modified.
+- **XMP sidecars** — ratings, colour labels and keywords stay in sync with
+  Lightroom and friends.
+- **Contact sheets** — JPEG grids, plus A4/Letter print pages.
+- **Local only** — nothing is uploaded; the only network access is a model
+  download you ask for.
 
-| Area | State |
+## Supported formats
+
+- **RAW** via [rawler](https://github.com/dnglab/dnglab): Canon CR3/CR2/CRW,
+  Nikon NEF/NRW, Sony ARW, Fujifilm RAF, Olympus/OM System ORF, Panasonic RW2,
+  Pentax PEF, DNG and more.
+- **JPEG** and **TIFF**, including EXIF capture time and orientation.
+- **HEIC/HEIF** behind an off-by-default `heic` build feature (HEVC is
+  patent-encumbered — see [docs/HEIC.md](docs/HEIC.md)).
+
+## Getting started
+
+There is no public release yet; build from source.
+
+Requires Rust stable (MSVC toolchain on Windows), Node 22+, and the
+[Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your
+platform.
+
+```bash
+cargo test --workspace                 # core + CLI
+cd ui && npm install && npm run build  # the frontend Tauri embeds
+cd .. && cargo run --release -p birdsorter-desktop
+```
+
+Always use `--release`: RAW decoding is ~10x slower in a debug build and the
+window will look like it has hung.
+
+Installers (`.msi`/`.exe` on Windows, `.dmg`/`.app` on macOS) come from the Tauri
+CLI:
+
+```bash
+cd ui && npm run build && cd ../crates/desktop
+../../ui/node_modules/.bin/tauri build
+```
+
+Headless use is covered by the `birdsorter` CLI — `analyze`, `list`, `preview`,
+`export`, `contact`, `import`:
+
+```bash
+cargo run -p birdsorter-cli -- analyze ~/shoot --model yolo11n.onnx
+cargo run -p birdsorter-cli -- preview shot.CR3 out.jpg 1600 --exposure 0.3
+```
+
+## Models
+
+The bird detector ships with the app. The 10,000-species model (~820 MB) is
+installed on demand from **Models → Install from file** or downloaded in the
+app; see [docs/MODELS.md](docs/MODELS.md) for provenance and checksums.
+
+Inference runs through ONNX Runtime with DirectML (Windows), CoreML (macOS) or
+plain CPU, all selected automatically — no CUDA install, no driver hunting.
+
+## Documentation
+
+| Doc | What it covers |
 |---|---|
-| Workspace + CI matrix (Win/mac/Linux) | ✅ |
-| `core::analysis::detector` — bbox geometry, NMS, dedupe, letterbox | ✅ tested |
-| `core::analysis::sharpness` — full feature vector (Laplacian, Tenengrad, FFT, local contrast, Brenner, directionality, 3×3 grid, eye heuristic) | ✅ tested |
-| `core::analysis::scorer` — `rules-v1` verdicts + miss-focus penalties | ✅ tested |
-| `core::io::hash` — xxh3 content identity | ✅ tested |
-| `core::io::cache` — content-hash-keyed thumbnail cache | ✅ tested |
-| `core::io::decoder` / `core::io::raw` — RAW decode via `rawler` (embedded preview → full → demosaic), generic image decoder | ✅ tested (error paths; needs real-RAW fixtures) |
-| `core::data::{db,library,analysis_store,labels,settings}` — SQLite schema + migrations, scan/re-link, analysis + labels | ✅ tested |
-| `core::pipeline::ingest` — decode → detect → features → verdict, cancel/batching/failure isolation | ✅ tested with fakes |
-| `core::analysis::saliency` — zero-download fallback detector | ✅ tested |
-| `core::analysis::yolo` — YOLO letterbox pre-processing + output decoding/NMS | ✅ tested with synthetic tensors |
-| `core::runtime` — ONNX Runtime (`ort`) YOLO detector, CPU by default, GPU EPs behind features | ✅ builds; model-gated test |
-| `birdsorter` CLI — `hash`, `analyze`, `list`, `thumb`, `probe`, `genimage`, `selftest` | ✅ end-to-end on synthetic photos **and real Canon R5 CR3 files** |
-| `core::analysis::burst` — capture-time burst grouping + best-of-burst | ✅ tested |
-| `core::analysis::species` + `core::runtime::species` — crop → preprocess → ONNX classifier, top-5, manual override | ✅ **verified on real photos** (egret → Snowy Egret 0.39) |
-| Scoring settings — persisted thresholds + instant re-score from stored features | ✅ tested |
-| `ui/` — Svelte 5 + Vite frontend (grid, review, settings, labelling) | ✅ builds |
-| `crates/desktop` — Tauri v2 shell (commands + progress events) | ✅ builds |
-| Learning loop (pure-Rust logistic regression, `train` CLI + Retrain button) | ✅ trains + re-scores |
-| Sliced (tiled) detection for distant birds | ✅ **verified**: finds a distant raptor at 0.92 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crates, pipeline, IPC, storage, budgets |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | How to add code; the gates; invariants |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | GPU, models, cache, slow runs |
+| [docs/MODELS.md](docs/MODELS.md) | Model contracts, provenance, licensing |
+| [docs/SIGNING.md](docs/SIGNING.md) | Building signed installers |
+| [docs/rule.md](docs/rule.md) | Engineering rules |
 
-### Validated on real RAW files
+## License
 
-Tested against a real shoot of 40 Canon EOS R5 `.CR3` files (26 MP each):
+BirdSorter is licensed under the **GNU Affero General Public License v3.0 or
+later** — see [LICENSE](LICENSE). In short: use it, change it, share it, but if
+you distribute a modified version or run one as a network service, its source
+must be available under the same licence.
 
-- `rawler` decodes the embedded previews correctly — **40/40, 0 failures**.
-- The ONNX YOLO11n detector finds birds (e.g. an egret at conf 0.85).
-- Verdict spread is sensible: 9 sharp / 13 uncertain / 5 blurry / 13 no-subject.
-- The "no-subject" set includes butterflies and a distant raptor on featureless
-  sky — a real COCO-YOLO miss at full-frame resolution. **Sliced (tiled)
-  detection fixes the raptor**: 0 birds frame-wide → 1 bird at **0.92**
-  confidence with `--slice 6`. It is on by default when a GPU EP is active
-  (Settings ▸ Distant birds).
-- **Throughput: 4.56 images/s** with parallel decode (28 cores, CPU-only,
-  full decode + detection + feature extraction), versus 1.38 img/s
-  single-threaded.
+Two third-party notes:
 
-## Layout
+- The bundled detector is an export of **Ultralytics YOLO11n**, which is
+  **AGPL-3.0** — the reason BirdSorter is AGPL rather than MIT.
+- The optional **iNaturalist 2021** species model is **CC-BY-NC-4.0**
+  (non-commercial). Do not use it for paid work.
 
-```
-crates/core/     birdsorter-core — all logic, zero GUI deps, headless + unit-tested
-crates/cli/      birdsorter — headless CLI (hash / selftest), CI smoke-tester
-ui/              Svelte 5 + TypeScript frontend            (planned)
-crates/desktop/  Tauri v2 shell over core                  (planned)
-tools/           dev-only Python for ONNX export/distillation (planned)
-```
+## Acknowledgements
 
-## Build & test
+The preview-adjustment panel was inspired by
+[LightCraft](https://github.com/storytold/lightcraft) (MIT/Apache-2.0); no
+LightCraft code was copied. Species names are enriched from Wikidata (CC0), and
+the models build on Ultralytics YOLO and the iNaturalist 2021 dataset.
 
-Requires Rust (stable) — and on Windows the MSVC toolchain.
-
-```bash
-cargo test --workspace          # 158 unit tests
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p birdsorter-cli -- selftest     # headless pipeline smoke test
-cargo run -p birdsorter-cli -- hash shot.cr3
-
-# end-to-end on a synthetic photo (no RAW needed):
-cargo run -p birdsorter-cli -- genimage /tmp/shoot/shot1.jpg
-cargo run -p birdsorter-cli -- analyze /tmp/shoot --no-detect
-cargo run -p birdsorter-cli -- list /tmp/shoot
-
-# with a real detector (needs a YOLO ONNX export):
-cargo run -p birdsorter-cli -- analyze /tmp/shoot --model yolo11n.onnx
-# inspect one file's detections and features:
-cargo run -p birdsorter-cli -- probe /tmp/shoot/IMG_0001.CR3 --model yolo11n.onnx
-```
-
-GPU execution providers are opt-in at build time:
-
-```bash
-cargo build -p birdsorter-cli --features birdsorter-core/gpu-directml   # Windows
-cargo build -p birdsorter-cli --features birdsorter-core/gpu-coreml     # macOS
-```
-
-## Desktop app
-
-The GUI is a Tauri v2 shell (`crates/desktop`) over the same core, with a Svelte
-frontend in `ui/`. It needs the frontend built first (Tauri embeds `ui/dist`):
-
-```bash
-# Always use --release: RAW decode (rawler) and image ops are ~10x slower in a
-# debug build, which makes the window appear to hang.
-cargo run --release -p birdsorter-desktop
-# or from the ui/ folder: `npm run dev` for a browser preview with mock data
-```
-
-### Building installers
-
-The Tauri CLI builds `.msi`/`.exe` (Windows) and `.dmg`/`.app` (macOS):
-
-```bash
-cd ui && npm install && npm run build && cd ..   # frontend first (Tauri embeds ui/dist)
-cd crates/desktop
-../../ui/node_modules/.bin/tauri build           # add --no-bundle for just the binary
-```
-
-Output goes to `target/release/bundle/`.
-
-**Two flavours:**
-
-| Build | Command | Contents |
-|---|---|---|
-| Default | `tauri build` | app + the bundled **detector** only. Works on any machine — the species model is installed later from Models ▸ Install from file. |
-| With the species model | `tauri build --config tauri.models.conf.json --bundles nsis` (Windows) / `… --bundles dmg` (macOS) | also bundles the **iNaturalist 2021 model (~820 MB)** and seeds it on first run, so testers get working ID with no downloads. Windows installer ≈ **769 MB**. |
-
-`tauri.models.conf.json` is a merge overlay (Tauri accepts repeated `--config`),
-so it combines with the signing config:
-`tauri build --config tauri.signing.json --config tauri.models.conf.json --bundles nsis`.
-The model files live in `dist-models/inat21/` (gitignored) — build them on the
-shipping machine with `tools/export_inat21.py` (see [`MODELS.md`](./MODELS.md)).
-That is why the default config references only the committed detector.
-
-Releases are built by `.github/workflows/release.yml` (Windows x64, macOS arm64
-and x64); those runners do not have the 820 MB model, so they produce the default
-(detector-only) bundles. Windows code signing is **wired up** — set
-`WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD` (base64 `.pfx`) and the
-app exe and installers are signed; without the secrets the build stays unsigned
-so forks keep working. macOS signing/notarization is ready but untested (needs an
-Apple Developer certificate). Full instructions: [`SIGNING.md`](./SIGNING.md).
-Until a certificate is configured, macOS Gatekeeper needs right-click → Open and
-Windows may show a SmartScreen warning.
-
-macOS-specific work (CoreML, notarization, `.dmg`, HEIC) is listed as a
-self-contained brief in [`MACOS_TODO.md`](./MACOS_TODO.md).
-
-The window provides a folder sidebar, a worst-first thumbnail grid with filter
-chips, bulk labelling (Sharp / Blurry / Bokeh OK / Reject), and live analysis
-progress. **Double-click a tile** to open the review view:
-
-- high-resolution preview (rendered on demand at analysis resolution and cached,
-  so it is sharper than the grid thumbnail),
-- **YOLO subject boxes overlaid** on the image — click a box to select a subject,
-- per-subject species with the **top-4 predictions plus a blank field** to set
-  the actual species (or clear it),
-- J/K to step through files, Esc to close.
-
-The toolbar's **Settings** button opens the scoring panel: one **Culling
-strictness** slider plus an **Advanced rules** section with a slider for every
-parameter the scorer uses. Saving persists the thresholds and **re-scores the
-current folder from its stored feature vectors** — instant, no re-decoding.
-
-All logic stays in `birdsorter-core`; the shell only wires commands and events.
-
-### Distant birds and the developed preview
-
-Two detector/preview knobs live outside the scoring panel:
-
-- **Distant birds** (Settings ▸ Distant birds): runs the detector on an
-  overlapping tile grid and merges the results, so small/far birds that vanish
-  when the frame is letterboxed to 640 px are still found. Default **Auto** =
-  tiles only when a GPU execution provider is active, so CPU-only machines are
-  unaffected. Changing it applies to the **next analysis run**.
-- **Developed preview** (CLI only, `preview --develop [--max-quality]`): a full
-  RAW development with AHD (or VNG with `--max-quality`) plus RL deconvolution.
-  Bayer sensors only — X-Trans/Fuji files report a clear message; the camera
-  preview is used for those.
-
-### Training the bird models
-
-`tools/train_bird_detector.py` fine-tunes and exports the two planned models —
-a single-class bird detector (`bird_det_v2.onnx`) and eye/head landmarks
-(`bird_eye_v1.onnx`) — then prints the checksums and how to install them. Only a
-labelled dataset is missing:
-
-```bash
-# Build a single-class bird dataset from COCO and fine-tune:
-python tools/train_bird_detector.py --task detect --from-coco \
-    --coco-json instances_val2017.json --images val2017 --epochs 100
-# Or point it at your own YOLO-format dataset:
-python tools/train_bird_detector.py --task detect --data birds/dataset.yaml --export-int8
-```
-
-See `MODELS.md` for hosting and `progress.md` for the current status.
-
-### Species model
-
-Species identification needs a model in `<user data>/BirdSorter/data/models/`:
-
-- `bird_species.onnx` — ViT-B/16, 526 species (currently ~330 MB fp32;
-  int8 quantization is planned)
-- `bird_species.labels.json` — class names
-- `bird_species.meta.json` — `{"size":224,"mean":[0.5,0.5,0.5],"std":[0.5,0.5,0.5]}`
-
-The model directory is auto-detected; `--species-model`/`--species-labels`
-override it for the CLI. Note: the classifier must use ops that the bundled
-ONNX Runtime supports — a ViT works, an EfficientNet export did not (its logits
-collapsed to a constant in the `ort` runtime while being correct under
-`onnxruntime` 1.23.2).
-
-## Licence
-
-Provisional: AGPL-3.0-or-later (the choice is coupled to the object-detection
-model we ship).
+BirdSorter is a rewrite of an earlier personal Python tool and was developed
+with heavy AI pair-programming assistance; every line was reviewed and tested by
+hand.

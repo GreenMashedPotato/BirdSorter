@@ -27,14 +27,15 @@ impl BBox {
         Self { x, y, w, h }
     }
 
-    /// Right edge (exclusive).
+    /// Right edge (exclusive). Saturating, so a box built from unvalidated UI
+    /// values cannot overflow (`x + w` would panic in a debug build).
     pub fn x1(&self) -> i32 {
-        self.x + self.w
+        self.x.saturating_add(self.w)
     }
 
     /// Bottom edge (exclusive).
     pub fn y1(&self) -> i32 {
-        self.y + self.h
+        self.y.saturating_add(self.h)
     }
 
     /// Pixel area; never negative even for a degenerate box.
@@ -106,6 +107,12 @@ impl Detection {
 pub trait SubjectDetector: Send + Sync {
     /// One list of detections per input image, in order.
     fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>>;
+
+    /// A stable identity for the loaded model artifact, when known. The
+    /// pipeline stores it so a model change can mark old analyses stale.
+    fn identity(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A detector that never finds anything. Useful for whole-image scoring (the
@@ -281,6 +288,9 @@ mod tests {
         assert_eq!((b.x1(), b.y1()), (40, 60));
         assert_eq!(b.area(), 1200);
         assert_eq!(BBox::new(0, 0, 0, 5).area(), 0);
+        // A box built from unvalidated UI numbers must not overflow.
+        let huge = BBox::new(i32::MAX - 1, i32::MAX - 1, 50, 50);
+        assert_eq!((huge.x1(), huge.y1()), (i32::MAX, i32::MAX));
     }
 
     #[test]

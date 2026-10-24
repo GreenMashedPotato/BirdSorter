@@ -1,27 +1,58 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
     analysisDetail,
     addEyePoint,
+    clearEdits,
+    previewDenoised,
+    denoiseAvailable,
     clearEyePoints,
+    DEFAULT_ADJUSTMENTS,
+    exportEdited,
+    getEdits,
+    saveEdits,
     exportFile,
     eyeLabelStats,
     getEyePoints,
+    getThumbnail,
     identifySubject,
     inTauri,
     labelFiles,
     previewImage,
+    previewAdjusted,
+    previewRegion,
     removeSubject,
     setBurstWinner,
     setSpecies,
     setSubjectBox,
     speciesLabels,
     trashFiles,
+    type Adjustments,
     type AnalysisDetail,
     type EyePoint,
+    type SpeciesUndo,
     type UserLabel,
   } from "./api";
+  import { lumaHistogram } from "./histogram";
+  import { neighborIds } from "./navigation";
+  import {
+    applyGroups,
+    loadAdjustmentClipboard,
+    PRESET_GROUPS,
+    saveAdjustmentClipboard,
+    type PresetGroup,
+  } from "./adjustments";
+  import {
+    isNeutral,
+    loadPresets,
+    removePreset,
+    savePresets,
+    upsertPreset,
+    type DevelopPreset,
+  } from "./presets";
+  import { loadAutoAdvance, saveAutoAdvance, loadExportEdge, saveExportEdge, EXPORT_EDGES } from "./workflow";
+  import Filmstrip from "./Filmstrip.svelte";
 
   // The open file plus everything the review needs from App. App owns the
   // library-level state (folders, files, bursts, undo, status); the review owns
@@ -29,8 +60,15 @@
   let {
     fileId,
     ids,
+    selectedIds = [],
     burstGroups,
     rating,
+    flag = null,
+    onFlag = () => {},
+    color = null,
+    onColor = () => {},
+    previewMode = "fast",
+    onPreviewModeChange = () => {},
     refreshToken,
     canUndo,
     status = $bindable(),
@@ -38,17 +76,38 @@
     onNavigate,
     onFilesChanged,
     onPushUndo,
+    onPushEditsUndo = async () => {},
     onRate,
     onBurstGroups,
     onOpenBreakdown,
     onUndo,
+    onPushSpeciesUndo = () => {},
+    onPushBurstUndo = () => {},
   }: {
     fileId: number;
     /** Visible file ids, in display order (for navigation). */
     ids: number[];
-    burstGroups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[];
+    /** Grid selection, for applying a preset to several photos at once. */
+    selectedIds?: number[];
+    burstGroups: {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[];
     /** Current file's 0-5 star rating. */
     rating: number;
+    /** Current file's pick/reject flag. */
+    flag?: string | null;
+    onFlag?: (id: number, flag: string | null) => void;
+    /** Current file's colour label. */
+    color?: string | null;
+    onColor?: (id: number, color: string | null) => void;
+    /** Preview resolution, owned (and persisted) by App. */
+    previewMode?: "fast" | "full";
+    onPreviewModeChange?: (mode: "fast" | "full") => void;
     /** Bumped by App to force a detail re-read (e.g. after an undo). */
     refreshToken: number;
     canUndo: boolean;
@@ -57,16 +116,31 @@
     onNavigate: (id: number) => void;
     onFilesChanged: () => void | Promise<void>;
     onPushUndo: (ids: number[]) => void;
+    /** Snapshot saved edits before a bulk preset sync, for Ctrl+Z. */
+    onPushEditsUndo?: (ids: number[]) => Promise<void>;
     onRate: (id: number, rating: number) => void;
     onBurstGroups: (
-      groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+      groups: {
+        frames: number[];
+        best: number;
+        size: number;
+        winnerOverride: boolean;
+        bracket: boolean;
+        exposureSpanEv: number | null;
+      }[],
     ) => void;
     onOpenBreakdown: () => void;
     onUndo: () => void;
+    /** The species override that was replaced, for Ctrl+Z. */
+    onPushSpeciesUndo?: (id: number, prev: SpeciesUndo) => void;
+    /** Whether this file was already a manual winner before the toggle. */
+    onPushBurstUndo?: (id: number, wasManual: boolean) => void;
   } = $props();
 
   let detail = $state<AnalysisDetail | null>(null);
   let previewUrl = $state("");
+  /// True once `previewUrl` is the base preview (not the thumbnail stand-in).
+  let previewIsBase = $state(false);
   let previewEl = $state<HTMLImageElement | undefined>(undefined);
   let natural = $state({ w: 1, h: 1 });
   let selectedBox = $state(0);
@@ -76,9 +150,35 @@
   let speciesIndex = $state(0);
   let speciesOpen = $state(false);
   let previewLoading = $state(false);
-  /// Preview render mode: fast (analysis res) or full (native camera preview).
-  let previewMode = $state<"fast" | "full">("fast");
   let reviewRequest = 0;
+  /// Preview-only adjustments (non-destructive; reset when navigating).
+  let adjustOpen = $state(false);
+  let adjustments = $state<Adjustments>({ ...DEFAULT_ADJUSTMENTS });
+  let adjustmentClipboard = $state<Adjustments | null>(loadAdjustmentClipboard());
+  let presets = $state<DevelopPreset[]>(loadPresets());
+  let activePreset = $state("");
+  let presetName = $state("");
+  let presetAmount = $state(1);
+  let presetSync = $state(false);
+  let presetGroups = $state<Record<PresetGroup, boolean>>({
+    tone: true,
+    colour: true,
+    detail: true,
+    local: true,
+    dehaze: true,
+  });
+  let autoAdvance = $state(loadAutoAdvance());
+  /// Long-edge limit for "Export image…" (`"0"` = the preview's own size).
+  let exportEdge = $state(String(loadExportEdge()));
+  /// AI denoise strength, `0` = off. Blends toward the untouched preview, so the
+  /// network only runs once per photo (its output is cached on disk).
+  let denoiseStrength = $state(0);
+  let denoiseReady = $state(false);
+  let adjustTimer: ReturnType<typeof setTimeout> | undefined;
+  let editSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  /// Guards against out-of-order adjusted-preview responses.
+  let previewRender = 0;
+  let prefetching = false;
 
   // --- zoom / pan state ----------------------------------------------------
   let stageEl = $state<HTMLDivElement | undefined>(undefined);
@@ -91,6 +191,93 @@
 
   const ZOOM_MIN = 1;
   const ZOOM_MAX = 16;
+
+  // --- windowed 1:1 rendering (only above native 1:1) ---------------------
+  const REGION_TILE = 256;
+  const REGION_MARGIN = 256;
+  const REGION_DEBOUNCE_MS = 80;
+  let regionUrl = $state("");
+  /// The source rectangle currently fetched.
+  let regionWindow = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  let regionTimer: ReturnType<typeof setTimeout> | undefined;
+  let regionRequest = 0;
+  /// Screen pixels per source pixel; > 1 means the preview is upscaled.
+  const sourceScale = $derived(
+    natural.w > 1 && fit.w > 0 ? (fit.w * zoom) / natural.w : 1,
+  );
+
+  function clearRegion() {
+    regionUrl = "";
+    regionWindow = null;
+    if (regionTimer) {
+      clearTimeout(regionTimer);
+      regionTimer = undefined;
+    }
+  }
+
+  /** Fetch the visible source rectangle (snapped to 256 px) when zoomed past 1:1. */
+  function updateRegion() {
+    if (!stageEl || !previewIsBase || !previewUrl || natural.w <= 1 || sourceScale <= 1.0001) {
+      clearRegion();
+      return;
+    }
+    const rect = stageEl.getBoundingClientRect();
+    const k = sourceScale;
+    const x0 = Math.max(0, -tx / k);
+    const y0 = Math.max(0, -ty / k);
+    const x1 = Math.min(natural.w, (rect.width - tx) / k);
+    const y1 = Math.min(natural.h, (rect.height - ty) / k);
+    if (x1 <= x0 || y1 <= y0) return;
+    // Reuse the fetched window while panning inside it.
+    if (
+      regionWindow &&
+      regionWindow.x <= x0 &&
+      regionWindow.y <= y0 &&
+      regionWindow.x + regionWindow.w >= x1 &&
+      regionWindow.y + regionWindow.h >= y1
+    ) {
+      return;
+    }
+    const x = Math.max(0, Math.floor(x0 / REGION_TILE) * REGION_TILE - REGION_MARGIN);
+    const y = Math.max(0, Math.floor(y0 / REGION_TILE) * REGION_TILE - REGION_MARGIN);
+    const right = Math.min(natural.w, Math.ceil(x1 / REGION_TILE) * REGION_TILE + REGION_MARGIN);
+    const bottom = Math.min(natural.h, Math.ceil(y1 / REGION_TILE) * REGION_TILE + REGION_MARGIN);
+    const w = right - x;
+    const h = bottom - y;
+    if (w <= 0 || h <= 0) return;
+    if (regionTimer) clearTimeout(regionTimer);
+    const request = ++regionRequest;
+    const id = fileId;
+    const mode = previewMode;
+    const snapshot = adjustments;
+    regionTimer = setTimeout(() => {
+      regionTimer = undefined;
+      void previewRegion(id, mode, x, y, w, h, snapshot)
+        .then((url) => {
+          if (request !== regionRequest || fileId !== id) return;
+          regionUrl = url;
+          regionWindow = { x, y, w, h };
+        })
+        .catch(() => {
+          /* the base preview stays as the fallback */
+        });
+    }, REGION_DEBOUNCE_MS);
+  }
+
+  $effect(() => {
+    // Track every input; updateRegion debounces and reuses the fetched window.
+    void zoom;
+    void tx;
+    void ty;
+    void fit;
+    void natural;
+    void previewUrl;
+    void previewIsBase;
+    void previewLoading;
+    void previewMode;
+    void adjustments;
+    updateRegion();
+  });
 
   /** Fit the image inside the stage (centred, scale 1) and optionally reset. */
   function computeFit(reset = true) {
@@ -378,6 +565,7 @@
     const clear = isManualWinner;
     try {
       const groups = await setBurstWinner(fileId, !clear);
+      onPushBurstUndo(fileId, clear);
       onBurstGroups(groups);
       status = clear
         ? "burst winner cleared — back to the sharpest frame"
@@ -469,9 +657,10 @@
       if (typeof dest !== "string") return;
       status = "exporting…";
       const r = await exportFile(fileId, dest, "copy");
+      const warn = r.warning ? ` · warning: ${r.warning}` : "";
       status = r.exported
-        ? `exported to ${r.destination}${r.failed.length ? ` · ${r.failed.length} failed` : ""}`
-        : `nothing exported${r.failed.length ? ` · ${r.failed[0]}` : ""}`;
+        ? `exported to ${r.destination}${r.failed.length ? ` · ${r.failed.length} failed` : ""}${warn}`
+        : `nothing exported${r.failed.length ? ` · ${r.failed[0]}` : ""}${warn}`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -496,6 +685,11 @@
   // The compare pane may be a different file; box coordinates are per-image.
   const compareBoxW = $derived(compareDetail?.imageWidth ?? boxW);
   const compareBoxH = $derived(compareDetail?.imageHeight ?? boxH);
+
+  function afTitle(focus: NonNullable<AnalysisDetail["focus"]>): string {
+    const words = [focus.mode, focus.area, focus.tracking].filter(Boolean);
+    return words.length ? `AF: ${words.join(" · ")}` : "AF point";
+  }
 
   // --- focus peaking -------------------------------------------------------
   // A Sobel edge map of the previewed photo, drawn over it so the sharpest
@@ -597,8 +791,67 @@
     renderPeaking();
   }
 
+  // --- histogram overlay ---------------------------------------------------
+  /// A luminance histogram of the previewed photo, drawn over it.
+  let showHistogram = $state(false);
+  let histogramCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+
+  async function toggleHistogram() {
+    showHistogram = !showHistogram;
+    if (showHistogram) {
+      await tick();
+      buildHistogram();
+      status = "histogram: luminance distribution of the preview";
+    }
+  }
+
+  /// Sample the preview and draw the histogram bars onto the overlay canvas.
+  function buildHistogram() {
+    const img = previewEl;
+    const canvas = histogramCanvas;
+    if (!img || !canvas || !img.complete || img.naturalWidth === 0) return;
+    const srcW = img.naturalWidth;
+    const srcH = img.naturalHeight;
+    const scale = Math.min(1, 512 / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+    const scratch = document.createElement("canvas");
+    scratch.width = w;
+    scratch.height = h;
+    const ctx = scratch.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, w, h);
+    const counts = lumaHistogram(ctx.getImageData(0, 0, w, h).data, 64);
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const c = canvas.getContext("2d");
+    if (!c) return;
+    c.clearRect(0, 0, cw, ch);
+    const max = Math.max(1, ...counts);
+    const bw = cw / counts.length;
+    c.fillStyle = "rgba(200, 220, 255, 0.9)";
+    counts.forEach((n, i) => {
+      const bh = (n / max) * (ch - 2);
+      c.fillRect(i * bw, ch - bh, Math.max(1, bw - 1), bh);
+    });
+  }
+
   const picks = $derived(activeTop5.slice(0, 4));
   const blanks = $derived(Math.max(0, 4 - picks.length));
+
+  // Technical strip (camera/lens/exposure), shown only when EXIF has it.
+  const exifChips = $derived(
+    detail
+      ? [
+          detail.meta?.camera,
+          detail.meta?.lens,
+          detail.meta?.iso != null ? `ISO ${detail.meta.iso}` : null,
+          detail.meta?.exposure,
+          detail.meta?.aperture,
+          detail.meta?.focalLength,
+        ].filter((s): s is string => !!s)
+      : [],
+  );
 
   // --- load / navigate -----------------------------------------------------
   /// Load a file's detail and preview. Called on mount and whenever the open
@@ -607,6 +860,16 @@
     const request = ++reviewRequest;
     detail = null;
     previewUrl = "";
+    previewIsBase = false;
+    clearRegion();
+    // Show the cached grid thumbnail immediately; the full render replaces it.
+    void getThumbnail(id)
+      .then((url) => {
+        if (request === reviewRequest && !previewUrl && url) previewUrl = url;
+      })
+      .catch(() => {});
+    // Adjustments are per-photo; start fresh when navigating.
+    adjustments = { ...DEFAULT_ADJUSTMENTS };
     selectedBox = 0;
     speciesInput = "";
     speciesOpen = false;
@@ -621,6 +884,13 @@
     } catch (e) {
       status = `error: ${e}`;
     }
+    // Saved, non-destructive adjustments for this photo.
+    try {
+      const saved = await getEdits(id);
+      if (request === reviewRequest && saved) adjustments = saved;
+    } catch {
+      /* no saved edits */
+    }
     void loadEyePoints();
     // Keep the compare frame within the new file's burst.
     if (compareOn) {
@@ -630,12 +900,45 @@
       }
     }
     await renderPreview(request);
+    void prefetchNeighbors();
   }
 
   $effect(() => {
     const id = fileId;
     untrack(() => void load(id));
   });
+
+  // Preview mode lives in App (and is persisted); re-render when it changes.
+  let seenMode = untrack(() => previewMode);
+  $effect(() => {
+    const mode = previewMode;
+    if (mode === seenMode) return;
+    seenMode = mode;
+    void renderPreview().then(() => prefetchNeighbors());
+  });
+
+  /// Warm the disk cache for the adjacent photos after the current render.
+  /// Best effort and never blocks the visible image.
+  async function prefetchNeighbors() {
+    if (prefetching || !inTauri) return;
+    const around = neighborIds(ids, fileId);
+    if (around.length === 0) return;
+    const current = fileId;
+    const mode = previewMode;
+    prefetching = true;
+    try {
+      for (const id of around) {
+        if (fileId !== current) break;
+        try {
+          await previewImage(id, mode);
+        } catch {
+          /* prefetch is opportunistic */
+        }
+      }
+    } finally {
+      prefetching = false;
+    }
+  }
 
   // Re-read the detail when App changes data the review shows (e.g. undo),
   // without reloading the preview.
@@ -647,20 +950,262 @@
     void refreshDetail();
   });
 
+  const LINEAR_CURVE: [number, number, number, number, number] = [0, 0.25, 0.5, 0.75, 1];
+  const curveAdjusted = $derived(
+    adjustments.curve.some(
+      (value, index) => Math.abs(value - LINEAR_CURVE[index]) > 1e-4,
+    ),
+  );
+  const curvePoints = $derived(
+    adjustments.curve.map((value, index) => `${index * 25},${(1 - value) * 100}`).join(" "),
+  );
+
+  const adjusted = $derived(
+    adjustments.exposure !== 0 ||
+      adjustments.contrast !== 0 ||
+      adjustments.shadows !== 0 ||
+      adjustments.highlights !== 0 ||
+      adjustments.dehaze !== 0 ||
+      adjustments.denoise !== 0 ||
+      adjustments.temperature !== 0 ||
+      adjustments.tint !== 0 ||
+      adjustments.vibrance !== 0 ||
+      adjustments.saturation !== 0 ||
+      adjustments.clarity !== 0 ||
+      adjustments.defringe !== 0 ||
+      adjustments.range_exposure !== 0 ||
+      adjustments.mask_exposure !== 0 ||
+      curveAdjusted,
+  );
+
+  const ADJUST_CONTROLS: {
+    key: Exclude<keyof Adjustments, "curve">;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+  }[] = [
+    { key: "exposure", label: "Exposure", min: -2, max: 2, step: 0.05 },
+    { key: "contrast", label: "Contrast", min: -1, max: 1, step: 0.05 },
+    { key: "shadows", label: "Shadows", min: 0, max: 1, step: 0.05 },
+    { key: "highlights", label: "Highlights", min: 0, max: 1, step: 0.05 },
+    { key: "dehaze", label: "Dehaze", min: -1, max: 1, step: 0.05 },
+    { key: "temperature", label: "Temp", min: -1, max: 1, step: 0.05 },
+    { key: "tint", label: "Tint", min: -1, max: 1, step: 0.05 },
+    { key: "vibrance", label: "Vibrance", min: -1, max: 1, step: 0.05 },
+    { key: "saturation", label: "Saturation", min: -1, max: 1, step: 0.05 },
+    { key: "clarity", label: "Clarity", min: -1, max: 1, step: 0.05 },
+    { key: "defringe", label: "Defringe", min: 0, max: 1, step: 0.05 },
+    { key: "range_exposure", label: "Range exp", min: -2, max: 2, step: 0.05 },
+    { key: "range_center", label: "Range at", min: 0, max: 1, step: 0.05 },
+    { key: "range_width", label: "Range w", min: 0.02, max: 1, step: 0.01 },
+    { key: "mask_exposure", label: "Mask exp", min: -2, max: 2, step: 0.05 },
+    { key: "mask_x", label: "Mask X", min: 0, max: 1, step: 0.01 },
+    { key: "mask_y", label: "Mask Y", min: 0, max: 1, step: 0.01 },
+    { key: "mask_radius", label: "Mask r", min: 0, max: 2, step: 0.01 },
+    { key: "mask_feather", label: "Mask soft", min: 0, max: 1, step: 0.01 },
+    { key: "denoise", label: "Denoise", min: 0, max: 1, step: 0.05 },
+  ];
+
+  function setAdjustment(key: Exclude<keyof Adjustments, "curve">, value: number) {
+    adjustments = { ...adjustments, [key]: value };
+    scheduleAdjustmentSave();
+  }
+
+  /// Clamp a curve point between its neighbours so the curve never inverts.
+  function setCurvePoint(index: number, value: number) {
+    const curve = [...adjustments.curve] as Adjustments["curve"];
+    const min = index === 0 ? 0 : curve[index - 1];
+    const max = index === 4 ? 1 : curve[index + 1];
+    curve[index] = Math.min(max, Math.max(min, value));
+    adjustments = { ...adjustments, curve };
+    scheduleAdjustmentSave();
+  }
+
+  function resetCurve() {
+    adjustments = { ...adjustments, curve: [...LINEAR_CURVE] };
+    scheduleAdjustmentSave();
+  }
+
+  function scheduleAdjustmentSave() {
+    clearRegion();
+    if (adjustTimer) clearTimeout(adjustTimer);
+    // Coalesce slider drags into one render.
+    adjustTimer = setTimeout(() => {
+      adjustTimer = undefined;
+      void renderPreview();
+    }, 120);
+    // Persist the edit state separately (debounced, per photo).
+    if (editSaveTimer) clearTimeout(editSaveTimer);
+    const saveId = fileId;
+    const snapshot = adjustments;
+    editSaveTimer = setTimeout(() => {
+      editSaveTimer = undefined;
+      void saveEdits(saveId, snapshot).catch(() => {});
+    }, 500);
+  }
+
+  function copyAdjustments() {
+    adjustmentClipboard = { ...adjustments };
+    saveAdjustmentClipboard(adjustmentClipboard);
+    status = "adjustments copied";
+  }
+
+  function pasteAdjustments() {
+    if (!adjustmentClipboard) return;
+    adjustments = { ...adjustmentClipboard };
+    clearRegion();
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+    void saveEdits(fileId, adjustments).catch(() => {});
+    void renderPreview();
+    status = "adjustments pasted";
+  }
+
+  function resetAdjustments() {
+    adjustments = { ...DEFAULT_ADJUSTMENTS };
+    clearRegion();
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+    void clearEdits(fileId).catch(() => {});
+    void renderPreview();
+  }
+
+  /// Stop a pending debounce so a preset application wins immediately.
+  function settleAdjustTimers() {
+    if (adjustTimer) {
+      clearTimeout(adjustTimer);
+      adjustTimer = undefined;
+    }
+    if (editSaveTimer) {
+      clearTimeout(editSaveTimer);
+      editSaveTimer = undefined;
+    }
+  }
+
+  function saveCurrentPreset() {
+    const name = presetName.trim();
+    if (!name) {
+      status = "preset needs a name";
+      return;
+    }
+    if (isNeutral(adjustments)) {
+      status = "adjust something before saving a preset";
+      return;
+    }
+    presets = upsertPreset(presets, {
+      name,
+      adjustments: { ...adjustments },
+      groups: PRESET_GROUPS.filter((group) => presetGroups[group]),
+    });
+    savePresets(presets);
+    activePreset = name;
+    presetName = "";
+    status = `saved preset: ${name}`;
+  }
+
+  async function applyPreset(preset: DevelopPreset) {
+    const targets = presetSync ? selectedIds.filter((id) => id !== fileId) : [];
+    if (targets.length > 0) {
+      // Snapshot first: the edit is bulk and must stay one undo step.
+      try {
+        await onPushEditsUndo([fileId, ...targets]);
+      } catch (e) {
+        status = `error: ${e}`;
+        return;
+      }
+    }
+    adjustments = applyGroups(
+      adjustments,
+      preset.adjustments,
+      preset.groups,
+      presetAmount,
+    );
+    settleAdjustTimers();
+    clearRegion();
+    void saveEdits(fileId, adjustments).catch(() => {});
+    for (const id of targets) void saveEdits(id, adjustments).catch(() => {});
+    void renderPreview();
+    if (targets.length > 0) {
+      void onFilesChanged();
+      status = `preset "${preset.name}" applied to ${targets.length + 1} photos`;
+    } else {
+      status = `applied preset: ${preset.name}`;
+    }
+  }
+
+  function applyNamedPreset(name: string) {
+    activePreset = name;
+    const preset = presets.find((entry) => entry.name === name);
+    if (preset) void applyPreset(preset);
+  }
+
+  function deleteActivePreset() {
+    if (!activePreset) return;
+    presets = removePreset(presets, activePreset);
+    savePresets(presets);
+    status = `removed preset: ${activePreset}`;
+    activePreset = "";
+  }
+
+  /// Write an image (JPEG, or lossless TIFF when the name ends in .tif/.tiff)
+  /// of the current preview with the adjustments applied. The original and its
+  /// sidecars are never touched.
+  async function exportEditedImage() {
+    try {
+      const base = (detail?.filename ?? "edited").replace(/\.[^.]+$/, "");
+      const dest = await saveDialog({
+        title: "Export edited image",
+        defaultPath: `${base}_edited.jpg`,
+        filters: [
+          { name: "JPEG", extensions: ["jpg", "jpeg"] },
+          { name: "TIFF", extensions: ["tif", "tiff"] },
+        ],
+      });
+      if (typeof dest !== "string") return;
+      status = "exporting edited image…";
+      const edge = Number(exportEdge) || null;
+      const denoise = denoiseStrength > 0.001 ? denoiseStrength : null;
+      status = `exported ${await exportEdited(fileId, previewMode, adjustments, dest, edge, denoise)}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
   /// (Re)render the preview for the current file at the current resolution mode.
   async function renderPreview(request = reviewRequest) {
     const id = fileId;
+    const render = ++previewRender;
     previewLoading = true;
     try {
-      const nextPreview = await previewImage(id, previewMode);
-      if (request !== reviewRequest || fileId !== id) return;
+      const nextPreview =
+        denoiseReady && denoiseStrength > 0.001
+          ? await previewDenoised(id, previewMode, adjustments, denoiseStrength)
+          : adjusted
+            ? await previewAdjusted(id, previewMode, adjustments)
+            : await previewImage(id, previewMode);
+      if (request !== reviewRequest || fileId !== id || render !== previewRender) return;
       previewUrl = nextPreview;
+      previewIsBase = true;
+      clearRegion();
     } catch (e) {
       if (request !== reviewRequest) return;
       status = `error: ${e}`;
     } finally {
-      // A newer navigation owns the spinner; don't clear it from a stale load.
-      if (request === reviewRequest) previewLoading = false;
+      // A newer navigation/render owns the spinner; don't clear it from a stale load.
+      if (request === reviewRequest && render === previewRender) previewLoading = false;
     }
     if (request === reviewRequest && compareOn && compareId !== null) await renderCompare();
   }
@@ -683,7 +1228,9 @@
 
   async function chooseSpecies(name: string | null, conf?: number) {
     try {
-      await setSpecies(fileId, name, conf);
+      const unchanged = (detail?.species ?? null) === name;
+      const previous = await setSpecies(fileId, name, conf);
+      if (!unchanged) onPushSpeciesUndo(fileId, previous);
       await refreshDetail();
       await onFilesChanged();
     } catch (e) {
@@ -766,12 +1313,23 @@
     }
   }
 
+  function toggleAutoAdvance() {
+    autoAdvance = !autoAdvance;
+    saveAutoAdvance(autoAdvance);
+    status = autoAdvance ? "auto-advance on" : "";
+  }
+
   async function applyLabelToReview(label: UserLabel) {
+    // Capture the next frame before the label, because a filter (e.g.
+    // "unlabeled") can remove this photo from `ids` on refresh.
+    const index = ids.indexOf(fileId);
+    const nextId = autoAdvance && index >= 0 ? ids[index + 1] : undefined;
     try {
       onPushUndo([fileId]);
       await labelFiles([fileId], label);
       await refreshDetail();
       await onFilesChanged();
+      if (nextId !== undefined) onNavigate(nextId);
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -790,6 +1348,11 @@
   }
 
   onMount(() => {
+    void denoiseAvailable()
+      .then((ready) => (denoiseReady = ready))
+      .catch(() => {
+        /* no model manager in a plain browser dev server */
+      });
     const onKeydown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing =
@@ -800,6 +1363,31 @@
           target.isContentEditable);
       if (typing) {
         if (e.key === "Escape" && target) target.blur();
+        return;
+      }
+      // 1-5 rate (and advance when enabled); Shift forces the advance.
+      // Shift+0 clears the rating; plain 0 keeps its "reset zoom" meaning.
+      const digit = /^Digit([0-5])$/.exec(e.code);
+      if (digit && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const value = Number(digit[1]);
+        if (e.shiftKey) {
+          e.preventDefault();
+          onRate(fileId, value);
+          if (value > 0) nav(1);
+          return;
+        }
+        if (value > 0) {
+          e.preventDefault();
+          onRate(fileId, value);
+          if (autoAdvance) nav(1);
+          return;
+        }
+      }
+      const colorDigit = /^Digit([6-9])$/.exec(e.code);
+      if (colorDigit && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const colors = ["red", "yellow", "green", "blue"];
+        onColor(fileId, colors[Number(colorDigit[1]) - 6]);
         return;
       }
       if (e.key === "Escape") closeReview();
@@ -819,19 +1407,55 @@
         resetZoom();
       } else if (e.key === "p" || e.key === "P") {
         e.preventDefault();
+        onFlag(fileId, "pick");
+        if (autoAdvance) nav(1);
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        onFlag(fileId, "reject");
+        if (autoAdvance) nav(1);
+      } else if (e.key === "u" || e.key === "U") {
+        e.preventDefault();
+        onFlag(fileId, null);
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
         void togglePeaking();
       } else if ((e.key === "c" || e.key === "C") && peakingOn) {
         cyclePeakingColor();
+      } else if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        void applyLabelToReview("sharp");
+      } else if (e.key === "b" || e.key === "B") {
+        e.preventDefault();
+        void applyLabelToReview("blurry");
+      } else if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        void applyLabelToReview("reject");
+      } else if (e.key === "o" || e.key === "O") {
+        e.preventDefault();
+        void applyLabelToReview("bokeh_ok");
       }
     };
     window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
+    return () => {
+      window.removeEventListener("keydown", onKeydown);
+      if (adjustTimer) clearTimeout(adjustTimer);
+      if (regionTimer) clearTimeout(regionTimer);
+      if (editSaveTimer) {
+        // Closing within the debounce must not drop the last slider move.
+        clearTimeout(editSaveTimer);
+        void saveEdits(fileId, adjustments).catch(() => {});
+      }
+    };
   });
 </script>
 
 <div class="review">
   <div class="review-bar">
     <strong>{detail?.filename ?? "loading…"}</strong>
+    {#if detail?.capturedAt}<span class="status">{detail.capturedAt.replace("T", " ")}</span>{/if}
+    {#each exifChips as chip, i (i)}
+      <span class="status">{chip}</span>
+    {/each}
     {#if detail?.predicted}
       <span class="badge {detail.predicted}">{detail.predicted.replace("_", " ")}</span>
       <span class="status">score {detail.score?.toFixed(3)}</span>
@@ -852,9 +1476,16 @@
     <button
       class:active={peakingOn}
       onclick={togglePeaking}
-      title="Glow the parts of the photo that are in focus"
+      title="Glow the parts of the photo that are in focus (F)"
     >
       Focus peaking
+    </button>
+    <button
+      class:active={showHistogram}
+      onclick={toggleHistogram}
+      title="Show a luminance histogram of the preview"
+    >
+      Histogram
     </button>
     {#if peakingOn}
       <input
@@ -878,15 +1509,29 @@
     {/if}
     <select
       class="modesel"
-      bind:value={previewMode}
-      onchange={() => renderPreview()}
-      title="Preview resolution"
+      value={previewMode}
+      onchange={(e) => onPreviewModeChange(e.currentTarget.value as "fast" | "full")}
+      title="Preview resolution (saved for every photo)"
     >
       <option value="fast">Fast</option>
       <option value="full">High-res</option>
     </select>
+    <button
+      class:active={adjustOpen}
+      onclick={() => (adjustOpen = !adjustOpen)}
+      title="Preview-only exposure, contrast, shadows, highlights, dehaze and denoise"
+    >
+      Adjust
+    </button>
     <button onclick={() => nav(-1)}>‹ K</button>
     <button onclick={() => nav(1)}>J ›</button>
+    <button
+      class:active={autoAdvance}
+      onclick={toggleAutoAdvance}
+      title="Advance to the next photo after labelling or rating"
+    >
+      Auto-advance
+    </button>
     <button
       class:active={drawing}
       onclick={() => {
@@ -942,9 +1587,21 @@
       >
         {isManualWinner ? "★ Winner" : isWinner ? "★ Sharpest" : "☆ Set winner"}
       </button>
+      {#if currentBurst?.bracket}
+        <span
+          class="badge burst"
+          title={`Bracketed exposures (${(currentBurst.exposureSpanEv ?? 0).toFixed(1)} EV span)`}
+        >
+          Bracket
+        </span>
+      {/if}
     {/if}
     <button onclick={exportCurrent} title="Copy this photo to a folder you pick">Export…</button>
-    <button onclick={onUndo} disabled={!canUndo} title="Undo the last label change (Ctrl+Z)">
+    <button
+      onclick={onUndo}
+      disabled={!canUndo}
+      title="Undo the last label, rating, flag or colour change (Ctrl+Z)"
+    >
       Undo
     </button>
     <button onclick={closeReview}>Close (Esc)</button>
@@ -953,6 +1610,168 @@
 
   <div class="review-body">
     <div class="preview" class:compare={compareOn && !!compareUrl}>
+      {#if adjustOpen}
+        <div class="adjust">
+          <div class="adjust-head">
+            <strong>Adjust</strong>
+            <button class="mini" onclick={copyAdjustments} title="Copy these adjustments">
+              Copy
+            </button>
+            <button
+              class="mini"
+              onclick={pasteAdjustments}
+              disabled={!adjustmentClipboard}
+              title="Paste the copied adjustments onto this photo"
+            >
+              Paste
+            </button>
+            <button class="mini" onclick={resetAdjustments}>Reset</button>
+          </div>
+          {#each ADJUST_CONTROLS as c (c.key)}
+            <div class="row">
+              <label for={`adj-${c.key}`}>{c.label}</label>
+              <input
+                id={`adj-${c.key}`}
+                type="range"
+                min={c.min}
+                max={c.max}
+                step={c.step}
+                value={adjustments[c.key]}
+                oninput={(e) => setAdjustment(c.key, Number(e.currentTarget.value))}
+              />
+              <span class="val">{adjustments[c.key].toFixed(2)}</span>
+            </div>
+          {/each}
+          {#if denoiseReady}
+            <div class="row">
+              <label for="adj-denoise-ai" title="Model output blended toward the original">
+                AI denoise
+              </label>
+              <input
+                id="adj-denoise-ai"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={denoiseStrength}
+                oninput={(e) => {
+                  denoiseStrength = Number(e.currentTarget.value);
+                  scheduleAdjustmentSave();
+                }}
+              />
+              <span class="val">{Math.round(denoiseStrength * 100)}%</span>
+            </div>
+          {/if}
+          <div class="row curve-row">
+            <span class="curve-title">Curve</span>
+            <svg class="curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve">
+              <polyline points={curvePoints} fill="none" stroke="currentColor" stroke-width="2" />
+              {#each adjustments.curve as value, index (index)}
+                <circle cx={index * 25} cy={(1 - value) * 100} r="3" />
+              {/each}
+            </svg>
+            <button class="mini" onclick={resetCurve} disabled={!curveAdjusted}>Reset</button>
+          </div>
+          {#each adjustments.curve as value, index (index)}
+            <div class="row">
+              <label for={`adj-curve-${index}`}>{["Black", "¼", "½", "¾", "White"][index]}</label>
+              <input
+                id={`adj-curve-${index}`}
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={value}
+                oninput={(e) => setCurvePoint(index, Number(e.currentTarget.value))}
+              />
+              <span class="val">{value.toFixed(2)}</span>
+            </div>
+          {/each}
+          <div class="row">
+            <label for="adj-preset">Preset</label>
+            <select
+              id="adj-preset"
+              bind:value={activePreset}
+              onchange={(e) => applyNamedPreset(e.currentTarget.value)}
+            >
+              <option value="">Preset…</option>
+              {#each presets as preset (preset.name)}
+                <option value={preset.name}>{preset.name}</option>
+              {/each}
+            </select>
+            <button
+              class="mini"
+              onclick={deleteActivePreset}
+              disabled={!activePreset}
+              title="Delete the selected preset"
+            >
+              Del
+            </button>
+          </div>
+          <div class="row">
+            <label for="adj-amount">Amount</label>
+            <input id="adj-amount" type="range" min="0" max="2" step="0.05" bind:value={presetAmount} />
+            <span class="val">{Math.round(presetAmount * 100)}%</span>
+          </div>
+          <div class="row">
+            <label for="adj-sync">Sync</label>
+            <input
+              id="adj-sync"
+              type="checkbox"
+              bind:checked={presetSync}
+              disabled={selectedIds.length < 2}
+              title="Also save the preset to the grid selection"
+            />
+            <span class="val">{selectedIds.length}</span>
+          </div>
+          <div class="row groups">
+            <span class="curve-title">Groups</span>
+            <div class="group-checks">
+              {#each PRESET_GROUPS as group (group)}
+                <label>
+                  <input type="checkbox" bind:checked={presetGroups[group]} />
+                  {group}
+                </label>
+              {/each}
+            </div>
+            <span></span>
+          </div>
+          <div class="row">
+            <label for="adj-preset-name">Save as</label>
+            <input
+              id="adj-preset-name"
+              placeholder="preset name"
+              bind:value={presetName}
+              onkeydown={(e) => e.key === "Enter" && saveCurrentPreset()}
+            />
+            <button class="mini" onclick={saveCurrentPreset} disabled={!presetName.trim()}>
+              Save
+            </button>
+          </div>
+          <p class="status">Saved per photo — originals and sidecars are untouched.</p>
+          <div class="row end">
+            <label for="export-edge">Size</label>
+            <select
+              id="export-edge"
+              bind:value={exportEdge}
+              onchange={() => saveExportEdge(Number(exportEdge))}
+            >
+              {#each EXPORT_EDGES as edge (edge)}
+                <option value={String(edge)}>{edge === 0 ? "Full size" : `${edge} px`}</option>
+              {/each}
+            </select>
+            <button class="mini" onclick={exportEditedImage}>Export image…</button>
+          </div>
+        </div>
+      {/if}
+      {#if showHistogram}
+        <canvas
+          class="histogram"
+          width="180"
+          height="64"
+          bind:this={histogramCanvas}
+        ></canvas>
+      {/if}
       {#if previewUrl}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
@@ -988,8 +1807,25 @@
                   };
                 computeFit(true);
                 if (peakingOn) buildPeakingGray();
+                if (showHistogram) buildHistogram();
               }}
             />
+            {#if regionUrl && regionWindow}
+              <img
+                class="region"
+                src={regionUrl}
+                alt=""
+                draggable="false"
+                style="left:{regionWindow.x * sourceScale}px; top:{regionWindow.y * sourceScale}px; width:{regionWindow.w * sourceScale}px; height:{regionWindow.h * sourceScale}px"
+              />
+            {/if}
+            {#if detail?.focus}
+              <div
+                class="afpoint"
+                style="left:{detail.focus.rect[0] * 100}%; top:{detail.focus.rect[1] * 100}%; width:{(detail.focus.rect[2] - detail.focus.rect[0]) * 100}%; height:{(detail.focus.rect[3] - detail.focus.rect[1]) * 100}%"
+                title={afTitle(detail.focus)}
+              ></div>
+            {/if}
             {#if peakingOn}
               <canvas class="peaking" bind:this={peakingCanvas}></canvas>
             {/if}
@@ -1054,6 +1890,13 @@
               style="width:{fit.w * zoom}px; height:{fit.h * zoom}px; transform: translate({tx}px, {ty}px)"
             >
               <img src={compareUrl} alt={compareDetail?.filename ?? ""} draggable="false" />
+              {#if compareDetail?.focus}
+                <div
+                  class="afpoint"
+                  style="left:{compareDetail.focus.rect[0] * 100}%; top:{compareDetail.focus.rect[1] * 100}%; width:{(compareDetail.focus.rect[2] - compareDetail.focus.rect[0]) * 100}%; height:{(compareDetail.focus.rect[3] - compareDetail.focus.rect[1]) * 100}%"
+                  title={afTitle(compareDetail.focus)}
+                ></div>
+              {/if}
               {#each compareDetail?.boxes ?? [] as b, i (i)}
                 <div
                   class="box"
@@ -1178,12 +2021,66 @@
         {/if}
       </div>
 
+      <h3>Flag</h3>
+      <div class="picks">
+        <button
+          class="pick"
+          class:active={flag === "pick"}
+          onclick={() => {
+            onFlag(fileId, "pick");
+            if (autoAdvance) nav(1);
+          }}
+          title="Pick (P)"
+        >
+          Pick
+        </button>
+        <button
+          class="pick"
+          class:active={flag === "reject"}
+          onclick={() => {
+            onFlag(fileId, "reject");
+            if (autoAdvance) nav(1);
+          }}
+          title="Reject (X)"
+        >
+          Reject
+        </button>
+        <button class="mini" onclick={() => onFlag(fileId, null)} title="Clear flag (U)">
+          Clear
+        </button>
+      </div>
+
+      <h3>Colour</h3>
+      <div class="colors">
+        {#each [["red", "Red"], ["yellow", "Yellow"], ["green", "Green"], ["blue", "Blue"]] as [key, label] (key)}
+          <button
+            class="color-dot {key}"
+            class:on={color === key}
+            onclick={() => onColor(fileId, key)}
+            title={label}
+            aria-label={`${label} colour`}
+          ></button>
+        {/each}
+        <button class="mini" onclick={() => onColor(fileId, null)} title="Clear colour">
+          Clear
+        </button>
+        <span class="status">{color ?? "none"}</span>
+      </div>
+
       <h3>Your label</h3>
       <div class="picks">
-        <button class="pick" onclick={() => applyLabelToReview("sharp")}>Sharp</button>
-        <button class="pick" onclick={() => applyLabelToReview("blurry")}>Blurry</button>
-        <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")}>Bokeh OK</button>
-        <button class="pick" onclick={() => applyLabelToReview("reject")}>Reject</button>
+        <button class="pick" onclick={() => applyLabelToReview("sharp")} title="Sharp (S)">
+          Sharp
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("blurry")} title="Blurry (B)">
+          Blurry
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("bokeh_ok")} title="Bokeh OK (O)">
+          Bokeh OK
+        </button>
+        <button class="pick" onclick={() => applyLabelToReview("reject")} title="Reject (R)">
+          Reject
+        </button>
       </div>
       {#if detail?.label}<p class="status">current: {detail.label}</p>{/if}
 
@@ -1194,7 +2091,10 @@
             class="star"
             class:on={rating >= v}
             title="{v} star{v > 1 ? 's' : ''}"
-            onclick={() => onRate(fileId, rating === v ? 0 : v)}
+            onclick={() => {
+              onRate(fileId, rating === v ? 0 : v);
+              if (autoAdvance) nav(1);
+            }}
           >
             ★
           </button>
@@ -1203,4 +2103,6 @@
       </div>
     </aside>
   </div>
+
+  <Filmstrip {ids} current={fileId} onSelect={onNavigate} />
 </div>

@@ -43,7 +43,7 @@ impl FromStr for EyePointKind {
             "eye" => Ok(EyePointKind::Eye),
             "head" => Ok(EyePointKind::Head),
             "beak" | "bill" => Ok(EyePointKind::Beak),
-            other => Err(CoreError::Other(format!(
+            other => Err(CoreError::invalid_input(format!(
                 "unknown eye-point kind '{other}' (expected eye, head or beak)"
             ))),
         }

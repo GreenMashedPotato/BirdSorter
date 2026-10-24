@@ -20,6 +20,10 @@ birdsorter-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+# Debug-only UI automation bridge for AI agents (see startup.rs). Registered
+# under cfg(debug_assertions); never started in release builds.
+tauri-plugin-mcp-bridge = "0.13"
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
@@ -29,6 +33,11 @@ base64 = "0.22"
 image.workspace = true
 ndarray.workspace = true
 
+[features]
+# Optional HEIC/HEIF input; off by default (HEVC patents). Build with
+# `--features heic` to enable it.
+heic = ["birdsorter-core/heic"]
+
 # Enable a GPU execution provider per platform at build time. The runtime probes
 # it on startup and falls back to CPU automatically when the provider or driver
 # is unavailable, so this never blocks a machine without a usable GPU.
@@ -37,3 +46,6 @@ birdsorter-core = { path = "../core", features = ["gpu-directml"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 birdsorter-core = { path = "../core", features = ["gpu-coreml"] }
+
+[dev-dependencies]
+tempfile.workspace = true

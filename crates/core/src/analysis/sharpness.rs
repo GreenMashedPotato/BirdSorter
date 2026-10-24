@@ -222,6 +222,57 @@ fn sym_index(i: isize, n: usize) -> usize {
     }
 }
 
+thread_local! {
+    /// Reusable convolution output buffers, keyed by size. `convolve3x3_same`
+    /// writes every pixel, so a recycled buffer's stale contents are harmless —
+    /// reuse only skips the multi-megabyte zeroing of a fresh allocation. Each
+    /// worker thread has its own pool, so there is no contention.
+    static CONV_POOL: RefCell<Vec<Array2<f32>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_conv_buffer(h: usize, w: usize) -> Array2<f32> {
+    CONV_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        if let Some(i) = pool.iter().position(|b| b.dim() == (h, w)) {
+            pool.swap_remove(i)
+        } else {
+            Array2::zeros((h, w))
+        }
+    })
+}
+
+/// Return a scratch convolution buffer for reuse (bounded, so the pool cannot
+/// grow without limit).
+fn recycle_conv_buffer(buf: Array2<f32>) {
+    CONV_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        if pool.len() < 8 {
+            pool.push(buf);
+        }
+    });
+}
+
+/// One border pixel of a 3x3 same-padding convolution (symmetric boundary).
+#[inline]
+fn border_pixel<S: Data<Elem = f32>>(
+    img: &ArrayBase<S, Ix2>,
+    k: &[[f32; 3]; 3],
+    y: usize,
+    x: usize,
+    h: usize,
+    w: usize,
+) -> f32 {
+    let mut acc = 0.0f32;
+    for (ky, row) in k.iter().enumerate() {
+        let yy = sym_index(y as isize + ky as isize - 1, h);
+        for (kx, kv) in row.iter().enumerate() {
+            let xx = sym_index(x as isize + kx as isize - 1, w);
+            acc += kv * img[[yy, xx]];
+        }
+    }
+    acc
+}
+
 /// Same-padding 3x3 convolution with symmetric boundaries.
 ///
 /// Uses direct slice access in the interior (no bounds checks) and only falls
@@ -231,7 +282,7 @@ fn convolve3x3_same<S: Data<Elem = f32>>(
     k: &[[f32; 3]; 3],
 ) -> Array2<f32> {
     let (h, w) = img.dim();
-    let mut out = Array2::<f32>::zeros((h, w));
+    let mut out = take_conv_buffer(h, w);
     if h == 0 || w == 0 {
         return out;
     }
@@ -254,23 +305,16 @@ fn convolve3x3_same<S: Data<Elem = f32>>(
         }
     }
     // Border pixels: top/bottom rows, and left/right columns of interior rows.
+    // No per-row allocation: an interior row only touches its two edge columns.
     for y in 0..h {
-        let is_border_row = y == 0 || y + 1 >= h;
-        let cols: Vec<usize> = if !is_border_row && h >= 3 && w >= 3 {
-            vec![0, w - 1]
+        let interior_row = y > 0 && y + 1 < h && h >= 3 && w >= 3;
+        if interior_row {
+            out[[y, 0]] = border_pixel(img, k, y, 0, h, w);
+            out[[y, w - 1]] = border_pixel(img, k, y, w - 1, h, w);
         } else {
-            (0..w).collect()
-        };
-        for &x in &cols {
-            let mut acc = 0.0f32;
-            for (ky, row) in k.iter().enumerate() {
-                let yy = sym_index(y as isize + ky as isize - 1, h);
-                for (kx, kv) in row.iter().enumerate() {
-                    let xx = sym_index(x as isize + kx as isize - 1, w);
-                    acc += kv * img[[yy, xx]];
-                }
+            for x in 0..w {
+                out[[y, x]] = border_pixel(img, k, y, x, h, w);
             }
-            out[[y, x]] = acc;
         }
     }
     out
@@ -302,10 +346,12 @@ pub fn variance_of_laplacian<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f
     let lap = convolve3x3_same(gray, &k);
     let n = lap.len() as f32;
     if n == 0.0 {
+        recycle_conv_buffer(lap);
         return 0.0;
     }
     let mean = lap.iter().sum::<f32>() / n;
     let var = lap.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / n;
+    recycle_conv_buffer(lap);
     normalize(var, LAPLACIAN_SCALE)
 }
 
@@ -314,15 +360,17 @@ pub fn variance_of_laplacian<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f
 pub fn tenengrad<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) -> f32 {
     let (gx, gy) = sobel_pair(gray);
     let n = gx.len() as f32;
-    if n == 0.0 {
-        return 0.0;
-    }
-    let energy = gx
-        .iter()
-        .zip(gy.iter())
-        .map(|(&a, &b)| a * a + b * b)
-        .sum::<f32>()
-        / n;
+    let energy = if n == 0.0 {
+        0.0
+    } else {
+        gx.iter()
+            .zip(gy.iter())
+            .map(|(&a, &b)| a * a + b * b)
+            .sum::<f32>()
+            / n
+    };
+    recycle_conv_buffer(gx);
+    recycle_conv_buffer(gy);
     normalize(energy, TENENGRAD_SCALE)
 }
 
@@ -486,6 +534,8 @@ pub fn gradient_directionality<S: Data<Elem = f32>>(gray: &ArrayBase<S, Ix2>) ->
         cy += 2.0 * a * b / mag;
         total += mag;
     }
+    recycle_conv_buffer(gx);
+    recycle_conv_buffer(gy);
     if total <= 0.0 {
         return 0.0;
     }
@@ -599,6 +649,7 @@ struct SubjectMetrics {
     fft: f32,
     lc: f32,
     bren: f32,
+    dir: f32,
     grid: [[f32; 3]; 3],
     eye: f32,
 }
@@ -611,6 +662,7 @@ fn subject_metrics(subj_gray: &Array2<f32>) -> SubjectMetrics {
         fft: fft_high_freq_ratio(&norm),
         lc: local_contrast(&norm, LOCAL_CONTRAST_PATCH),
         bren: brenner_gradient(&norm),
+        dir: gradient_directionality(&norm),
         // The grid and eye search use the un-normalised crop, matching the
         // prototype (they normalise internally where needed).
         grid: grid_3x3(subj_gray),
@@ -618,8 +670,24 @@ fn subject_metrics(subj_gray: &Array2<f32>) -> SubjectMetrics {
     }
 }
 
-/// Background reference = the largest single rectangle outside the bbox,
-/// normalised to the same long side as the subject so the ratio is comparable.
+/// Median of a small slice (averages the two middles for an even count).
+fn median(values: &mut [f32]) -> f32 {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) * 0.5
+    }
+}
+
+/// Background reference: the median of the four rectangles outside the bbox
+/// (top, bottom, left, right), each normalised to the same long side as the
+/// subject so the ratio is comparable.
+///
+/// The median is more robust than the single largest region — one strip can
+/// contain another bird or the frame edge, and averaging it in would drag the
+/// background sharpness around.
 fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32, f32) {
     let (x0, y0, x1, y1) = (
         bbox.x as usize,
@@ -640,13 +708,17 @@ fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32,
     if x1 < w {
         pieces.push(rgb.slice(s![y0..y1, x1..w, ..]));
     }
-    match pieces.iter().max_by_key(|p| p.len()) {
-        Some(p) => {
-            let bg_gray = normalise_size(&to_gray(p), TARGET_LONG_SIDE);
-            (variance_of_laplacian(&bg_gray), tenengrad(&bg_gray))
-        }
-        None => (f32::NAN, f32::NAN), // caller substitutes subject values
+    if pieces.is_empty() {
+        return (f32::NAN, f32::NAN); // caller substitutes subject values
     }
+    let mut laps: Vec<f32> = Vec::with_capacity(pieces.len());
+    let mut tens: Vec<f32> = Vec::with_capacity(pieces.len());
+    for p in &pieces {
+        let bg_gray = normalise_size(&to_gray(p), TARGET_LONG_SIDE);
+        laps.push(variance_of_laplacian(&bg_gray));
+        tens.push(tenengrad(&bg_gray));
+    }
+    (median(&mut laps), median(&mut tens))
 }
 
 /// Compute the full feature vector for one RGB image.
@@ -763,7 +835,7 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
         center_edge_ratio: center_edge_r,
         brenner_full: full.bren,
         brenner_subject: subj.bren,
-        motion_directionality: full.dir,
+        motion_directionality: subj.dir,
         subject_edge_distance: edge_dist,
     }
 }
@@ -907,6 +979,41 @@ mod tests {
     }
 
     #[test]
+    fn median_takes_the_middle() {
+        assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 2.5);
+        assert_eq!(median(&mut [5.0]), 5.0);
+    }
+
+    #[test]
+    fn background_ignores_one_busy_strip() {
+        // Sharp subject on flat surroundings, but one large *sharp* strip
+        // (another bird, or a busy frame edge). A "largest single region"
+        // reference would read that strip and kill the ratio; the median of the
+        // four strips ignores it.
+        let (w, h) = (200usize, 200usize);
+        let mut canvas = constant(w, h, 120);
+        let sharp = checkerboard(w, h, 4);
+        for y in 50..90 {
+            for x in 50..150 {
+                canvas[[y, x]] = sharp[[y, x]]; // subject
+            }
+        }
+        for y in 90..200 {
+            for x in 0..200 {
+                canvas[[y, x]] = sharp[[y, x]]; // the large busy strip
+            }
+        }
+        let img = rgb_from_gray(&canvas);
+        let f = compute_features(&img, Some(Subject::from_bbox(BBox::new(50, 50, 100, 40))));
+        assert!(
+            f.subject_to_bg_ratio > 2.5,
+            "ratio was {} (the busy strip leaked into the background)",
+            f.subject_to_bg_ratio
+        );
+    }
+
+    #[test]
     fn edge_distance_is_zero_when_subject_touches_frame() {
         let img = rgb_from_gray(&checkerboard(200, 200, 4));
         let touching = compute_features(&img, Some(Subject::from_bbox(BBox::new(0, 0, 80, 80))));
@@ -1014,5 +1121,17 @@ mod tests {
             prop_assert!(f.subject_to_bg_ratio >= 0.0);
             prop_assert!((0.0..=1.0).contains(&f.subject_area_fraction));
         }
+
+        // Fuzzing: arbitrary stored JSON must never panic.
+        #[test]
+        fn from_json_never_panics(s in ".{0,300}") {
+            let _ = SharpnessFeatures::from_json(&s);
+        }
+    }
+
+    #[test]
+    fn to_json_round_trips() {
+        let json = SharpnessFeatures::default().to_json();
+        assert_eq!(SharpnessFeatures::from_json(&json).unwrap().to_json(), json);
     }
 }

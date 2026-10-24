@@ -106,11 +106,11 @@ impl OnnxEyeDetector {
         let (h, w, _) = crop.dim();
         let s = self.meta.size;
         if h == 0 || w == 0 || s == 0 {
-            return Err(CoreError::Other("eye model: empty crop".into()));
+            return Err(CoreError::invalid_input("eye model: empty crop"));
         }
         let raw: Vec<u8> = crop.iter().copied().collect();
         let img = image::RgbImage::from_raw(w as u32, h as u32, raw)
-            .ok_or_else(|| CoreError::Other("eye model: bad crop layout".into()))?;
+            .ok_or_else(|| CoreError::invalid_input("eye model: bad crop layout"))?;
         let resized = image::imageops::resize(
             &img,
             s as u32,
@@ -156,9 +156,10 @@ impl EyeDetector for OnnxEyeDetector {
             [_, k, h, w] => (*k, *h, *w),
             [k, h, w] => (*k, *h, *w),
             _ => {
-                return Err(CoreError::Other(format!(
-                    "eye model returned an unexpected output shape {dims:?}"
-                )))
+                return Err(CoreError::inference(
+                    "eye",
+                    format!("model returned an unexpected output shape {dims:?}"),
+                ))
             }
         };
         if classes == 0 || h == 0 || w == 0 {

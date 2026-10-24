@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use birdsorter_core::analysis::burst;
 use birdsorter_core::analysis::detector::{BBox, SubjectDetector};
 use birdsorter_core::analysis::eye::EyeDetector;
 use birdsorter_core::analysis::saliency::SaliencyDetector;
@@ -14,8 +15,9 @@ use birdsorter_core::analysis::species::SpeciesClassifier;
 use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, labels, library};
-use birdsorter_core::io::decoder::{CompositeDecoder, ImageCrateDecoder};
-use birdsorter_core::io::raw::RawDecoder;
+use birdsorter_core::io::decoder::CompositeDecoder;
+use birdsorter_core::io::default_decoders;
+use birdsorter_core::io::exif;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     analyze_file_with, ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
@@ -26,7 +28,7 @@ use rusqlite::Connection;
 
 use crate::config::{ANALYSIS_LONG_SIDE, MAX_DECODE_THREADS};
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -52,12 +54,26 @@ pub(crate) struct BoxDto {
     top5: Vec<(String, f32)>,
 }
 
+/// The camera's autofocus frame, normalized to the upright photo.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FocusPointDto {
+    rect: [f64; 4],
+    mode: Option<String>,
+    area: Option<String>,
+    tracking: Option<String>,
+}
+
 /// Everything the review view needs for one file.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalysisDetailDto {
     file_id: i64,
     filename: String,
+    /// EXIF capture time, as stored at scan (`YYYY-MM-DDTHH:MM:SS`).
+    captured_at: Option<String>,
+    /// Camera, lens and exposure settings for the review's EXIF strip.
+    meta: exif::PhotoMeta,
     label: Option<String>,
     predicted: Option<String>,
     score: Option<f32>,
@@ -67,6 +83,8 @@ pub(crate) struct AnalysisDetailDto {
     species_confidence: Option<f32>,
     top5: Vec<(String, f32)>,
     boxes: Vec<BoxDto>,
+    /// The camera's AF frame, when the maker note carries one.
+    focus: Option<FocusPointDto>,
     model_version: Option<String>,
     /// Dimensions of the image the boxes are expressed in.
     image_width: Option<u32>,
@@ -90,6 +108,8 @@ pub(crate) struct BurstDto {
     best: i64,
     size: usize,
     winner_override: bool,
+    bracket: bool,
+    exposure_span_ev: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -106,7 +126,7 @@ pub(crate) struct TrainResultDto {
 // ---------------------------------------------------------------------------
 
 fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, String> {
-    let conn = open(db_path)?;
+    let conn = open_ready(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
@@ -114,11 +134,23 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         .map_err(err)?
         .map(|l| l.as_str().to_string());
     let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+    let meta = exif::photo_meta(&lf.absolute_path);
+    let focus = birdsorter_core::io::focus::read_focus(&lf.absolute_path)
+        .ok()
+        .flatten()
+        .map(|point| FocusPointDto {
+            rect: point.rect,
+            mode: point.mode,
+            area: point.area,
+            tracking: point.tracking,
+        });
 
     let Some(a) = analysis else {
         return Ok(AnalysisDetailDto {
             file_id: file,
             filename: lf.file.filename,
+            captured_at: lf.file.captured_at,
+            meta,
             label,
             predicted: None,
             score: None,
@@ -128,6 +160,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
             species_confidence: None,
             top5: Vec::new(),
             boxes: Vec::new(),
+            focus,
             model_version: None,
             image_width: None,
             image_height: None,
@@ -163,6 +196,8 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
     Ok(AnalysisDetailDto {
         file_id: file,
         filename: lf.file.filename,
+        captured_at: lf.file.captured_at,
+        meta,
         label,
         predicted: Some(a.predicted_label.clone()),
         score: Some(a.sharpness_score),
@@ -172,6 +207,7 @@ fn analysis_detail_impl(db_path: &Path, file: i64) -> Result<AnalysisDetailDto, 
         species_confidence: a.species_confidence,
         top5: a.species_top5.clone(),
         boxes,
+        focus,
         model_version: Some(a.model_version.clone()),
         image_width: a.image_width,
         image_height: a.image_height,
@@ -188,12 +224,57 @@ struct Pipeline {
     eye: Option<Box<dyn EyeDetector>>,
 }
 
+/// A built [`Pipeline`] plus the settings it was built from. Reloading the
+/// species model (~818 MB) on every box edit is the expensive part, so review
+/// actions reuse this until the settings or the trained model change.
+pub(crate) struct PipelineCache {
+    fingerprint: String,
+    pipeline: std::sync::Arc<Pipeline>,
+}
+
+/// Everything `build_pipeline` depends on, cheap to compute per call.
+fn pipeline_fingerprint(conn: &Connection) -> String {
+    let detection = DetectionSettings::load_default();
+    let score = ScoreSettings::load_default();
+    // `scorer_for` picks the latest trained model when one exists.
+    let trained = birdsorter_core::data::models::latest_model(conn)
+        .ok()
+        .flatten()
+        .map(|row| row.version)
+        .unwrap_or_default();
+    format!("{detection:?}|{score:?}|{trained}")
+}
+
+/// The cached pipeline, rebuilt only when its settings fingerprint changes.
+fn pipeline_cached(
+    slot: &std::sync::Mutex<Option<PipelineCache>>,
+    conn: &Connection,
+) -> Result<std::sync::Arc<Pipeline>, String> {
+    let fingerprint = pipeline_fingerprint(conn);
+    {
+        let guard = slot
+            .lock()
+            .map_err(|_| "pipeline cache poisoned".to_string())?;
+        if let Some(cache) = guard.as_ref() {
+            if cache.fingerprint == fingerprint {
+                return Ok(cache.pipeline.clone());
+            }
+        }
+    }
+    let pipeline = std::sync::Arc::new(build_pipeline(conn, None)?);
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "pipeline cache poisoned".to_string())?;
+    *guard = Some(PipelineCache {
+        fingerprint,
+        pipeline: pipeline.clone(),
+    });
+    Ok(pipeline)
+}
+
 /// Build the decoder/detector/scorer/species stack from the current settings.
 fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, String> {
-    let decoder = CompositeDecoder::new(vec![
-        Box::new(RawDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-        Box::new(ImageCrateDecoder::new(Some(ANALYSIS_LONG_SIDE))),
-    ]);
+    let decoder = CompositeDecoder::new(default_decoders(Some(ANALYSIS_LONG_SIDE)));
     let det = DetectionSettings::load_default();
     let device = DevicePreference::from_setting(&det.device);
     let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
@@ -206,14 +287,18 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
         },
     };
     let scorer = scorer_for(conn, ScoreSettings::load_default()).map_err(err)?;
-    let species: Option<Box<dyn SpeciesClassifier>> =
+    let species: Option<Box<dyn SpeciesClassifier>> = if det.species {
         match birdsorter_core::runtime::load_species_classifier(device) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "species model could not be loaded");
                 None
             }
-        };
+        }
+    } else {
+        tracing::info!("species identification disabled in settings");
+        None
+    };
     // The eye model is small and CPU-only: a GPU provider round-trip is not
     // worth it, and DirectML already trips on other models.
     let eye: Option<Box<dyn EyeDetector>> =
@@ -236,6 +321,7 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
 fn run_analysis(
     app: &AppHandle,
     db_path: &Path,
+    cache_root: &Path,
     folder: i64,
     model: Option<&str>,
     cancel: &CancelToken,
@@ -243,12 +329,26 @@ fn run_analysis(
     let conn = open(db_path)?;
     let pipe = build_pipeline(&conn, model)?;
 
-    let threads = std::thread::available_parallelism()
+    // Warn (do not fail) when the data drive is nearly full.
+    if let Some(msg) = birdsorter_core::io::disk::low_space_warning(
+        db_path,
+        birdsorter_core::io::disk::MIN_FREE_BYTES,
+    ) {
+        tracing::warn!("{msg}");
+    }
+
+    // Workers come from the settings (0 = auto). Peak memory scales with this, so
+    // low-end machines can dial it down; the batch never holds more decoded images
+    // than there are workers (capped at 8 for detector efficiency).
+    let detection = DetectionSettings::load_default();
+    let available = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4)
+        .unwrap_or(4);
+    let threads = detection
+        .resolved_threads(available)
         .min(MAX_DECODE_THREADS);
     let ctx = IngestContext {
-        batch_size: 8,
+        batch_size: threads.clamp(1, 8),
         decode_threads: threads,
         cancel: Some(cancel),
         species: pipe.species.as_deref(),
@@ -257,19 +357,44 @@ fn run_analysis(
     };
 
     let handle = app.clone();
+    // Throttle like the scan path: one event per file is thousands of IPC calls.
+    let mut last_emit = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
     ingest_folder(&conn, folder, &ctx, move |p| {
-        let _ = handle.emit(
-            "analysis-progress",
-            ProgressDto {
-                total: p.total,
-                decoded: p.decoded,
-                analyzed: p.analyzed,
-                failed: p.failed,
-                current_file: p.current_file.clone(),
-            },
-        );
+        let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
+        if due || p.is_finished() || (p.decoded + p.failed == 0) {
+            last_emit = std::time::Instant::now();
+            let _ = handle.emit(
+                "analysis-progress",
+                ProgressDto {
+                    total: p.total,
+                    decoded: p.decoded,
+                    analyzed: p.analyzed,
+                    failed: p.failed,
+                    current_file: p.current_file.clone(),
+                },
+            );
+        }
     })
     .map_err(err)?;
+    // A frame can clear the sharp threshold while being visibly softer than the
+    // keeper next to it; within a burst, downgrade those.
+    if let Err(e) = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO) {
+        tracing::warn!(error = %e, "burst softness pass failed");
+    }
+    // Analysis is the only thing that adds many renders at once, so keep the
+    // cache inside its budget here (off the UI thread). A cancelled run has not
+    // written much, and the walk costs a second, so skip it.
+    if !cancel.is_cancelled() {
+        match birdsorter_core::io::cache::ThumbCache::new(cache_root)
+            .prune_to_budget(birdsorter_core::io::cache::DEFAULT_CACHE_BUDGET_BYTES)
+        {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "pruned the render cache to its budget"),
+            Err(e) => tracing::warn!(error = %e, "render cache prune failed"),
+        }
+    }
     Ok(())
 }
 
@@ -277,6 +402,7 @@ fn run_analysis(
 /// or a list of boxes to drop, then return the refreshed detail.
 fn reevaluate(
     db_path: &Path,
+    pipeline: &std::sync::Mutex<Option<PipelineCache>>,
     file: i64,
     manual: Option<BBox>,
     exclude: &[BBox],
@@ -285,7 +411,7 @@ fn reevaluate(
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
-    let pipe = build_pipeline(&conn, None)?;
+    let pipe = pipeline_cached(pipeline, &conn)?;
     analyze_file_with(
         &conn,
         &lf,
@@ -298,6 +424,10 @@ fn reevaluate(
         exclude,
     )
     .map_err(err)?;
+    // A manual box can change the frame's score (and the burst's keeper).
+    if let Err(e) = burst::mark_soft_members(&conn, lf.file.folder_id, burst::SOFT_BURST_RATIO) {
+        tracing::warn!(error = %e, "burst softness pass failed");
+    }
     drop(conn);
     analysis_detail_impl(db_path, file)
 }
@@ -364,13 +494,15 @@ pub(crate) async fn bursts(
                 best: b.best,
                 size: b.size,
                 winner_override: b.winner_override,
+                bracket: b.bracket,
+                exposure_span_ev: b.exposure_span_ev,
             })
             .collect())
     })
     .await
 }
 
-/// Pick (or clear) the winner of a file's burst by hand — the sharpest frame is
+/// Mark `file` as its burst's winner (or clear it). The sharpest frame is
 /// not always the best pose. Returns the folder's refreshed bursts.
 #[tauri::command]
 pub(crate) async fn set_burst_winner(
@@ -390,6 +522,8 @@ pub(crate) async fn set_burst_winner(
                 best: b.best,
                 size: b.size,
                 winner_override: b.winner_override,
+                bracket: b.bracket,
+                exposure_span_ev: b.exposure_span_ev,
             })
             .collect())
     })
@@ -398,8 +532,9 @@ pub(crate) async fn set_burst_winner(
 
 /// Kick off analysis on a background thread, streaming progress as events.
 ///
-/// `force` deletes the folder's stored results first, so already-analysed files
-/// are recomputed (necessary after a detection/scoring change).
+/// `force` marks the folder's stored results stale first, so already-analysed
+/// files are recomputed (necessary after a detection/scoring change) without
+/// losing the old verdicts if the run is stopped.
 #[tauri::command]
 pub(crate) fn analyze_folder(
     app: AppHandle,
@@ -409,6 +544,7 @@ pub(crate) fn analyze_folder(
     force: Option<bool>,
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
     let cancel = CancelToken::new();
     {
         // Supersede any run that is still winding down, so restarting after a
@@ -421,14 +557,32 @@ pub(crate) fn analyze_folder(
     }
     let force = force.unwrap_or(false);
 
-    std::thread::spawn(move || {
+    // Hold the thread slot across take+spawn+store: a second click must see the
+    // first run's handle so it can wait for it.
+    let mut slot = state.analysis_thread.lock().map_err(err)?;
+    let previous = slot.take();
+    let handle = std::thread::spawn(move || {
+        // Never let two ingest threads write at once (and never let a `force`
+        // clear race with the run it is replacing).
+        if let Some(previous) = previous {
+            let _ = previous.join();
+        }
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if force {
+                // Stale, not deleted: stopping straight after the restart keeps
+                // the old verdicts instead of losing the whole folder.
                 let conn = open(&db_path)?;
-                let cleared = analysis_store::clear_folder(&conn, folder).map_err(err)?;
-                tracing::info!(cleared, "re-analysing: cleared stored results");
+                let stale = analysis_store::mark_folder_stale(&conn, folder).map_err(err)?;
+                tracing::info!(stale, "re-analysing: marked stored results stale");
             }
-            run_analysis(&app, &db_path, folder, model.as_deref(), &cancel)
+            run_analysis(
+                &app,
+                &db_path,
+                &cache_root,
+                folder,
+                model.as_deref(),
+                &cancel,
+            )
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -451,6 +605,7 @@ pub(crate) fn analyze_folder(
             }
         }
     });
+    *slot = Some(handle);
     Ok(())
 }
 
@@ -472,8 +627,12 @@ pub(crate) async fn set_subject_box(
     w: i32,
     h: i32,
 ) -> Result<AnalysisDetailDto, String> {
+    if w <= 0 || h <= 0 {
+        return Err("the box needs a positive width and height".to_string());
+    }
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, Some(BBox::new(x, y, w, h)), &[])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, Some(BBox::new(x, y, w, h)), &[])).await
 }
 
 /// Drop one subject box (and re-score the rest); removing the last one leaves
@@ -488,7 +647,8 @@ pub(crate) async fn remove_subject(
     h: i32,
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, None, &[BBox::new(x, y, w, h)])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[BBox::new(x, y, w, h)])).await
 }
 
 /// Re-run detection + species ID for one file (the review view's "Identify").
@@ -498,7 +658,8 @@ pub(crate) async fn identify_subject(
     file: i64,
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, None, &[])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[])).await
 }
 
 /// Recompute verdicts for a folder from stored features (no re-decode).
@@ -508,7 +669,12 @@ pub(crate) async fn rescore(state: State<'_, AppState>, folder: i64) -> Result<u
     blocking(move || {
         let conn = open(&db_path)?;
         let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
-        rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)
+        let n = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+        // Verdicts changed, so re-apply the burst-relative softness pass.
+        if let Err(e) = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO) {
+            tracing::warn!(error = %e, "burst softness pass failed");
+        }
+        Ok(n)
     })
     .await
 }
@@ -532,6 +698,7 @@ pub(crate) async fn train(
         if let Some(folder) = folder {
             let scorer = scorer_for(&conn, ScoreSettings::load_default()).map_err(err)?;
             let _ = rescore_folder(&conn, folder, scorer.as_ref()).map_err(err)?;
+            let _ = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO);
         }
         Ok(TrainResultDto {
             version: result.version,

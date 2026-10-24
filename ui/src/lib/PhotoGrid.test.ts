@@ -17,6 +17,10 @@ function file(id: number, over: Partial<FileEntry> = {}): FileEntry {
     species: null,
     subjectClass: "bird",
     rating: 0,
+    capturedAt: null,
+    flag: null,
+    color: null,
+    folderId: 1,
     ...over,
   };
 }
@@ -48,6 +52,20 @@ function setup(slice: FileEntry[]) {
 }
 
 describe("PhotoGrid", () => {
+  it("shows a colour dot", () => {
+    const { container } = setup([file(1, { color: "red" })]);
+    expect(container.querySelector(".color-dot.red")).toBeTruthy();
+  });
+
+  it("shows pick and reject badges", () => {
+    const { container } = setup([
+      file(1, { flag: "pick" }),
+      file(2, { flag: "reject" }),
+    ]);
+    expect(container.querySelector(".badge.picked")?.textContent).toBe("P");
+    expect(container.querySelector(".badge.rejected")?.textContent).toBe("X");
+  });
+
   it("shows the empty message when there is nothing to render", () => {
     const { getByText } = setup([]);
     expect(getByText("No files match this filter.")).toBeTruthy();

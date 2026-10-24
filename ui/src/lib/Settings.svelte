@@ -1,9 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
     DEFAULT_DETECTION_SETTINGS,
     DEFAULT_SETTINGS,
     cleanCache,
+    saveDiagnostics,
     type DetectionSettings,
     type ScoreSettings,
   } from "./api";
@@ -46,6 +48,37 @@
     }
   }
 
+  let diagStatus = $state("");
+  let diagBusy = $state(false);
+
+  async function runDiagnostics() {
+    diagBusy = true;
+    diagStatus = "choosing…";
+    try {
+      // Let the user choose where the report goes; with no native dialog
+      // (tests, a webview-less run) fall back to the backend's timestamped file.
+      let chosen: string | null | undefined;
+      try {
+        chosen = await saveDialog({
+          title: "Save diagnostics report",
+          defaultPath: "birdsorter-diagnostics.txt",
+        });
+      } catch {
+        chosen = undefined;
+      }
+      if (chosen === null) {
+        diagStatus = "cancelled";
+        return;
+      }
+      diagStatus = "writing…";
+      diagStatus = `saved to ${await saveDiagnostics(chosen ?? undefined)}`;
+    } catch (e) {
+      diagStatus = `error: ${e}`;
+    } finally {
+      diagBusy = false;
+    }
+  }
+
   type NumKey = keyof ScoreSettings;
   const RULES: {
     section: string;
@@ -85,12 +118,15 @@
         { key: "motion_blur_enabled", label: "Enabled (0 / 1)", min: 0, max: 1, step: 1 },
         {
           key: "motion_directionality_threshold",
+          // 1.0 can never be exceeded (the metric is bounded by 1), which would
+          // silently disable the rule. Turning the check off is the 0/1 toggle.
           label: "Directionality above",
           min: 0,
-          max: 1,
+          max: 0.9,
           step: 0.01,
         },
-        { key: "motion_blur_penalty", label: "Penalty", min: 0, max: 1, step: 0.05 },
+        // A penalty of 1.0 multiplies by one (a no-op), so cap it below 1.
+        { key: "motion_blur_penalty", label: "Penalty", min: 0, max: 0.9, step: 0.05 },
       ],
     },
     {
@@ -222,6 +258,47 @@
         </p>
       </section>
 
+      <section>
+        <h3>Performance</h3>
+        <p class="status">
+          For smaller machines. Analysis holds one decoded image per worker, and species
+          identification keeps the ~800 MB species model in memory. Lower the workers or turn
+          species off to cut memory and CPU cost.
+        </p>
+        <div class="row">
+          <label for="analysis-threads">Analysis threads</label>
+          <select
+            id="analysis-threads"
+            value={String(localDetection.threads)}
+            onchange={(e) =>
+              (localDetection = { ...localDetection, threads: Number(e.currentTarget.value) })}
+          >
+            <option value="0">Auto — all cores</option>
+            <option value="1">1 — least memory</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="species-enabled">Species identification</label>
+          <select
+            id="species-enabled"
+            value={localDetection.species ? "on" : "off"}
+            onchange={(e) =>
+              (localDetection = {
+                ...localDetection,
+                species: e.currentTarget.value === "on",
+              })}
+          >
+            <option value="on">On — name birds (uses ~800 MB)</option>
+            <option value="off">Off — skip species (fastest, least memory)</option>
+          </select>
+        </div>
+      </section>
+
       <details>
         <summary>Advanced rules — every parameter the scorer uses</summary>        {#each RULES as group (group.section)}
           <section>
@@ -260,6 +337,19 @@
           <button onclick={() => runCache(false)} disabled={cacheBusy}>Clean orphaned thumbnails</button>
           <button onclick={() => runCache(true)} disabled={cacheBusy}>Clear all thumbnails</button>
           <span class="status">{cacheStatus}</span>
+        </div>
+      </section>
+
+      <section>
+        <h3>Diagnostics</h3>
+        <p class="status">
+          <strong>Off by default.</strong> Nothing is ever sent anywhere. This writes a local report
+          (version, compute device, model status, library counts, recent crash lines) that you can
+          attach to a bug report yourself. Your home directory is stripped from every path in it.
+        </p>
+        <div class="row">
+          <button onclick={runDiagnostics} disabled={diagBusy}>Save diagnostics…</button>
+          <span class="status">{diagStatus}</span>
         </div>
       </section>
     </div>

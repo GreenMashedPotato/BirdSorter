@@ -5,6 +5,7 @@ import LabelBar from "./LabelBar.svelte";
 function setup(over: { selectedCount?: number; busy?: boolean; hasFolder?: boolean } = {}) {
   const handlers = {
     onLabel: vi.fn(),
+    onFlag: vi.fn(),
     onTrash: vi.fn(),
     onRate: vi.fn(),
     onAutoStar: vi.fn(),
@@ -28,6 +29,14 @@ describe("LabelBar", () => {
     const { getByText, onLabel } = setup({ selectedCount: 3 });
     await fireEvent.click(getByText("Bokeh OK"));
     expect(onLabel).toHaveBeenCalledWith("bokeh_ok");
+  });
+
+  it("flags the selection", async () => {
+    const { getByText, onFlag } = setup({ selectedCount: 3 });
+    await fireEvent.click(getByText("Flag pick"));
+    expect(onFlag).toHaveBeenCalledWith("pick");
+    await fireEvent.click(getByText("Unflag"));
+    expect(onFlag).toHaveBeenLastCalledWith(null);
   });
 
   it("trashes the selection", async () => {

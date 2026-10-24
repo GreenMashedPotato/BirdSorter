@@ -3,14 +3,16 @@
 //! Prefers the RAW's embedded preview (fast, no demosaic) and falls back to a
 //! full image decode for JPEG/PNG inputs. Results are small JPEGs.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::{Arc, Mutex, Weak};
 
 use image::imageops::FilterType;
 use image::ImageOutputFormat;
 use ndarray::Array3;
 
-use super::cache::ThumbCache;
+use super::cache::{ThumbCache, RENDER_CACHE_VERSION};
 use crate::{CoreError, Result};
 
 /// JPEG-encode a thumbnail no larger than `max_dim` on its long side.
@@ -24,6 +26,9 @@ pub fn thumbnail_bytes(path: &Path, max_dim: u32) -> Result<Vec<u8>> {
     super::decoder::ensure_file_within(path, super::decoder::MAX_IMAGE_FILE_BYTES)?;
     let img = image::open(path)
         .map_err(|e| CoreError::raw_decode(path, format!("thumbnail decode: {e}")))?;
+    // The RAW fast path above is already camera-oriented; ordinary images
+    // (JPEG/TIFF) need their EXIF orientation applied.
+    let img = super::decoder::apply_orientation(img, super::exif::orientation(path));
     encode_jpeg(&img, max_dim)
 }
 
@@ -56,9 +61,10 @@ pub fn thumbnail_cached(
 }
 
 /// Cache key for a rendering of `hash` at `max_dim` (thumbnails and previews
-/// share one cache without colliding).
+/// share one cache without colliding). The version segment invalidates old
+/// bytes when the renderer/decoder changes.
 pub fn render_key(hash: &str, max_dim: u32) -> String {
-    format!("{hash}@{max_dim}")
+    format!("{hash}@v{RENDER_CACHE_VERSION}@{max_dim}")
 }
 
 /// Generic "render once, cache by key" helper.
@@ -73,6 +79,93 @@ pub fn cached(
     let bytes = render()?;
     let _ = cache.put(key, &bytes);
     Ok(bytes)
+}
+
+/// Per-key gates that coalesce concurrent renders of the same cache entry.
+///
+/// A caller holds the gate across the cache re-check and the render, so a
+/// duplicate request for a thumbnail already being produced waits and then reads
+/// the fresh cache entry instead of decoding the same RAW again. Entries are held
+/// weakly, so the map shrinks back to empty as callers finish.
+#[derive(Default)]
+pub struct RenderGates {
+    gates: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl RenderGates {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The gate for `key`; keep the returned handle alive while locking it.
+    fn gate(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut gates = match self.gates.lock() {
+            Ok(gates) => gates,
+            // A poisoned map holds no data worth recovering differently.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        gates.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(existing) = gates.get(key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(key.to_string(), Arc::downgrade(&gate));
+        gate
+    }
+}
+
+/// Like [`cached`], but concurrent requests for the same key coalesce: the first
+/// renders and stores, the rest wait and read the freshly cached result.
+pub fn cached_coalesced(
+    cache: &ThumbCache,
+    gates: &RenderGates,
+    key: &str,
+    render: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if let Some(hit) = cache.get(key) {
+        return Ok(hit);
+    }
+    let gate = gates.gate(key);
+    let _held = match gate.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Another caller may have finished while this one waited for the gate.
+    if let Some(hit) = cache.get(key) {
+        return Ok(hit);
+    }
+    let bytes = render()?;
+    let _ = cache.put(key, &bytes);
+    Ok(bytes)
+}
+
+/// [`thumbnail_cached`] with request coalescing.
+pub fn thumbnail_cached_with(
+    cache: &ThumbCache,
+    gates: &RenderGates,
+    path: &Path,
+    hash: &str,
+    max_dim: u32,
+) -> Result<Vec<u8>> {
+    cached_coalesced(cache, gates, &render_key(hash, max_dim), || {
+        thumbnail_bytes(path, max_dim)
+    })
+}
+
+/// TIFF-encode an already-decoded RGB image (lossless).
+pub fn encode_rgb_tiff(rgb: &Array3<u8>) -> Result<Vec<u8>> {
+    let (h, w, _) = rgb.dim();
+    let raw: Vec<u8> = rgb.iter().copied().collect();
+    let img = image::RgbImage::from_raw(w as u32, h as u32, raw)
+        .ok_or_else(|| CoreError::Other("rgb buffer size mismatch".into()))?;
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, ImageOutputFormat::Tiff)
+            .map_err(|e| CoreError::Other(format!("tiff encode: {e}")))?;
+    }
+    Ok(buf)
 }
 
 /// JPEG-encode an already-decoded RGB image (`H x W x 3`).
@@ -164,7 +257,79 @@ mod tests {
     }
 
     #[test]
+    fn tiff_encode_is_lossless() {
+        let rgb = Array3::from_shape_fn((4, 5, 3), |(y, x, c)| {
+            ((x * 13 + y * 7 + c * 29) % 256) as u8
+        });
+        let bytes = encode_rgb_tiff(&rgb).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (5, 4));
+        for y in 0..4 {
+            for x in 0..5 {
+                for c in 0..3 {
+                    assert_eq!(
+                        decoded.get_pixel(x as u32, y as u32).0[c],
+                        rgb[[y, x, c]],
+                        "pixel ({x}, {y}) channel {c}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn render_key_distinguishes_sizes() {
         assert_ne!(render_key("abc", 512), render_key("abc", 2400));
+    }
+
+    #[test]
+    fn render_key_carries_the_cache_version() {
+        assert_eq!(
+            render_key("abc", 512),
+            format!("abc@v{RENDER_CACHE_VERSION}@512")
+        );
+    }
+
+    #[test]
+    fn concurrent_requests_for_the_same_key_render_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let gates = RenderGates::new();
+        let calls = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                cached_coalesced(&cache, &gates, "same", || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    // Keep the gate long enough for the other caller to arrive.
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    Ok(vec![1, 2, 3])
+                })
+                .unwrap()
+            });
+            let b = scope.spawn(|| {
+                cached_coalesced(&cache, &gates, "same", || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![9, 9, 9])
+                })
+                .unwrap()
+            });
+            // Whichever caller wins, both must get the one stored result.
+            assert_eq!(a.join().unwrap(), b.join().unwrap());
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one render");
+    }
+
+    #[test]
+    fn coalesced_cache_hit_never_renders() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let gates = RenderGates::new();
+        cache.put("k", b"cached").unwrap();
+
+        let out = cached_coalesced(&cache, &gates, "k", || panic!("must not render")).unwrap();
+        assert_eq!(out, b"cached");
     }
 }

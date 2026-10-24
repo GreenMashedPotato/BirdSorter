@@ -24,6 +24,7 @@ pub struct OnnxSpeciesClassifier {
     labels: Vec<String>,
     preprocess: SpeciesPreprocess,
     top_k: usize,
+    model_id: Option<String>,
 }
 
 impl OnnxSpeciesClassifier {
@@ -37,16 +38,14 @@ impl OnnxSpeciesClassifier {
         let session = OnnxSession::load(model, device)?;
         let labels = load_labels(labels_path)?;
         if labels.is_empty() {
-            return Err(CoreError::Other(format!(
-                "no labels loaded from {}",
-                labels_path.display()
-            )));
+            return Err(CoreError::model_load(labels_path, "no labels were loaded"));
         }
         Ok(Self {
             session,
             labels,
             preprocess,
             top_k: 5,
+            model_id: crate::data::models::model_identity(model),
         })
     }
 
@@ -71,7 +70,7 @@ impl OnnxSpeciesClassifier {
         }
         if debug_onnx() {
             let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
-            eprintln!(
+            tracing::debug!(
                 "[onnx] loading species model {} ({} bytes)",
                 model.display(),
                 size
@@ -125,8 +124,9 @@ impl OnnxSpeciesClassifier {
         let (dims, data) = self.infer(&tensor)?;
         let num_classes = dims.get(1).copied().unwrap_or(0);
         if num_classes == 0 || data.len() < n * num_classes {
-            return Err(CoreError::Other(
-                "species model returned an unexpected output shape".into(),
+            return Err(CoreError::inference(
+                "species",
+                "model returned an unexpected output shape",
             ));
         }
         Ok((0..n)
@@ -141,7 +141,7 @@ impl OnnxSpeciesClassifier {
             let n = buf.len() as f32;
             let mean = buf.iter().sum::<f32>() / n;
             let sd = (buf.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n).sqrt();
-            eprintln!(
+            tracing::debug!(
                 "[onnx] buf len={} mean={mean:.3} std={sd:.3} first={:?}",
                 buf.len(),
                 &buf[..buf.len().min(4)]
@@ -156,7 +156,7 @@ impl OnnxSpeciesClassifier {
             let sd = (data.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
                 / data.len() as f32)
                 .sqrt();
-            eprintln!(
+            tracing::debug!(
                 "[onnx] len={} head={:?} mean={mean:.4} std={sd:.4}",
                 data.len(),
                 head
@@ -176,6 +176,10 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
         !self.labels.is_empty()
     }
 
+    fn identity(&self) -> Option<String> {
+        self.model_id.clone()
+    }
+
     fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {
         if crops.len() <= 1 {
             return crops.iter().map(|c| self.run_one(c)).collect();
@@ -189,7 +193,7 @@ impl SpeciesClassifier for OnnxSpeciesClassifier {
                 Ok(results) => return Ok(results),
                 Err(e) => {
                     if debug_onnx() {
-                        eprintln!("[onnx] batched species inference failed ({e}); per-crop");
+                        tracing::debug!("[onnx] batched species inference failed ({e}); per-crop");
                     }
                 }
             }

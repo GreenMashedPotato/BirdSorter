@@ -30,6 +30,7 @@ mod preview;
 mod startup;
 mod state;
 mod util;
+mod xmp_sync;
 
 fn main() {
     startup::run();

@@ -9,9 +9,7 @@
 //! also accepted). Boxes are `(cx, cy, w, h)` in letterboxed input pixels, and
 //! class scores are already sigmoided (no separate objectness).
 
-use ndarray::Array3;
-
-use crate::analysis::detector::{dedupe_detections, nms, BBox, Detection, Letterbox};
+use crate::analysis::detector::{dedupe_detections, nms, Detection, Letterbox};
 use crate::analysis::edges::EdgeConfig;
 use crate::analysis::silhouette::SilhouetteConfig;
 
@@ -230,55 +228,6 @@ impl YoloConfig {
     }
 }
 
-/// Bilinear resize of an RGB image.
-///
-/// Kept for callers that want the image on its own; `preprocess` fuses resize,
-/// letterbox padding and NCHW normalisation into a single pass instead.
-#[allow(dead_code)]
-fn resize_bilinear<S: ndarray::Data<Elem = u8>>(
-    src: &ndarray::ArrayBase<S, ndarray::Ix3>,
-    nw: usize,
-    nh: usize,
-) -> Array3<u8> {
-    let (h, w, _) = src.dim();
-    let mut out = Array3::<u8>::zeros((nh, nw, 3));
-    if h == 0 || w == 0 || nw == 0 || nh == 0 {
-        return out;
-    }
-    let x_ratio = if nw > 1 {
-        (w as f32 - 1.0) / (nw as f32 - 1.0)
-    } else {
-        0.0
-    };
-    let y_ratio = if nh > 1 {
-        (h as f32 - 1.0) / (nh as f32 - 1.0)
-    } else {
-        0.0
-    };
-    for y in 0..nh {
-        let sy = y as f32 * y_ratio;
-        let y0 = sy.floor() as usize;
-        let y1 = (y0 + 1).min(h - 1);
-        let fy = sy - y0 as f32;
-        for x in 0..nw {
-            let sx = x as f32 * x_ratio;
-            let x0 = sx.floor() as usize;
-            let x1 = (x0 + 1).min(w - 1);
-            let fx = sx - x0 as f32;
-            for c in 0..3 {
-                let p00 = src[[y0, x0, c]] as f32;
-                let p01 = src[[y0, x1, c]] as f32;
-                let p10 = src[[y1, x0, c]] as f32;
-                let p11 = src[[y1, x1, c]] as f32;
-                let top = p00 + (p01 - p00) * fx;
-                let bottom = p10 + (p11 - p10) * fx;
-                out[[y, x, c]] = (top + (bottom - top) * fy).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
-    out
-}
-
 /// Letterbox an image and convert it to a normalised NCHW `f32` buffer.
 ///
 /// Resize, padding and CHW normalisation happen in **one pass** (no intermediate
@@ -361,16 +310,6 @@ pub fn preprocess<S: ndarray::Data<Elem = u8>>(
         }
     }
     (buf, lb)
-}
-
-/// Normalised box helpers kept for callers that need the input-space box.
-pub fn box_to_bbox(cx: f32, cy: f32, w: f32, h: f32) -> BBox {
-    BBox::new(
-        (cx - w / 2.0).round() as i32,
-        (cy - h / 2.0).round() as i32,
-        w.round() as i32,
-        h.round() as i32,
-    )
 }
 
 /// Decode a raw YOLO output tensor into subject detections in *source image*
@@ -485,6 +424,8 @@ fn decode_flat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::detector::BBox;
+    use ndarray::Array3;
 
     /// Real Ultralytics exports have thousands of anchors; the layout heuristic
     /// relies on `anchors >> 4 + classes`.

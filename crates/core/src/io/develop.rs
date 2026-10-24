@@ -87,7 +87,7 @@ impl DevelopOptions {
 
 /// Demosaic effort for the developed preview. All three are Bayer algorithms:
 /// the crate's DHT and Markesteijn variants are **X-Trans only** and are not
-/// reachable here, so a true Bayer DHT/DCB would need LibRaw (see progress.md).
+/// reachable here, so a true Bayer DHT/DCB would need LibRaw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DemosaicQuality {
     /// Bilinear - fastest, softest.
@@ -141,7 +141,9 @@ pub fn develop_preview(path: &Path, max_long_side: u32) -> Result<Array3<u8>> {
     Ok(resize_max(rgb, max_long_side))
 }
 
-fn resize_max(rgb: Array3<u8>, max_long_side: u32) -> Array3<u8> {
+/// Downscale so the long side is at most `max_long_side` (Lanczos3). Images that
+/// already fit are returned untouched; nothing is ever upscaled.
+pub fn resize_max(rgb: Array3<u8>, max_long_side: u32) -> Array3<u8> {
     let (h, w, _) = rgb.dim();
     let long = (w as u32).max(h as u32);
     if long <= max_long_side {
@@ -486,6 +488,19 @@ fn gauss_blur3(rgb: &[f32], w: usize, h: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_max_keeps_the_aspect_and_never_upscales() {
+        let wide = Array3::<u8>::from_elem((100, 400, 3), 128);
+        let small = resize_max(wide, 200);
+        assert_eq!(small.dim(), (50, 200, 3));
+
+        // Already within the limit: returned unchanged (same dimensions).
+        let fits = Array3::<u8>::from_elem((100, 400, 3), 7);
+        let same = resize_max(fits, 400);
+        assert_eq!(same.dim(), (100, 400, 3));
+        assert_eq!(same[[0, 0, 0]], 7);
+    }
 
     #[test]
     fn maps_bayer_pattern_colors() {

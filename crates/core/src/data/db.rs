@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 19;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -34,6 +34,8 @@ const DDL: &[&str] = &[
         trashed_at          TEXT,
         captured_at         TEXT,
         rating              INTEGER NOT NULL DEFAULT 0,
+        flag                TEXT,
+        color               TEXT,
         burst_winner        INTEGER NOT NULL DEFAULT 0,
         UNIQUE(folder_id, relative_path)
     )",
@@ -62,7 +64,11 @@ const DDL: &[&str] = &[
         subject_species_json TEXT,
         image_width         INTEGER,
         image_height        INTEGER,
-        analyzed_content_hash TEXT
+        analyzed_content_hash TEXT,
+        signature           BLOB,
+        detector_id         TEXT,
+        species_id          TEXT,
+        model_stale         INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE INDEX IF NOT EXISTS idx_analysis_score ON analysis(sharpness_score)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_label ON analysis(predicted_label)",
@@ -78,6 +84,11 @@ const DDL: &[&str] = &[
         file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
         species_name TEXT NOT NULL,
         confidence REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS edits (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        adjustments_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS eye_labels (
@@ -113,11 +124,9 @@ const DDL: &[&str] = &[
     )",
 ];
 
-/// `.../BirdSorter/library.db` under the platform user-data dir.
+/// `library.db` under the data dir (platform user-data, or the portable root).
 pub fn default_db_path() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-    Ok(dirs.data_dir().join("library.db"))
+    Ok(crate::data::paths::data_dir()?.join("library.db"))
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -125,7 +134,10 @@ fn configure(conn: &Connection) -> Result<()> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;
-         PRAGMA temp_store = MEMORY;",
+         PRAGMA temp_store = MEMORY;
+         -- Writers are separate connections (analysis thread, commands), so a
+         -- rating set while ingest is running must wait instead of failing.
+         PRAGMA busy_timeout = 5000;",
     )?;
     Ok(())
 }
@@ -169,7 +181,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         }
         Some(v) if v < SCHEMA_VERSION => migrate(conn, v)?,
         Some(v) if v > SCHEMA_VERSION => {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::config(format!(
                 "DB schema version {v} is newer than this build ({SCHEMA_VERSION})"
             )));
         }
@@ -179,6 +191,17 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 }
 
 fn migrate(conn: &Connection, from: i64) -> Result<()> {
+    // One transaction for the whole migration *including* the version stamp:
+    // a crash halfway would otherwise re-run an unguarded `ALTER TABLE ADD
+    // COLUMN` on the next start and leave the library impossible to open.
+    with_tx(conn, || {
+        migrate_steps(conn, from)?;
+        conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
+        Ok(())
+    })
+}
+
+fn migrate_steps(conn: &Connection, from: i64) -> Result<()> {
     if from < 2 {
         conn.execute(
             "UPDATE analysis
@@ -279,7 +302,77 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         // The table is created by DDL for every version; backfill old rows.
         backfill_subject_boxes(conn)?;
     }
-    conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
+    if from < 15 {
+        // v14 -> v15: saved, non-destructive preview adjustments per file.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS edits (
+                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                 adjustments_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );",
+        )?;
+    }
+    if from < 16 {
+        // v15 -> v16: pick/reject flag on each file. Guard the ALTER so a
+        // partially-migrated database is safe to re-run.
+        let has_flag: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'flag'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_flag == 0 {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN flag TEXT;")?;
+        }
+    }
+    if from < 17 {
+        // v16 -> v17: optional colour label on each file.
+        let has_color: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'color'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_color == 0 {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN color TEXT;")?;
+        }
+    }
+    if from < 18 {
+        // v17 -> v18: 8×8 luminance signature, for burst similarity/brackets.
+        let has_signature: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'signature'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_signature == 0 {
+            conn.execute_batch("ALTER TABLE analysis ADD COLUMN signature BLOB;")?;
+        }
+    }
+    if from < 19 {
+        // v18 -> v19: model identities + a stale flag, so a detector/species
+        // change can mark stored analyses pending.
+        for (name, ddl) in [
+            (
+                "detector_id",
+                "ALTER TABLE analysis ADD COLUMN detector_id TEXT;",
+            ),
+            (
+                "species_id",
+                "ALTER TABLE analysis ADD COLUMN species_id TEXT;",
+            ),
+            (
+                "model_stale",
+                "ALTER TABLE analysis ADD COLUMN model_stale INTEGER NOT NULL DEFAULT 0;",
+            ),
+        ] {
+            let present: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )?;
+            if present == 0 {
+                conn.execute_batch(ddl)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -563,5 +656,161 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+        // Analysis writes on a second connection must wait, not fail.
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
+    }
+
+    #[test]
+    fn a_failed_migration_rolls_back_and_keeps_the_version() {
+        let conn = connect_in_memory().unwrap();
+        // An analysis table that already has a later column, so the v5 step
+        // fails after the v3/v4 steps succeeded.
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (3);
+             CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                filesize INTEGER NOT NULL,
+                mtime REAL NOT NULL,
+                format TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                trashed_at TEXT,
+                UNIQUE(folder_id, relative_path)
+             );
+             CREATE TABLE analysis (
+                file_id INTEGER PRIMARY KEY,
+                features_json TEXT NOT NULL,
+                sharpness_score REAL NOT NULL,
+                subject_bbox_json TEXT,
+                subject_class TEXT,
+                has_bokeh INTEGER NOT NULL DEFAULT 0,
+                predicted_label TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                subject_species_json TEXT
+             );",
+        )
+        .unwrap();
+
+        assert!(init_schema(&conn).is_err());
+        assert_eq!(schema_version(&conn).unwrap(), Some(3), "version unchanged");
+        let species_name: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'species_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(species_name, 0, "the earlier ALTER must be rolled back");
+    }
+
+    #[test]
+    fn migration_from_v18_adds_model_identity_columns() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE analysis DROP COLUMN detector_id;
+             ALTER TABLE analysis DROP COLUMN species_id;
+             ALTER TABLE analysis DROP COLUMN model_stale;
+             UPDATE schema_version SET version = 18;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        for name in ["detector_id", "species_id", "model_stale"] {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = ?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn migration_from_v17_adds_the_signature_column() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE analysis DROP COLUMN signature;
+             UPDATE schema_version SET version = 17;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let has_signature: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'signature'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_signature, 1);
+    }
+
+    #[test]
+    fn migration_from_v16_adds_the_color_column() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE files DROP COLUMN color;
+             UPDATE schema_version SET version = 16;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let has_color: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'color'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_color, 1);
+    }
+
+    #[test]
+    fn migration_from_v15_adds_the_flag_column() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE files DROP COLUMN flag;
+             UPDATE schema_version SET version = 15;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let has_flag: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'flag'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_flag, 1);
+    }
+
+    #[test]
+    fn migration_from_v14_bumps_version_and_recreates_edits() {
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Simulate a v14 library (the edits table did not exist yet).
+        conn.execute_batch("DROP TABLE edits; UPDATE schema_version SET version = 14;")
+            .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edits", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 }

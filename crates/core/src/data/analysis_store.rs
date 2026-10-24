@@ -44,6 +44,12 @@ pub struct AnalysisRecord {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub analyzed_content_hash: Option<String>,
+    /// Encoded 8×8 luminance signature (see `analysis::burst::FrameSignature`).
+    pub signature: Option<Vec<u8>>,
+    /// Identity of the detector artifact used for this analysis.
+    pub detector_id: Option<String>,
+    /// Identity of the species artifact used for this analysis.
+    pub species_id: Option<String>,
 }
 
 /// A read-back analysis row.
@@ -67,22 +73,31 @@ pub struct AnalysisRow {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub analyzed_content_hash: Option<String>,
+    /// Encoded 8×8 luminance signature, when one was computed.
+    pub signature: Option<Vec<u8>>,
+    pub detector_id: Option<String>,
+    pub species_id: Option<String>,
+    /// True when a model changed since this row was written.
+    pub model_stale: bool,
 }
 
 fn boxes_json(record: &AnalysisRecord) -> Result<Option<String>> {
-    if !record.all_bboxes.is_empty() {
-        let mut boxes: Vec<[i32; 4]> = record.all_bboxes.iter().map(|b| b.to_array()).collect();
-        if let Some(best) = record.subject_bbox {
-            let best = best.to_array();
-            boxes.retain(|b| *b != best);
-            boxes.insert(0, best);
-        }
-        Ok(Some(serde_json::to_string(&boxes)?))
-    } else if let Some(best) = record.subject_bbox {
-        Ok(Some(serde_json::to_string(&vec![best.to_array()])?))
+    // The box order must stay parallel to `subject_species`; the pipeline
+    // already puts the subject first (`stages::subject_first`). Reordering here
+    // would silently shift per-box species onto the wrong bird.
+    let boxes: Vec<[i32; 4]> = if record.all_bboxes.is_empty() {
+        record
+            .subject_bbox
+            .into_iter()
+            .map(BBox::to_array)
+            .collect()
     } else {
-        Ok(None)
+        record.all_bboxes.iter().map(|b| b.to_array()).collect()
+    };
+    if boxes.is_empty() {
+        return Ok(None);
     }
+    Ok(Some(serde_json::to_string(&boxes)?))
 }
 
 /// Insert or replace the analysis row for `record.file_id`.
@@ -109,8 +124,9 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 species_override_name, species_override_confidence,
                 species_top5_json, edge_sharpness_grid, eye_sharpness_worst,
                 center_edge_ratio, miss_focus_reason, subject_species_json,
-                image_width, image_height, analyzed_content_hash
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                image_width, image_height, analyzed_content_hash, signature,
+                detector_id, species_id, model_stale
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(file_id) DO UPDATE SET
                 features_json        = excluded.features_json,
                 sharpness_score      = excluded.sharpness_score,
@@ -129,8 +145,12 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 miss_focus_reason    = excluded.miss_focus_reason,
                 subject_species_json = excluded.subject_species_json,
                 image_width          = excluded.image_width,
-                 image_height         = excluded.image_height,
-                 analyzed_content_hash = excluded.analyzed_content_hash",
+                image_height         = excluded.image_height,
+                analyzed_content_hash = excluded.analyzed_content_hash,
+                signature            = excluded.signature,
+                detector_id          = excluded.detector_id,
+                species_id           = excluded.species_id,
+                model_stale          = 0",
             rusqlite::params![
                 record.file_id,
                 record.features.to_json(),
@@ -154,10 +174,63 @@ pub fn upsert_analysis(conn: &Connection, record: &AnalysisRecord) -> Result<()>
                 record.image_width,
                 record.image_height,
                 record.analyzed_content_hash,
+                record.signature.as_deref(),
+                record.detector_id.as_deref(),
+                record.species_id.as_deref(),
+                0i64,
             ],
         )?;
         write_subject_boxes(conn, record)?;
         Ok(())
+    })
+}
+
+/// Mark rows written with a different detector/species artifact as stale.
+/// A `None` role means that model is not in use and is not compared.
+///
+/// Scoped to one folder: a model change is picked up where the user next runs
+/// an analysis, not as a whole-library rewrite.
+pub fn mark_model_stale(
+    conn: &Connection,
+    folder_id: i64,
+    detector_id: Option<&str>,
+    species_id: Option<&str>,
+) -> Result<usize> {
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    if let Some(id) = detector_id {
+        clauses.push("(detector_id IS NULL OR detector_id <> ?)");
+        values.push(id.to_string());
+    }
+    if let Some(id) = species_id {
+        clauses.push("(species_id IS NULL OR species_id <> ?)");
+        values.push(id.to_string());
+    }
+    if clauses.is_empty() {
+        return Ok(0);
+    }
+    let sql = format!(
+        "UPDATE analysis SET model_stale = 1
+          WHERE ({}) AND file_id IN (SELECT id FROM files WHERE folder_id = ?)",
+        clauses.join(" OR ")
+    );
+    let mut params: Vec<rusqlite::types::Value> = values.into_iter().map(Into::into).collect();
+    params.push(folder_id.into());
+    with_tx(conn, || {
+        Ok(conn.execute(&sql, rusqlite::params_from_iter(params))?)
+    })
+}
+
+/// Mark every stored result in a folder as stale, so the next analysis run
+/// recomputes it. Unlike deleting the rows, a cancelled run keeps the old
+/// verdicts.
+pub fn mark_folder_stale(conn: &Connection, folder_id: i64) -> Result<usize> {
+    with_tx(conn, || {
+        Ok(conn.execute(
+            "UPDATE analysis SET model_stale = 1
+              WHERE file_id IN (SELECT id FROM files WHERE folder_id = ?1)",
+            [folder_id],
+        )?)
     })
 }
 
@@ -261,7 +334,8 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     model_version, analysis.species_name, analysis.species_confidence,
                     analysis.species_override_name, analysis.species_override_confidence,
                     species_top5_json, miss_focus_reason, subject_species_json,
-                    image_width, image_height, analyzed_content_hash,
+                    image_width, image_height, analyzed_content_hash, signature,
+                    detector_id, species_id, model_stale,
                     o.species_name AS override_name,
                     o.confidence AS override_confidence
                FROM analysis
@@ -288,6 +362,10 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     r.get::<_, Option<i64>>("image_width")?,
                     r.get::<_, Option<i64>>("image_height")?,
                     r.get::<_, Option<String>>("analyzed_content_hash")?,
+                    r.get::<_, Option<Vec<u8>>>("signature")?,
+                    r.get::<_, Option<String>>("detector_id")?,
+                    r.get::<_, Option<String>>("species_id")?,
+                    r.get::<_, i64>("model_stale")? != 0,
                     r.get::<_, Option<String>>("override_name")?,
                     r.get::<_, Option<f32>>("override_confidence")?,
                 ))
@@ -314,6 +392,10 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         image_width,
         image_height,
         analyzed_content_hash,
+        signature,
+        detector_id,
+        species_id,
+        model_stale,
         joined_override_name,
         joined_override_confidence,
     )) = row
@@ -358,6 +440,10 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         subject_species,
         image_width: image_width.map(|v| v as u32),
         image_height: image_height.map(|v| v as u32),
+        signature,
+        detector_id,
+        species_id,
+        model_stale,
         analyzed_content_hash,
     }))
 }
@@ -383,33 +469,36 @@ pub fn set_species_override(
     })
 }
 
+/// The user's species override for a file, when one is set (name, confidence).
+///
+/// Distinguishes "user picked this" from "the model guessed it", which the
+/// effective `species_name` on [`AnalysisRow`] cannot: undo has to restore the
+/// absence of an override, not an override equal to the prediction.
+pub fn get_species_override(conn: &Connection, file_id: i64) -> Result<Option<(String, f32)>> {
+    let mut stmt =
+        conn.prepare("SELECT species_name, confidence FROM species_overrides WHERE file_id = ?1")?;
+    let mut rows = stmt.query([file_id])?;
+    Ok(match rows.next()? {
+        Some(row) => Some((row.get(0)?, row.get(1)?)),
+        None => None,
+    })
+}
+
 /// Clear a species override, returning the file to "not identified".
+///
+/// Also clears the pre-v13 `analysis.species_override_*` columns: they are
+/// still read as a fallback, so leaving them set would make "clear" a no-op.
 pub fn clear_species_override(conn: &Connection, file_id: i64) -> Result<()> {
     with_tx(conn, || {
         conn.execute(
             "DELETE FROM species_overrides WHERE file_id = ?1",
             [file_id],
         )?;
-        Ok(())
-    })
-}
-
-/// Persist a user-drawn bbox (in analysis half-res coordinates) as the subject
-/// box, marking the subject class `manual`.
-pub fn set_manual_bbox(conn: &Connection, file_id: i64, bbox: BBox) -> Result<()> {
-    let json = serde_json::to_string(&vec![bbox.to_array()])?;
-    with_tx(conn, || {
         conn.execute(
-            "UPDATE analysis SET subject_bbox_json = ?1, subject_class = 'manual'
-              WHERE file_id = ?2",
-            rusqlite::params![json, file_id],
-        )?;
-        conn.execute("DELETE FROM subject_boxes WHERE file_id = ?1", [file_id])?;
-        conn.execute(
-            "INSERT INTO subject_boxes
-               (file_id, x, y, w, h, class_name, source, confidence, is_subject, ordinal, created_at)
-             VALUES (?1,?2,?3,?4,?5,'manual','manual',NULL,1,0,?6)",
-            rusqlite::params![file_id, bbox.x, bbox.y, bbox.w, bbox.h, now_iso()],
+            "UPDATE analysis
+                SET species_override_name = NULL, species_override_confidence = NULL
+              WHERE file_id = ?1",
+            [file_id],
         )?;
         Ok(())
     })
@@ -493,6 +582,7 @@ mod tests {
     use crate::data::db::{connect_in_memory, init_schema};
     use crate::data::library::{add_folder, list_files, scan_folder};
     use crate::data::settings::ScoreSettings;
+    use proptest::prelude::*;
 
     fn file_id(conn: &Connection, dir: &std::path::Path, name: &str) -> i64 {
         std::fs::write(dir.join(name), name.as_bytes()).unwrap();
@@ -505,6 +595,10 @@ mod tests {
             .unwrap()
             .file
             .id
+    }
+
+    fn folder_id(conn: &Connection) -> i64 {
+        crate::data::library::list_folders(conn).unwrap()[0].id
     }
 
     fn sample_record(file_id: i64) -> AnalysisRecord {
@@ -544,6 +638,9 @@ mod tests {
                     class: Some("bird".into()),
                 },
             ],
+            signature: Some(vec![1, 2, 3, 4]),
+            detector_id: Some("det-v1".into()),
+            species_id: Some("species-v1".into()),
             ..Default::default()
         }
     }
@@ -654,6 +751,70 @@ mod tests {
         assert!((got.species_confidence.unwrap() - 0.87).abs() < 1e-6);
         assert_eq!(got.species_top5.len(), 1);
         assert_eq!(got.subject_species, rec.subject_species);
+        assert_eq!(got.signature, rec.signature);
+        assert_eq!(got.detector_id, rec.detector_id);
+        assert_eq!(got.species_id, rec.species_id);
+        assert!(!got.model_stale);
+    }
+
+    #[test]
+    fn model_changes_mark_analyses_stale_and_reanalysis_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let rec = sample_record(fid);
+        upsert_analysis(&conn, &rec).unwrap();
+
+        assert_eq!(
+            mark_model_stale(&conn, folder_id(&conn), Some("det-v1"), Some("species-v1")).unwrap(),
+            0
+        );
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        assert_eq!(
+            mark_model_stale(&conn, folder_id(&conn), Some("det-v2"), Some("species-v1")).unwrap(),
+            1
+        );
+        let stale = get_analysis(&conn, fid).unwrap().unwrap();
+        assert!(stale.model_stale);
+        assert_eq!(stale.detector_id.as_deref(), Some("det-v1"));
+
+        // Writing a new analysis clears the flag.
+        upsert_analysis(&conn, &rec).unwrap();
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        // A NULL stored identity is stale once a detector is active.
+        let mut no_ids = rec.clone();
+        no_ids.detector_id = None;
+        no_ids.species_id = None;
+        upsert_analysis(&conn, &no_ids).unwrap();
+        assert_eq!(
+            mark_model_stale(&conn, folder_id(&conn), Some("det-v1"), None).unwrap(),
+            1
+        );
+        assert!(get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+
+        // No active model means nothing is compared.
+        upsert_analysis(&conn, &rec).unwrap();
+        assert_eq!(
+            mark_model_stale(&conn, folder_id(&conn), None, None).unwrap(),
+            0
+        );
+        assert!(!get_analysis(&conn, fid).unwrap().unwrap().model_stale);
+    }
+
+    #[test]
+    fn force_reanalysis_marks_results_stale_without_deleting_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        upsert_analysis(&conn, &sample_record(fid)).unwrap();
+
+        assert_eq!(mark_folder_stale(&conn, folder_id(&conn)).unwrap(), 1);
+        let row = get_analysis(&conn, fid).unwrap().expect("verdict survives");
+        assert!(row.model_stale);
     }
 
     #[test]
@@ -681,6 +842,25 @@ mod tests {
     }
 
     #[test]
+    fn species_override_reads_back_before_it_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        upsert_analysis(&conn, &sample_record(fid)).unwrap();
+
+        assert_eq!(get_species_override(&conn, fid).unwrap(), None);
+
+        set_species_override(&conn, fid, "Copsychus saularis", 0.99).unwrap();
+        let previous = get_species_override(&conn, fid).unwrap().unwrap();
+        assert_eq!(previous.0, "Copsychus saularis");
+        assert!((previous.1 - 0.99).abs() < 1e-6);
+
+        clear_species_override(&conn, fid).unwrap();
+        assert_eq!(get_species_override(&conn, fid).unwrap(), None);
+    }
+
+    #[test]
     fn no_subject_record_stores_null_boxes() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect_in_memory().unwrap();
@@ -705,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn species_override_and_manual_bbox() {
+    fn species_override_wins_and_survives_a_legacy_column() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -713,12 +893,20 @@ mod tests {
         upsert_analysis(&conn, &sample_record(fid)).unwrap();
 
         set_species_override(&conn, fid, "Copsychus saularis", 0.99).unwrap();
-        set_manual_bbox(&conn, fid, BBox::new(5, 6, 7, 8)).unwrap();
-
         let got = get_analysis(&conn, fid).unwrap().unwrap();
         assert_eq!(got.species_name.as_deref(), Some("Copsychus saularis"));
-        assert_eq!(got.subject_class.as_deref(), Some("manual"));
-        assert_eq!(got.bboxes, vec![BBox::new(5, 6, 7, 8)]);
+
+        // A pre-v13 row still carries the override in the analysis columns; a
+        // later "clear" must remove that copy too or it reappears.
+        conn.execute(
+            "UPDATE analysis SET species_override_name = 'Old guess',
+                    species_override_confidence = 0.5 WHERE file_id = ?1",
+            [fid],
+        )
+        .unwrap();
+        clear_species_override(&conn, fid).unwrap();
+        let got = get_analysis(&conn, fid).unwrap().unwrap();
+        assert_eq!(got.species_name.as_deref(), Some("Pycnonotus goiavier"));
     }
 
     #[test]
@@ -804,5 +992,41 @@ mod tests {
         // Guards against a future field addition breaking the JSON path.
         let _ = ScoreResult::default();
         let _ = SharpnessFeatures::default().to_json();
+    }
+
+    proptest! {
+        // Fuzzing: arbitrary persisted JSON must never panic — only Ok or a
+        // typed error.
+        #[test]
+        fn parse_boxes_never_panics(s in ".{0,200}") {
+            let _ = parse_boxes(Some(s));
+            let _ = parse_boxes(None);
+        }
+
+        #[test]
+        fn parse_subject_species_never_panics(s in ".{0,200}") {
+            let _ = parse_subject_species(Some(s));
+            let _ = parse_subject_species(None);
+        }
+
+        #[test]
+        fn parse_boxes_round_trips_valid_arrays(
+            boxes in proptest::collection::vec(proptest::array::uniform4(-1000i32..1000), 0..8)
+        ) {
+            let json = serde_json::to_string(&boxes).unwrap();
+            prop_assert_eq!(parse_boxes(Some(json)).unwrap().len(), boxes.len());
+        }
+    }
+
+    #[test]
+    fn parse_subject_species_round_trips() {
+        let items: Vec<SubjectSpecies> = (0..3)
+            .map(|i| SubjectSpecies {
+                bbox: [i, 0, 10, 10],
+                ..Default::default()
+            })
+            .collect();
+        let json = serde_json::to_string(&items).unwrap();
+        assert_eq!(parse_subject_species(Some(json)).unwrap(), items);
     }
 }

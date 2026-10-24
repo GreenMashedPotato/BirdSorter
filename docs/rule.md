@@ -14,15 +14,20 @@ raw-sorter-app/
   crates/cli/        Headless CLI over core
   ui/                Svelte 5 frontend
   tools/             Offline model training/export/packaging tools
+  scripts/           Build/release/version scripts (bash + PowerShell wrappers)
   models/            Small development/bundled detector artifacts
   dist-models/       Large distribution-only model artifacts; not committed
-  plan.md            Architecture and product plan
-  progress.md        Living implementation status
-  refactor.md        Refactoring execution plan
-  MODELS.md          Model contracts and licenses
-  EYE_MODEL.md       Eye model data/training/runtime contract
-  MACOS_TODO.md      Mac-specific validation brief
-  SIGNING.md         Signing and notarization instructions
+  README.md          Front page: build, run, package, doc index
+  AGENTS.md          Agent entry point: repo map, doc index, gates, invariants
+  docs/              Long-form documentation
+    ARCHITECTURE.md  System/pipeline diagrams, module map, IPC, storage
+    CONTRIBUTING.md  How to add code (deps, gates, recipes, invariants)
+    TROUBLESHOOTING.md Symptoms and fixes (GPU, models, cache, slow runs)
+    MODELS.md        Model contracts and licenses
+    EYE_MODEL.md     Eye model data/training/runtime contract
+    HEIC.md          Optional HEIC/HEIF input: feature flag, decoder, patents
+    SIGNING.md       Signing and notarization instructions
+    rule.md          Engineering rules (this file)
 ```
 
 ## 2. Dependency direction
@@ -207,7 +212,8 @@ Threat model includes:
 
 Required controls:
 
-- image byte/pixel limits
+- image byte/pixel limits (including the optional HEIC decoder: the ordinary
+  file cap plus the decoder's own pixel cap, and `catch_unwind` around it)
 - network timeout and response-size limits
 - mandatory remote artifact checksums
 - ZIP entry/path/expanded-size limits
@@ -220,7 +226,7 @@ Required controls:
 
 For every task:
 
-1. Read `plan.md`, `progress.md`, `rule.md`, and relevant module docs.
+1. Read `ARCHITECTURE.md`, `README.md`, `rule.md`, and relevant module docs.
 2. Search before editing; do not assume names or paths.
 3. Inspect existing changes with `git status`.
 4. State the intended files and invariants.
@@ -228,7 +234,7 @@ For every task:
 6. Make the smallest coherent patch.
 7. Run formatting, tests, clippy, and UI checks.
 8. Review the diff for accidental behavior changes.
-9. Update `progress.md` and relevant documentation.
+9. Update the relevant documentation.
 10. Commit with a specific message. Do not reset or discard user work.
 
 Never:

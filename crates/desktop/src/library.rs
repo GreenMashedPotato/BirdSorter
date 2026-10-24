@@ -14,7 +14,42 @@ use birdsorter_core::io::xmp;
 use birdsorter_core::pipeline::CancelToken;
 
 use crate::state::AppState;
-use crate::util::{blocking, err, open};
+use crate::util::{blocking, err, open, open_ready};
+use crate::xmp_sync;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportReportDto {
+    copied: usize,
+    skipped: usize,
+    bytes: u64,
+    /// `"<path>: <reason>"` for files that could not be copied.
+    failed: Vec<String>,
+}
+
+/// Copy photos from a card or folder into the library, grouped by capture day.
+#[tauri::command]
+pub(crate) async fn import_folder(source: String, dest: String) -> Result<ImportReportDto, String> {
+    blocking(move || {
+        let report = birdsorter_core::io::import::import_folder(
+            Path::new(&source),
+            Path::new(&dest),
+            &birdsorter_core::io::import::ImportOptions::default(),
+        )
+        .map_err(err)?;
+        Ok(ImportReportDto {
+            copied: report.copied,
+            skipped: report.skipped,
+            bytes: report.bytes,
+            failed: report
+                .failed
+                .into_iter()
+                .map(|(path, why)| format!("{}: {why}", path.display()))
+                .collect(),
+        })
+    })
+    .await
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +68,10 @@ pub(crate) struct ScanReportDto {
     updated: usize,
     untouched: usize,
     restored: usize,
+    /// Rows matched to a renamed file by content hash (analysis kept).
+    relinked: usize,
+    /// Rows soft-deleted because the file is no longer on disk.
+    missing: usize,
 }
 
 /// Scan progress: `done` of `total` photos (hashing is the slow part).
@@ -57,6 +96,16 @@ pub(crate) struct FileDto {
     has_bokeh: bool,
     species: Option<String>,
     subject_class: Option<String>,
+    /// 0-5 stars, mirrored into an XMP sidecar.
+    rating: i64,
+    /// EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting.
+    captured_at: Option<String>,
+    /// `"pick"`, `"reject"`, or `null` (unflagged).
+    flag: Option<String>,
+    /// `"red"`, `"yellow"`, `"green"`, `"blue"`, or `null`.
+    color: Option<String>,
+    /// Owning folder, so a multi-folder view can identify each row.
+    folder_id: i64,
 }
 
 #[derive(Serialize)]
@@ -97,10 +146,36 @@ fn add_folder_impl(db_path: &Path, path: &str) -> Result<i64, String> {
     library::add_folder(&conn, Path::new(path)).map_err(err)
 }
 
-fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String> {
-    let conn = open(db_path)?;
-    // Single join query replaces N+1 per-file lookups.
-    let rows = library::list_files_with_details(&conn, folder, false, true).map_err(err)?;
+fn query_files_impl(db_path: &Path, folders: &[i64]) -> Result<Vec<FileDto>, String> {
+    let conn = open_ready(db_path)?;
+    // One join query per folder replaces N+1 per-file lookups.
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for folder in folders {
+        if !seen.insert(*folder) {
+            continue;
+        }
+        rows.extend(library::list_files_with_details(&conn, *folder, false, true).map_err(err)?);
+    }
+    // Each per-folder query is worst-first; merge into one global order so the
+    // multi-folder grid keeps the same default.
+    rows.sort_by(|a, b| {
+        let by_name = a
+            .file
+            .file
+            .filename
+            .cmp(&b.file.file.filename)
+            .then_with(|| a.file.file.folder_id.cmp(&b.file.file.folder_id));
+        match (a.sharpness_score, b.sharpness_score) {
+            (Some(x), Some(y)) => x
+                .partial_cmp(&y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(by_name),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => by_name,
+        }
+    });
     Ok(rows
         .into_iter()
         .map(|r| FileDto {
@@ -115,6 +190,11 @@ fn query_files_impl(db_path: &Path, folder: i64) -> Result<Vec<FileDto>, String>
             has_bokeh: r.has_bokeh,
             species: r.species_name,
             subject_class: r.subject_class,
+            rating: r.file.file.rating,
+            captured_at: r.file.file.captured_at,
+            flag: r.file.file.flag,
+            color: r.file.file.color,
+            folder_id: r.file.file.folder_id,
         })
         .collect())
 }
@@ -130,7 +210,6 @@ fn run_scan(
     let mut last_emit = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(std::time::Instant::now);
-    let mut last_done = 0usize;
     let handle = app.clone();
 
     let report = library::scan_folder_streaming(
@@ -141,13 +220,11 @@ fn run_scan(
             let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
             if due || done == total || done == 0 {
                 last_emit = std::time::Instant::now();
-                last_done = done;
                 let _ = handle.emit("scan-progress", ScanProgressDto { done, total });
             }
         },
     )
     .map_err(err)?;
-    let _ = last_done;
 
     Ok(ScanReportDto {
         seen: report.seen,
@@ -155,6 +232,8 @@ fn run_scan(
         updated: report.updated,
         untouched: report.untouched,
         restored: report.restored,
+        relinked: report.relinked,
+        missing: report.missing,
     })
 }
 
@@ -239,10 +318,10 @@ pub(crate) fn cancel_scan(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) async fn query_files(
     state: State<'_, AppState>,
-    folder: i64,
+    folders: Vec<i64>,
 ) -> Result<Vec<FileDto>, String> {
     let db_path = state.db_path.clone();
-    blocking(move || query_files_impl(&db_path, folder)).await
+    blocking(move || query_files_impl(&db_path, &folders)).await
 }
 
 /// Soft-delete files: move them to the OS recycle bin and mark them trashed.
@@ -306,6 +385,38 @@ pub(crate) async fn rate_files(
             xmp_written: written,
             xmp_failed: failed,
         })
+    })
+    .await
+}
+
+/// Set or clear the pick/reject flag on files.
+#[tauri::command]
+pub(crate) async fn set_flag(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    flag: Option<String>,
+) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        library::set_flag(&conn, &files, flag.as_deref()).map_err(err)
+    })
+    .await
+}
+
+/// Set or clear the colour label on files.
+#[tauri::command]
+pub(crate) async fn set_color(
+    state: State<'_, AppState>,
+    files: Vec<i64>,
+    color: Option<String>,
+) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let changed = library::set_color(&conn, &files, color.as_deref()).map_err(err)?;
+        xmp_sync::sync_color_label(&conn, &files, color.as_deref());
+        Ok(changed)
     })
     .await
 }

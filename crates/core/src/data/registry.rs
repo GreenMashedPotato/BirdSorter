@@ -28,7 +28,7 @@ const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 const DOWNLOAD_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
-/// Feature tier a model unlocks.
+/// Feature tier a model unlocks (see the runtime tiers in `ARCHITECTURE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
@@ -133,6 +133,23 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             tags: vec!["eye".into(), "birds".into()],
         },
         ModelSpec {
+            key: "denoise_srgb".into(),
+            display_name: "AI denoise (NAFNet, SIDD)".into(),
+            description: "Optional noise reduction for previews and exports. NAFNet-SIDD \
+                          width-32 (MIT), exported to ONNX by the FerrumPix Models project \
+                          (~114 MB fp32). Render-only: it never feeds the verdict path."
+                .into(),
+            artifact: "denoise_srgb.onnx".into(),
+            unpack: false,
+            files: vec!["denoise_srgb.onnx".into()],
+            url: "https://github.com/Bitpainter75/FerrumPix-Models/releases/download/modelle-v1/nafnet-v1.onnx"
+                .into(),
+            sha256: "052c9238b420e8f232c4030e583426a9ce2bff36d2305fb2484509361cbe395d".into(),
+            size_bytes: 118_995_025,
+            tier: Tier::T2,
+            tags: vec!["denoise".into(), "nafnet".into()],
+        },
+        ModelSpec {
             key: "bird_detector_v2".into(),
             display_name: "Bird detector v2 (fine-tuned) [not trained yet]".into(),
             description: "Planned single-class bird detector fine-tuned for small/distant \
@@ -162,10 +179,21 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Hex SHA-256 of a file.
+/// Hex SHA-256 of a file, streamed so a large artifact never lands in memory.
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).map_err(|e| CoreError::io(path, e))?;
-    Ok(sha256_hex(&bytes))
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| CoreError::io(path, e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf).map_err(|e| CoreError::io(path, e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub fn model_path(dir: &Path, spec: &ModelSpec) -> PathBuf {
@@ -222,13 +250,13 @@ impl Fetcher for HttpFetcher {
         let mut response = agent
             .get(url)
             .call()
-            .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))?;
+            .map_err(|e| CoreError::download(url, e.to_string()))?;
         response
             .body_mut()
             .with_config()
             .limit(MAX_DOWNLOAD_BYTES)
             .read_to_vec()
-            .map_err(|e| CoreError::Other(format!("download failed for {url}: {e}")))
+            .map_err(|e| CoreError::download(url, e.to_string()))
     }
 }
 
@@ -236,10 +264,13 @@ impl Fetcher for HttpFetcher {
 /// read an unbounded file into memory (the HTTP fetcher caps downloads already).
 fn check_artifact_size(label: &str, len: u64) -> Result<()> {
     if len > MAX_DOWNLOAD_BYTES {
-        return Err(CoreError::Other(format!(
-            "model artifact '{label}' exceeds the {} MiB limit",
-            MAX_DOWNLOAD_BYTES / (1024 * 1024)
-        )));
+        return Err(CoreError::model_archive(
+            label,
+            format!(
+                "artifact exceeds the {} MiB limit",
+                MAX_DOWNLOAD_BYTES / (1024 * 1024)
+            ),
+        ));
     }
     Ok(())
 }
@@ -252,10 +283,13 @@ fn verify(spec: &ModelSpec, bytes: &[u8]) -> Result<()> {
     if actual.eq_ignore_ascii_case(&spec.sha256) {
         Ok(())
     } else {
-        Err(CoreError::Other(format!(
-            "checksum mismatch for '{}': expected {}, got {}",
-            spec.key, spec.sha256, actual
-        )))
+        Err(CoreError::model_archive(
+            &spec.key,
+            format!(
+                "checksum mismatch: expected {}, got {}",
+                spec.sha256, actual
+            ),
+        ))
     }
 }
 
@@ -270,19 +304,19 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|e| CoreError::io(&staging, e))?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-            .map_err(|e| CoreError::Other(format!("bad zip for '{}': {e}", spec.key)))?;
+            .map_err(|e| CoreError::model_archive(&spec.key, format!("bad zip: {e}")))?;
         if archive.len() > MAX_MODEL_ARCHIVE_ENTRIES {
-            return Err(CoreError::Other(format!(
-                "model archive '{}' has too many entries",
-                spec.key
-            )));
+            return Err(CoreError::model_archive(
+                &spec.key,
+                "archive has too many entries",
+            ));
         }
         let mut total_uncompressed = 0u64;
         let mut seen = std::collections::HashSet::new();
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
-                .map_err(|e| CoreError::Other(format!("bad zip entry: {e}")))?;
+                .map_err(|e| CoreError::model_archive(&spec.key, format!("bad zip entry: {e}")))?;
             // Flatten paths: only the file name is used, so a zip cannot escape.
             let Some(name) = Path::new(file.name()).file_name() else {
                 continue;
@@ -292,33 +326,33 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
             }
             let name = name.to_string_lossy().to_string();
             if !spec.files.iter().any(|expected| expected == &name) {
-                return Err(CoreError::Other(format!(
-                    "unexpected file '{}' in model archive '{}'",
-                    name, spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    format!("unexpected file '{name}' in archive"),
+                ));
             }
             if !seen.insert(name.clone()) {
-                return Err(CoreError::Other(format!(
-                    "duplicate file '{}' in model archive '{}'",
-                    name, spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    format!("duplicate file '{name}' in archive"),
+                ));
             }
             total_uncompressed = total_uncompressed.saturating_add(file.size());
             if total_uncompressed > MAX_MODEL_ARCHIVE_BYTES {
-                return Err(CoreError::Other(format!(
-                    "model archive '{}' expands beyond the size limit",
-                    spec.key
-                )));
+                return Err(CoreError::model_archive(
+                    &spec.key,
+                    "archive expands beyond the size limit",
+                ));
             }
             let dest = staging.join(&name);
             let mut out = std::fs::File::create(&dest).map_err(|e| CoreError::io(&dest, e))?;
             std::io::copy(&mut file, &mut out).map_err(|e| CoreError::io(&dest, e))?;
         }
         if !spec.files.iter().all(|expected| seen.contains(expected)) {
-            return Err(CoreError::Other(format!(
-                "model archive '{}' is missing required files",
-                spec.key
-            )));
+            return Err(CoreError::model_archive(
+                &spec.key,
+                "archive is missing required files",
+            ));
         }
         for expected in &spec.files {
             let src = staging.join(expected);
@@ -338,7 +372,7 @@ pub fn install_bytes(dir: &Path, spec: &ModelSpec, bytes: &[u8]) -> Result<Vec<P
 /// Download and install a model from its configured URL.
 pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<Vec<PathBuf>> {
     if spec.url.is_empty() {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has no download URL yet — use \"Install from file…\" instead",
             spec.key
         )));
@@ -346,13 +380,13 @@ pub fn download(dir: &Path, spec: &ModelSpec, fetcher: &dyn Fetcher) -> Result<V
     // A remote artifact must be checksum-pinned: an unpinned download is a
     // supply-chain hole (any server/CDN compromise becomes arbitrary model code).
     if spec.sha256.is_empty() {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has a download URL but no pinned SHA-256; refusing to fetch it",
             spec.key
         )));
     }
     if !(spec.url.starts_with("https://") || spec.url.starts_with("http://")) {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::config(format!(
             "model '{}' has an unsupported download URL scheme",
             spec.key
         )));
@@ -398,9 +432,7 @@ pub fn default_model_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("BIRDSORTER_MODEL_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let dirs = directories::ProjectDirs::from("", "", "BirdSorter")
-        .ok_or_else(|| CoreError::Other("no platform user-data directory".into()))?;
-    Ok(dirs.data_dir().join("models"))
+    Ok(crate::data::paths::data_dir()?.join("models"))
 }
 
 #[cfg(test)]
@@ -479,6 +511,17 @@ mod tests {
     }
 
     #[test]
+    fn file_hash_streams_across_chunk_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact.bin");
+        // Larger than the 64 KiB read buffer, so several updates are hashed.
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &payload).unwrap();
+        assert_eq!(sha256_file(&path).unwrap(), sha256_hex(&payload));
+        assert!(sha256_file(&dir.path().join("missing.bin")).is_err());
+    }
+
+    #[test]
     fn single_file_download_installs_and_verifies() {
         let dir = tempfile::tempdir().unwrap();
         let payload = b"onnx-weights";
@@ -513,6 +556,7 @@ mod tests {
         spec.sha256 = sha256_hex(b"something else");
         let err = install_bytes(dir.path(), &spec, b"good").unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"));
+        assert!(matches!(err, CoreError::ModelArchive { .. }), "{err}");
         assert_eq!(status(dir.path(), &spec), ModelStatus::Missing);
     }
 

@@ -19,13 +19,17 @@ Installed files live in `<user data>/BirdSorter/data/models/`.
 | `bird_detector` | T1 | **bundled with the app** (no download) | `bird_det_v1.onnx` |
 | `bird_species` | T2 | **iNaturalist 2021 (10k species)**, install from file | `bird_species.onnx`, `bird_species.labels.json`, `bird_species.meta.json` |
 
+**Planned, not implemented:** `denoise_srgb`, `denoise_better` and (later)
+`denoise_deblur` — optional downloads that reduce noise on preview/export only.
+They never feed the analysis path.
+
 ### What ships today (exact provenance)
 
 **Detector — `bird_det_v1.onnx` (10.1 MB)**
 - **Stock Ultralytics YOLO11n**, COCO-pretrained (`nc=80`, `coco.yaml`, 600 epochs,
   saved by ultralytics 8.2.100). Not fine-tuned.
 - Upstream weights: <https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt>
-  (AGPL-3.0 — see the licence note in `plan.md`).
+  (AGPL-3.0 — see the licence note in `README.md`).
 - Re-exported locally to ONNX at **opset 12, imgsz 640, `dynamic=True`, no NMS head**
   (the app does letterboxing, decoding, NMS and de-duplication itself). Only COCO
   class 14 (`bird`) is kept.
@@ -57,6 +61,11 @@ Measured on a real egret crop: `Ardea alba (Great Egret)` **0.977**.
 - **Inference**: 384 px, bicubic, shortest-side resize + 0.95 centre crop, CLIP
   mean/std. ~818 MB fp32 - ONNX Runtime's int8 quantiser rejects this head, so
   it ships fp32 (the prototype ran it fp32 too).
+- **Underexposed crops**: before normalisation, a crop whose mean luma is below
+  **0.16** is lifted toward a **0.30** mean (linear gain, capped at **4×** —
+  about two stops). A pure-black crop is left alone, and brighter crops are
+  untouched. This only changes the classifier's input; the stored preview,
+  sharpness features and verdicts are unaffected.
 - **Labels**: scientific names enriched with English common names
   (`Ardea cinerea (Grey Heron)`) by `tools/enrich_common_names.py` (one Wikidata
   query, 1,461 of the 10,000 labels matched), so either name is searchable in
@@ -89,6 +98,30 @@ The species model is a **zip bundle** so download and local import are a single
 action. `bird_species.meta.json` carries the preprocessing
 (`{"size":224,"mean":[0.5,0.5,0.5],"std":[0.5,0.5,0.5]}`), so the app can run
 any compatible classifier without code changes.
+
+### Denoise model (shipped 2026-10-23)
+
+| Property | Value |
+|---|---|
+| File | `denoise_srgb.onnx` in the model directory |
+| Architecture | NAFNet-SIDD width-32 (MIT) |
+| Export | FerrumPix Models `nafnet-v1.onnx` (weights folded into one file) |
+| SHA-256 | `052c9238b420e8f232c4030e583426a9ce2bff36d2305fb2484509361cbe395d` |
+| Size | 118,995,025 bytes (~114 MB) |
+| ONNX | opset 18, IR 10, input `input` `[1,3,h,w]` f32, output `output` `[1,3,H,W]` |
+| Shape rule | dynamic H/W, but the output rounds **down to a multiple of 16** — tiles must be a multiple of 16 or the run is rejected |
+| Range | `[0, 1]` RGB in and out; the app clips before blending |
+| Registry | `denoise_srgb`, `Tier::T2`, checksum-pinned download |
+| Licence | MIT (upstream NAFNet); weights re-exported by FerrumPix Models |
+
+Render-only: denoised pixels never feed sharpness, the scorer, bursts or species
+ID. Strength blends the model output toward the original, so the network always
+runs at one fixed operating point.
+
+Denoise uses the **GPU execution provider when the build has one** (`Auto`;
+DirectML on Windows, CoreML on macOS) because it is ~7× faster than CPU here,
+and falls back to CPU automatically. The app's *Device* setting stays a
+detector/species choice — those small models are still faster on CPU.
 
 ## Building the species bundle
 

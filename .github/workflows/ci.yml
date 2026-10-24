@@ -1,8 +1,7 @@
 name: CI
 
-# Cost note: this repo is private, so Actions minutes are billed (macOS at 10x
-# the Linux rate). The matrix is therefore deliberately small - Linux + Windows
-# only. macOS is validated by hand (see MACOS_TODO.md) instead of per-push.
+# macOS is not in the matrix: the project is developed on Windows/Linux and the
+# macOS runners are the expensive ones. Add it when a Mac is available to debug.
 on:
   push:
     branches: [main]
@@ -63,12 +62,17 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      - name: Version consistency
+        run: node scripts/version.mjs check
       - name: Install
         working-directory: ui
         run: npm ci
       - name: Type-check
         working-directory: ui
         run: npx svelte-check --tsconfig ./tsconfig.json
+      - name: Unit tests
+        working-directory: ui
+        run: npm test
       - name: Build
         working-directory: ui
         run: npm run build

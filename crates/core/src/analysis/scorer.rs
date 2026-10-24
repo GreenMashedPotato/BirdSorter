@@ -206,6 +206,10 @@ pub fn explain_rules(f: &SharpnessFeatures, s: &ScoreSettings) -> ScoreExplanati
             )
         } else if s.motion_blur_enabled >= 0.5
             && f.motion_directionality > s.motion_directionality_threshold
+            // Directionality alone is not blur: a sharp striped bird or a strong
+            // branch scores high too. Only treat it as motion blur when the
+            // subject is also below the sharp threshold.
+            && grid_corrected < s.sharp_threshold
         {
             steps.push(format!(
                 "Motion blur: directionality {:.2} > {:.2} → ×{:.2}",
@@ -461,14 +465,39 @@ mod tests {
         assert!((r.score - expected).abs() < 1e-5, "score {}", r.score);
     }
 
+    /// A soft subject with strong directional gradients (the motion-blur case).
+    fn soft_directional_subject() -> SharpnessFeatures {
+        SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.2,
+            laplacian_subject: 0.2,
+            fft_high_freq_subject: 0.2,
+            brenner_subject: 0.2,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            motion_directionality: 0.9,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn motion_blur_penalty_fires_on_directional_gradients() {
+    fn motion_blur_penalty_fires_on_soft_directional_subjects() {
+        let r = score_rules(&soft_directional_subject(), &ScoreSettings::default());
+        assert_eq!(r.miss_focus_reason.as_deref(), Some(MISS_FOCUS_MOTION_BLUR));
+        // 0.2 voted, no grid → ×0.5 penalty; not sharp, so no sharp bonus.
+        let expected = 0.2 * 0.5;
+        assert!((r.score - expected).abs() < 1e-5, "score {}", r.score);
+    }
+
+    #[test]
+    fn a_sharp_directional_subject_is_not_called_motion_blurred() {
+        // Striped plumage and branches are directional but sharp; the rule must
+        // not penalise them (measured false positives on real sharp frames).
         let mut f = sharp_subject();
         f.motion_directionality = 0.9;
         let r = score_rules(&f, &ScoreSettings::default());
-        assert_eq!(r.miss_focus_reason.as_deref(), Some(MISS_FOCUS_MOTION_BLUR));
-        let expected = 0.725 * 0.50 + 0.1 * 0.5;
-        assert!((r.score - expected).abs() < 1e-5, "score {}", r.score);
+        assert!(r.miss_focus_reason.is_none());
+        assert_eq!(r.label, "sharp");
     }
 
     #[test]
@@ -485,8 +514,7 @@ mod tests {
 
     #[test]
     fn disabling_checks_in_settings_removes_penalties() {
-        let mut f = sharp_subject();
-        f.motion_directionality = 0.9;
+        let f = soft_directional_subject();
         let s = ScoreSettings {
             motion_blur_enabled: 0.0,
             ..Default::default()

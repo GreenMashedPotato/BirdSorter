@@ -99,7 +99,10 @@ impl OnnxSession {
             .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
         let model = self.model.clone();
         let input_name = self.input_name.clone();
-        run_with_cpu_fallback(
+        // The attempt returns `Ok(Err(..))` for a post-processing failure: only
+        // a runtime/provider error (the outer `Err`) may rebuild on CPU. A bad
+        // output must not permanently downgrade the session to CPU.
+        let post = run_with_cpu_fallback(
             &self.label,
             &self.gpu,
             &mut *session,
@@ -110,10 +113,11 @@ impl OnnxSession {
                     .map_err(ort_err)?;
                 let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
                 let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
-                f(&dims, data)
+                Ok(f(&dims, data))
             },
         )
-        .map_err(|e| CoreError::Other(format!("inference failed for {}: {e}", self.label)))
+        .map_err(|e| CoreError::inference(&self.label, e.to_string()))?;
+        post
     }
 }
 
@@ -249,6 +253,31 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("could not build CPU session"));
+    }
+
+    #[test]
+    fn a_post_processing_error_keeps_the_gpu_provider() {
+        let gpu = AtomicBool::new(true);
+        let mut session = FakeSession::working();
+        let rebuilds = Cell::new(0);
+
+        let out: Result<Result<usize>> = run_with_cpu_fallback(
+            "model.onnx",
+            &gpu,
+            &mut session,
+            || {
+                rebuilds.set(rebuilds.get() + 1);
+                Ok(FakeSession::working())
+            },
+            |s| {
+                s.run()?;
+                Ok(Err(CoreError::Other("bad output".into())))
+            },
+        );
+
+        assert!(out.unwrap().is_err(), "the error is still returned");
+        assert_eq!(rebuilds.get(), 0, "a bad output must not rebuild on CPU");
+        assert!(gpu.load(Ordering::Relaxed), "the GPU provider is kept");
     }
 
     #[test]

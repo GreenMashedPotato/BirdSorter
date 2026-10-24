@@ -14,7 +14,12 @@
     onOpenModels,
     onRetrain,
     onExportKeepers,
+    onContactSheet = () => {},
     onKeepBurstWinners,
+    onPreload = () => {},
+    preloadBusy = false,
+    preloadDone = 0,
+    preloadTotal = 0,
   }: {
     busy: boolean;
     hasFolder: boolean;
@@ -28,7 +33,12 @@
     onOpenModels: () => void;
     onRetrain: () => void;
     onExportKeepers: () => void;
+    onContactSheet?: () => void;
     onKeepBurstWinners: () => void;
+    onPreload?: () => void;
+    preloadBusy?: boolean;
+    preloadDone?: number;
+    preloadTotal?: number;
   } = $props();
 </script>
 
@@ -55,11 +65,27 @@
     Export keepers…
   </button>
   <button
+    onclick={onContactSheet}
+    disabled={busy || !hasFolder}
+    title="Export a contact sheet of the selected (or visible) photos"
+  >
+    Contact sheet…
+  </button>
+  <button
     onclick={onKeepBurstWinners}
     disabled={busy || !hasFolder}
     title="Label the sharpest frame of each burst as Sharp (skips files you already labelled)"
   >
     Keep burst winners
+  </button>
+  <button
+    onclick={onPreload}
+    disabled={busy || !hasFolder}
+    title={preloadBusy
+      ? "Stop preloading previews"
+      : "Render every preview in this folder once so stepping through is instant"}
+  >
+    {preloadBusy ? `Stop (${preloadDone}/${preloadTotal})` : "Preload previews"}
   </button>
   <div class="spacer"></div>
   <span class="status">{status}</span>

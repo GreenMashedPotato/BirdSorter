@@ -73,9 +73,29 @@ impl ImageDecoder for ImageCrateDecoder {
         ensure_file_within(path, MAX_IMAGE_FILE_BYTES)?;
         let img = image::open(path)
             .map_err(|e| CoreError::raw_decode(path, format!("image decode: {e}")))?;
+        // JPEG/TIFF pixels are stored unrotated; the camera's orientation tag
+        // lives in EXIF. RAW embedded previews are already camera-oriented.
+        let img = apply_orientation(img, super::exif::orientation(path));
         Ok(DecodedImage {
-            rgb: dynamic_to_rgb(&img, self.max_long_side),
+            rgb: dynamic_to_rgb(img, self.max_long_side),
         })
+    }
+}
+
+/// Apply an EXIF orientation (1–8) to a decoded image.
+///
+/// Mirrors the standard mapping: 2/4 mirror, 3 rotates 180°, 5–8 are the
+/// transposes/rotations (6 = 90° clockwise, 8 = 90° counter-clockwise).
+pub fn apply_orientation(img: DynamicImage, orientation: Option<u16>) -> DynamicImage {
+    match orientation.unwrap_or(1) {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
     }
 }
 
@@ -94,21 +114,27 @@ pub fn scale_to_fit(w: u32, h: u32, max_long_side: u32) -> (u32, u32) {
 }
 
 /// Convert a `DynamicImage` to `H x W x 3` u8, optionally downscaling first.
-pub fn dynamic_to_rgb(img: &DynamicImage, max_long_side: Option<u32>) -> Array3<u8> {
+///
+/// Takes the image by value so the decoded buffer is moved rather than cloned
+/// twice (once for the no-resize case, once by `to_rgb8`) and the RGB vector is
+/// moved into the array. The analysis path decodes a full-resolution preview for
+/// every RAW, so those copies matter on memory-constrained machines.
+pub fn dynamic_to_rgb(img: DynamicImage, max_long_side: Option<u32>) -> Array3<u8> {
     let (w, h) = img.dimensions();
     let resized = match max_long_side {
         Some(max) if w.max(h) > max => {
             let (nw, nh) = scale_to_fit(w, h, max);
             img.resize_exact(nw, nh, FilterType::Triangle)
         }
-        _ => img.clone(),
+        _ => img,
     };
-    let rgb = resized.to_rgb8();
+    let rgb = resized.into_rgb8();
     let (w, h) = rgb.dimensions();
     let raw = rgb.into_raw();
-    Array3::from_shape_fn((h as usize, w as usize, 3), |(y, x, c)| {
-        raw[(y * w as usize + x) * 3 + c]
-    })
+    let shape = (h as usize, w as usize, 3);
+    // `into_raw()` yields exactly `h * w * 3` bytes for an RGB8 image; the
+    // fallback only guards the (unreachable) shape mismatch without panicking.
+    Array3::from_shape_vec(shape, raw).unwrap_or_else(|_| Array3::zeros(shape))
 }
 
 /// Try several decoders in order, returning the first success. The last error
@@ -133,9 +159,8 @@ impl ImageDecoder for CompositeDecoder {
                 Err(e) => last = Some(e),
             }
         }
-        Err(last.unwrap_or_else(|| {
-            CoreError::Other(format!("no decoder could handle {}", path.display()))
-        }))
+        Err(last
+            .unwrap_or_else(|| CoreError::raw_decode(path, "no decoder could handle this file")))
     }
 }
 
@@ -172,7 +197,7 @@ mod tests {
     #[test]
     fn dynamic_to_rgb_converts_and_downscales() {
         let img = gradient(100, 50);
-        let rgb = dynamic_to_rgb(&img, Some(10));
+        let rgb = dynamic_to_rgb(img, Some(10));
         assert_eq!(rgb.dim(), (5, 10, 3));
         // First pixel keeps the red channel gradient pattern (x=0).
         assert_eq!(rgb[[0, 0, 2]], 128);
@@ -180,8 +205,23 @@ mod tests {
 
     #[test]
     fn dynamic_to_rgb_without_limit_keeps_size() {
-        let rgb = dynamic_to_rgb(&gradient(20, 10), None);
+        let rgb = dynamic_to_rgb(gradient(20, 10), None);
         assert_eq!(rgb.dim(), (10, 20, 3));
+    }
+
+    #[test]
+    fn applies_exif_orientation() {
+        let img = gradient(4, 2);
+        // 90°/270° orientations swap the axes; mirrors keep them.
+        for o in [5u16, 6, 7, 8] {
+            let out = apply_orientation(img.clone(), Some(o));
+            assert_eq!((out.width(), out.height()), (2, 4), "orientation {o}");
+        }
+        for o in [1u16, 2, 3, 4, 99] {
+            let out = apply_orientation(img.clone(), Some(o));
+            assert_eq!((out.width(), out.height()), (4, 2), "orientation {o}");
+        }
+        assert_eq!(apply_orientation(img, None).width(), 4);
     }
 
     #[test]

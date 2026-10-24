@@ -14,6 +14,8 @@
     selected,
     focusIndex,
     burstInfo,
+    showFolder = false,
+    folderNames = {},
     emptyText,
     onFocus,
     onToggle,
@@ -30,6 +32,8 @@
     selected: Set<number>;
     focusIndex: number;
     burstInfo: Record<number, { size: number; best: boolean }>;
+    showFolder?: boolean;
+    folderNames?: Record<number, string>;
     emptyText: string;
     onFocus: (idx: number) => void;
     onToggle: (id: number) => void;
@@ -68,6 +72,11 @@
         </div>
         <div class="meta">
           <span class="name" title={f.filename}>{f.filename}</span>
+          {#if showFolder && folderNames[f.folderId]}
+            <span class="status folder-name" title={folderNames[f.folderId]}
+              >{folderNames[f.folderId]}</span
+            >
+          {/if}
           <span class="stars tile-stars" title="Click a star to rate">
             {#each [1, 2, 3, 4, 5] as v (v)}
               <button
@@ -92,6 +101,16 @@
               title="burst of {burstInfo[f.id].size}{burstInfo[f.id].best ? ' (best)' : ''}"
               >{burstInfo[f.id].best ? "★" : ""}×{burstInfo[f.id].size}</span
             >
+          {/if}
+          {#if f.flag}
+            <span
+              class="badge {f.flag === "pick" ? "picked" : "rejected"}"
+              title={f.flag === "pick" ? "Picked" : "Rejected"}
+              >{f.flag === "pick" ? "P" : "X"}</span
+            >
+          {/if}
+          {#if f.color}
+            <span class="color-dot small {f.color}" title={f.color}></span>
           {/if}
           {#if f.predicted}
             <span class="badge {f.predicted}">{f.predicted.replace("_", " ")}</span>

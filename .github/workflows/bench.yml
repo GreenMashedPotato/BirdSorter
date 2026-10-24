@@ -1,0 +1,50 @@
+name: Benchmarks
+
+# Nightly criterion run for the analysis hot paths. Criterion compares against
+# its *own* previous run when a baseline is present in the cargo cache; a hard
+# ">15% regression fails the build" gate needs a committed baseline and is not
+# wired yet (it needs a committed baseline). This job records the numbers and
+# uploads the HTML report so a regression is visible.
+#
+# Runs nightly and on demand rather than per push.
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # nightly, 04:00 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  criterion:
+    name: criterion (analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Warm the criterion baseline in the cache with short runs.
+      - name: Warm up (short)
+        run: >-
+          cargo bench -p birdsorter-core --bench analysis --
+          --warm-up-time 1 --measurement-time 1 --sample-size 10
+
+      - name: Run the hot-path benchmarks
+        run: >-
+          cargo bench -p birdsorter-core --bench analysis --
+          --warm-up-time 1 --measurement-time 3 --sample-size 20
+
+      - name: Upload the criterion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-report
+          path: target/criterion
+          retention-days: 14

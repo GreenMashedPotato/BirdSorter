@@ -259,7 +259,7 @@ pub struct TrainResult {
 pub fn train(conn: &Connection, models_dir: &Path) -> Result<TrainResult> {
     let labeled = labels::all_labeled_features(conn)?;
     if labeled.len() < 4 {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::invalid_input(format!(
             "not enough labelled files ({}); label more first",
             labeled.len()
         )));
@@ -280,14 +280,18 @@ pub fn train(conn: &Connection, models_dir: &Path) -> Result<TrainResult> {
         .into_iter()
         .collect();
     if classes.len() < 2 {
-        return Err(CoreError::Other(
-            "need at least 2 different label classes".into(),
+        return Err(CoreError::invalid_input(
+            "need at least 2 different label classes",
         ));
     }
-    let y_idx: Vec<usize> = ys
-        .iter()
-        .map(|s| classes.iter().position(|c| c == s).unwrap())
-        .collect();
+    let mut y_idx = Vec::with_capacity(ys.len());
+    for s in &ys {
+        let idx = classes
+            .iter()
+            .position(|c| c == s)
+            .ok_or_else(|| CoreError::invalid_input(format!("unexpected label class '{s}'")))?;
+        y_idx.push(idx);
+    }
     let n_classes = classes.len();
 
     let cv_accuracy = cross_val_accuracy(&xs, &y_idx, n_classes, N_FOLDS);

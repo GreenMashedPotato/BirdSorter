@@ -1,4 +1,4 @@
-"""Fine-tune and export the two planned bird models (progress.md item #1).
+"""Fine-tune and export the two planned bird models.
 
 Two tasks share this script:
 

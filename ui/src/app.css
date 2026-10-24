@@ -76,11 +76,71 @@ input {
   margin: 0 0 12px;
 }
 .folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 7px 9px;
   border-radius: 6px;
   cursor: pointer;
   margin-bottom: 4px;
   word-break: break-all;
+}
+.folder .path {
+  flex: 1;
+}
+.folder.selected {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.folder.primary {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.folder .badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  padding: 0 5px;
+  text-transform: none;
+}
+.folder-name {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.colors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.color-dot {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.color-dot.small {
+  width: 10px;
+  height: 10px;
+  border-width: 1px;
+  box-shadow: none;
+}
+.color-dot.red {
+  background: #d94a4a;
+}
+.color-dot.yellow {
+  background: #d9c04a;
+}
+.color-dot.green {
+  background: #4aa86a;
+}
+.color-dot.blue {
+  background: #4a7fd9;
+}
+.color-dot.on {
+  border-color: #fff;
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .folder:hover {
   background: var(--panel-2);
@@ -94,6 +154,11 @@ input {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Let the grid (not the page) be the scroll container: without this, the
+     grid's min-content height makes `.main` overflow and the header scrolls
+     away with the gallery. */
+  min-height: 0;
+  overflow: hidden;
 }
 
 .toolbar {
@@ -103,6 +168,8 @@ input {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+  /* Header bars keep their height; only the gallery scrolls. */
+  flex: 0 0 auto;
 }
 .spacer {
   flex: 1;
@@ -118,6 +185,7 @@ input {
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 .chip {
   padding: 3px 9px;
@@ -131,6 +199,42 @@ input {
   color: var(--text);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.chips .search {
+  width: 260px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+.collection-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  align-items: flex-start;
+}
+.collection-editor textarea {
+  flex: 1 1 180px;
+  min-height: 36px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+.sortsel {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .grid {
@@ -170,6 +274,7 @@ input {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
   padding: 6px 10px;
   margin: 0 0 8px 0;
   background: var(--panel);
@@ -244,6 +349,16 @@ input {
 .badge.blurry { background: var(--blurry); color: #fff; }
 .badge.no_subject { background: var(--no_subject); color: #fff; }
 .badge.none { background: transparent; color: var(--muted); }
+.badge.picked {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text);
+  border: 1px solid var(--accent);
+}
+.badge.rejected {
+  background: rgba(255, 90, 90, 0.18);
+  color: #ffb3b3;
+  border: 1px solid rgba(255, 90, 90, 0.55);
+}
 .badge.burst {
   background: var(--panel-2);
   color: var(--muted);
@@ -296,6 +411,78 @@ input {
 .sheet-body {
   padding: 14px;
   overflow: auto;
+}
+
+/* First-run setup: one decision, presented as two full-width rows. */
+.onboarding {
+  padding: 26px 28px 22px;
+  gap: 18px;
+}
+.onboarding-head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.onboarding-head .status {
+  margin: 0;
+  max-width: 52ch;
+}
+.choices {
+  display: grid;
+  gap: 10px;
+}
+.choice {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.choice:hover:not(:disabled) {
+  background: #262b36;
+}
+.choice.active {
+  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+.choice-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.choice-body {
+  color: var(--muted);
+  max-width: 58ch;
+}
+.preload {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.preload input {
+  margin-top: 2px;
+}
+.preload .status {
+  display: block;
+  margin-top: 3px;
+  max-width: 58ch;
+}
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.row.end {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 .sheet-body section {
   margin-bottom: 14px;
@@ -447,6 +634,42 @@ input {
   grid-template-columns: 1fr 340px;
   min-height: 0;
 }
+.filmstrip {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  overflow-x: auto;
+  flex: 0 0 auto;
+  scrollbar-width: thin;
+}
+.frame {
+  flex: 0 0 auto;
+  width: 96px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #000;
+  overflow: hidden;
+}
+.frame.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.frame .placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--panel-2);
+}
 .preview {
   position: relative;
   min-height: 0;
@@ -515,6 +738,22 @@ input {
      scaling of a small raster is what made zoomed-in previews soft). */
   image-rendering: auto;
 }
+/* Camera autofocus frame (maker-note point), subtle and click-through. */
+.afpoint {
+  position: absolute;
+  z-index: 0;
+  border: 1.5px dashed rgba(255, 209, 102, 0.9);
+  border-radius: 3px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+/* Windowed 1:1 crop, positioned in image coordinates above the base preview. */
+.imgwrap img.region {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0;
+}
 /* Side-by-side burst compare: two stages share one zoom/pan transform. */
 .preview.compare {
   display: flex;
@@ -564,6 +803,82 @@ input {
   height: 100%;
   pointer-events: none;
   z-index: 1;
+}
+/* Preview-only adjustments (non-destructive). */
+.adjust {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  width: 260px;
+  max-height: calc(100% - 20px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
+.adjust-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.adjust .row {
+  display: grid;
+  grid-template-columns: 72px 1fr 36px;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+}
+.adjust .row input[type="range"] {
+  width: 100%;
+}
+.adjust .val {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  text-align: right;
+}
+.adjust .status {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+.adjust .curve-row {
+  align-items: start;
+}
+.adjust .curve-title {
+  padding-top: 4px;
+}
+.adjust svg.curve {
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+}
+.adjust .group-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 11px;
+}
+.adjust .group-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Luminance histogram: a small overlay in the preview's corner. */
+.histogram {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
+  pointer-events: none;
 }
 .peakrange {
   width: 90px;
@@ -666,6 +981,10 @@ input {
   gap: 8px;
   text-align: left;
   width: 100%;
+}
+.pick.active {
+  border-color: var(--accent);
+  color: var(--text);
 }
 .pick .pickname {
   overflow: hidden;

@@ -26,11 +26,13 @@ ureq.workspace = true
 zip.workspace = true
 trash.workspace = true
 tracing.workspace = true
+fs4.workspace = true
 rawler = "0.6.0"
 # Pinned exactly: ort-sys 2.0.0-rc.13 stopped publishing x86_64-apple-darwin
 # ONNX Runtime binaries, which breaks Intel macOS. rc.11 targets ORT API 23,
 # still shipped for Intel macOS. Do not widen this without a Mac to test on.
 ort = { version = "=2.0.0-rc.11", features = ["ndarray", "download-binaries"] }
+heic-rs = { version = "=0.1.4", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 approx.workspace = true
@@ -49,3 +51,8 @@ default = []
 gpu-directml = ["ort/directml"]
 gpu-coreml = ["ort/coreml"]
 gpu-cuda = ["ort/cuda"]
+# Optional HEIC/HEIF input (iPhone/Mac photos). Off by default: HEVC is covered
+# by patents, so shipping a decoder is a distributor's call. `heic-rs` is pure
+# Rust (no C, no `unsafe`) and pinned exactly because it is young and parses
+# untrusted files.
+heic = ["dep:heic-rs"]

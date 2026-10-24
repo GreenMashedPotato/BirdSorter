@@ -15,6 +15,10 @@ function file(over: Partial<FileEntry> = {}): FileEntry {
     species: null,
     subjectClass: "bird",
     rating: 0,
+    capturedAt: null,
+    flag: null,
+    color: null,
+    folderId: 1,
     ...over,
   };
 }
@@ -31,6 +35,23 @@ describe("matchesFilter", () => {
     expect(matchesFilter(file({ label: "reject" }), "my_reject")).toBe(true);
     expect(matchesFilter(file({ label: null }), "unlabeled")).toBe(true);
     expect(matchesFilter(file({ label: "sharp" }), "unlabeled")).toBe(false);
+  });
+
+  it("matches rating filters", () => {
+    expect(matchesFilter(file({ rating: 4 }), "rated")).toBe(true);
+    expect(matchesFilter(file({ rating: 0 }), "rated")).toBe(false);
+    expect(matchesFilter(file({ rating: 3 }), "three_star")).toBe(true);
+    expect(matchesFilter(file({ rating: 2 }), "three_star")).toBe(false);
+    expect(matchesFilter(file({ rating: 0 }), "unrated")).toBe(true);
+    expect(matchesFilter(file({ rating: 1 }), "unrated")).toBe(false);
+  });
+
+  it("matches flag filters", () => {
+    expect(matchesFilter(file({ flag: "pick" }), "picked")).toBe(true);
+    expect(matchesFilter(file({ flag: null }), "picked")).toBe(false);
+    expect(matchesFilter(file({ flag: "reject" }), "rejected")).toBe(true);
+    expect(matchesFilter(file({ flag: null }), "unflagged")).toBe(true);
+    expect(matchesFilter(file({ flag: "pick" }), "unflagged")).toBe(false);
   });
 
   it("matches unanalyzed, bokeh and the always-true filters", () => {

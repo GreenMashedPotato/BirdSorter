@@ -26,6 +26,14 @@ export interface FileEntry {
   subjectClass: string | null;
   /** 0-5 stars, mirrored into an XMP sidecar. */
   rating: number;
+  /** EXIF capture time (`YYYY-MM-DDTHH:MM:SS`), for date sorting. */
+  capturedAt: string | null;
+  /** `"pick"`, `"reject"`, or `null` (unflagged). */
+  flag: string | null;
+  /** `"red"`, `"yellow"`, `"green"`, `"blue"`, or `null`. */
+  color: string | null;
+  /** Owning folder (for the multi-folder view). */
+  folderId: number;
 }
 
 export interface ScanReport {
@@ -34,6 +42,10 @@ export interface ScanReport {
   updated: number;
   untouched: number;
   restored: number;
+  /** Rows matched to a renamed file by content hash (analysis kept). */
+  relinked: number;
+  /** Rows soft-deleted because the file is no longer on disk. */
+  missing: number;
 }
 
 export interface ScanProgress {
@@ -62,9 +74,31 @@ export interface Box {
   top5: [string, number][];
 }
 
+/** Technical EXIF shown in the review (pre-formatted by the backend). */
+export interface PhotoMeta {
+  camera: string | null;
+  lens: string | null;
+  iso: number | null;
+  exposure: string | null;
+  aperture: string | null;
+  focalLength: string | null;
+}
+
+/** The camera's autofocus frame, normalized to the upright photo. */
+export interface FocusPoint {
+  rect: [number, number, number, number];
+  mode: string | null;
+  area: string | null;
+  tracking: string | null;
+}
+
 export interface AnalysisDetail {
   fileId: number;
   filename: string;
+  /** EXIF capture time as stored at scan (`YYYY-MM-DDTHH:MM:SS`), if any. */
+  capturedAt: string | null;
+  /** Camera/lens/exposure strip; optional for older payloads and mocks. */
+  meta?: PhotoMeta;
   label: string | null;
   predicted: string | null;
   score: number | null;
@@ -74,6 +108,8 @@ export interface AnalysisDetail {
   speciesConfidence: number | null;
   top5: [string, number][];
   boxes: Box[];
+  /** The camera's AF frame, when its maker note carries one. */
+  focus?: FocusPoint | null;
   modelVersion: string | null;
   imageWidth: number | null;
   imageHeight: number | null;
@@ -123,6 +159,24 @@ export async function addFolder(path: string): Promise<number> {
   return invoke("add_folder", { path });
 }
 
+/** What one card-import run did. */
+export interface ImportReport {
+  copied: number;
+  /** Files already in the destination with the same name and size. */
+  skipped: number;
+  bytes: number;
+  /** `"<path>: <reason>"` for files that could not be copied. */
+  failed: string[];
+}
+
+/**
+ * Copy photos from a card/folder into the library, grouped by capture day.
+ * Originals are copied, never moved, and nothing is overwritten.
+ */
+export async function importFolder(source: string, dest: string): Promise<ImportReport> {
+  return invoke("import_folder", { source, dest });
+}
+
 /** Start a scan. It runs on a background thread: progress arrives through
  *  `onScanProgress`, completion through `onScanDone`, failures through
  *  `onScanError`. Returns as soon as the scan is under way. */
@@ -159,8 +213,8 @@ export async function cancelAnalysis(): Promise<void> {
   return invoke("cancel_analysis");
 }
 
-export async function queryFiles(folder: number): Promise<FileEntry[]> {
-  return invoke("query_files", { folder });
+export async function queryFiles(folders: number[]): Promise<FileEntry[]> {
+  return invoke("query_files", { folders });
 }
 
 export async function getThumbnail(file: number): Promise<string> {
@@ -173,16 +227,171 @@ export async function previewImage(file: number, mode = "fast"): Promise<string>
   return invoke("preview_image", { file, mode });
 }
 
+/** Non-destructive preview adjustments (mirrors `birdsorter_core::io::adjust`). */
+export interface Adjustments {
+  exposure: number;
+  contrast: number;
+  shadows: number;
+  highlights: number;
+  /** 0 neutral, +1 clears haze, -1 adds atmosphere. */
+  dehaze: number;
+  denoise: number;
+  /** White balance: -1 cool … +1 warm. */
+  temperature: number;
+  /** White balance tint: -1 green … +1 magenta. */
+  tint: number;
+  vibrance: number;
+  saturation: number;
+  clarity: number;
+  /** Suppress magenta/green fringing on high-contrast edges, 0..1. */
+  defringe: number;
+  /** Output level at input 0, ¼, ½, ¾, 1. Neutral is 0,.25,.5,.75,1. */
+  curve: [number, number, number, number, number];
+  /** Local exposure in stops for one luma band, -2..2 (0 = off). */
+  range_exposure: number;
+  /** Band centre, 0..1. */
+  range_center: number;
+  /** Band half-width before the mask fades out, 0.02..1. */
+  range_width: number;
+  /** Radial local exposure in stops, -2..2 (0 = off). */
+  mask_exposure: number;
+  /** Mask centre, normalized to the full image, 0..1. */
+  mask_x: number;
+  mask_y: number;
+  /** Radius as a fraction of the short side, 0..2. */
+  mask_radius: number;
+  /** Feather past the radius, 0..1. */
+  mask_feather: number;
+}
+
+export const DEFAULT_ADJUSTMENTS: Adjustments = {
+  exposure: 0,
+  contrast: 0,
+  shadows: 0,
+  highlights: 0,
+  dehaze: 0,
+  denoise: 0,
+  temperature: 0,
+  tint: 0,
+  vibrance: 0,
+  saturation: 0,
+  clarity: 0,
+  defringe: 0,
+  curve: [0, 0.25, 0.5, 0.75, 1],
+  range_exposure: 0,
+  range_center: 0.5,
+  range_width: 0.25,
+  mask_exposure: 0,
+  mask_x: 0.5,
+  mask_y: 0.5,
+  mask_radius: 0.3,
+  mask_feather: 0.15,
+};
+
+/** Preview with adjustments applied on top of the cached base render. */
+export async function previewAdjusted(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+): Promise<string> {
+  return invoke("preview_adjusted", { file, mode, adjustments });
+}
+
+/** True when an AI denoise model is installed. */
+export async function denoiseAvailable(): Promise<boolean> {
+  return invoke("denoise_available");
+}
+
+/**
+ * Preview with AI denoise. `strength` (0..1) blends the model's output toward
+ * the untouched preview; `0` skips the model entirely. The model runs once per
+ * photo and is cached on disk, so strength changes are cheap afterwards.
+ */
+export async function previewDenoised(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+  strength: number,
+): Promise<string> {
+  return invoke("preview_denoised", { file, mode, adjustments, strength });
+}
+
+/**
+ * A native-resolution rectangle of the cached preview, for windowed 1:1
+ * rendering. Coordinates are source pixels; the caller snaps them to a 256 px
+ * grid and reuses the returned window while panning inside it.
+ */
+export async function previewRegion(
+  file: number,
+  mode: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  adjustments: Adjustments = DEFAULT_ADJUSTMENTS,
+): Promise<string> {
+  return invoke("preview_region", { file, mode, x, y, width, height, adjustments });
+}
+
+/** Saved preview adjustments for a file, or `null` when none are stored. */
+export async function getEdits(file: number): Promise<Adjustments | null> {
+  return invoke("get_edits", { file });
+}
+
+/** Save preview adjustments for a file (survives re-analysis). */
+export async function saveEdits(file: number, adjustments: Adjustments): Promise<void> {
+  return invoke("save_edits", { file, adjustments });
+}
+
+/** Remove the saved adjustments for a file. */
+export async function clearEdits(file: number): Promise<number> {
+  return invoke("clear_edits", { file });
+}
+
+/**
+ * Write an edited preview as JPEG or lossless TIFF (by destination suffix).
+ * `maxEdge` downscales the written file (long side, px); omit to keep the
+ * preview's own resolution. `denoise` applies the review's AI-denoise strength
+ * (0..1) to the exported pixels — the same blend the preview shows.
+ */
+export async function exportEdited(
+  file: number,
+  mode: string,
+  adjustments: Adjustments,
+  dest: string,
+  maxEdge?: number | null,
+  denoise?: number | null,
+): Promise<string> {
+  return invoke("export_edited", {
+    file,
+    mode,
+    adjustments,
+    dest,
+    maxEdge: maxEdge ?? null,
+    denoise: denoise ?? null,
+  });
+}
+
 export async function analysisDetail(file: number): Promise<AnalysisDetail> {
   return invoke("analysis_detail", { file });
 }
 
-/** Set (or clear, with `null`) the species override for a file. */
+/** The override that was in place before a species change, for undo. */
+export interface SpeciesUndo {
+  /** `null` means the previous state had no user override. */
+  species: string | null;
+  confidence: number | null;
+}
+
+/**
+ * Set (or clear, with `null`) the species override for a file. Returns the
+ * override that was in place before the call, so the caller can undo it.
+ */
 export async function setSpecies(
   file: number,
   species: string | null,
   confidence?: number,
-): Promise<void> {
+): Promise<SpeciesUndo> {
   return invoke("set_species", { file, species, confidence: confidence ?? null });
 }
 
@@ -202,12 +411,18 @@ export interface DetectionSettings {
   slice_grid: number;
   /** `"cpu"` (default), `"auto"` or `"gpu"`. */
   device: string;
+  /** Decode workers; `0` = all cores. Lower bounds peak memory. */
+  threads: number;
+  /** Run species identification when a model is installed (~800 MB of RSS). */
+  species: boolean;
 }
 
 export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
   slice_mode: "fallback",
   slice_grid: 6,
   device: "cpu",
+  threads: 0,
+  species: true,
 };
 
 export function sliceGridLabel(grid: number): string {
@@ -222,6 +437,30 @@ export async function getDetectionSettings(): Promise<DetectionSettings> {
 
 export async function setDetectionSettings(settings: DetectionSettings): Promise<void> {
   return invoke("set_detection_settings", { settings });
+}
+
+/** Preview/render preferences (first-run setup, review mode, preloading). */
+export interface PreviewSettings {
+  /** `"fast"` (analysis resolution) or `"full"` (native camera preview). */
+  mode: string;
+  /** Preload previews for the folder after a scan. */
+  preload: boolean;
+  /** The first-run setup has been completed. */
+  onboardingDone: boolean;
+}
+
+export const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
+  mode: "fast",
+  preload: false,
+  onboardingDone: false,
+};
+
+export async function getPreviewSettings(): Promise<PreviewSettings> {
+  return invoke("get_preview_settings");
+}
+
+export async function setPreviewSettings(settings: PreviewSettings): Promise<void> {
+  return invoke("set_preview_settings", { settings });
 }
 
 /** Recompute verdicts for a folder from stored features (no re-decode). */
@@ -380,6 +619,12 @@ export const FILTERS = [
   { key: "my_sharp", label: "My keepers" },
   { key: "my_reject", label: "My rejects" },
   { key: "unlabeled", label: "Unlabelled" },
+  { key: "rated", label: "Rated" },
+  { key: "three_star", label: "3★+" },
+  { key: "unrated", label: "Unrated" },
+  { key: "picked", label: "Picked" },
+  { key: "rejected", label: "Rejected" },
+  { key: "unflagged", label: "Unflagged" },
   { key: "burst", label: "Burst winners" },
 ] as const;
 
@@ -401,6 +646,18 @@ export function matchesFilter(f: FileEntry, key: FilterKey): boolean {
       return f.label === "reject";
     case "unlabeled":
       return f.label === null;
+    case "rated":
+      return f.rating > 0;
+    case "three_star":
+      return f.rating >= 3;
+    case "unrated":
+      return f.rating === 0;
+    case "picked":
+      return f.flag === "pick";
+    case "rejected":
+      return f.flag === "reject";
+    case "unflagged":
+      return f.flag === null;
     default:
       return f.predicted === key;
   }
@@ -410,6 +667,8 @@ export interface ExportResult {
   exported: number;
   failed: string[];
   destination: string;
+  /** Advisory: set when a copy looked too big for the destination drive. */
+  warning: string | null;
 }
 
 export interface CacheReport {
@@ -421,6 +680,18 @@ export interface CacheReport {
 /** Every species name the installed model knows (autocomplete). */
 export async function speciesLabels(): Promise<string[]> {
   return invoke("species_labels");
+}
+
+/** A file path the app was launched to open (file association / "Open with"),
+ *  consumed once. `null` when launched normally. */
+export async function takeOpenRequest(): Promise<string | null> {
+  return invoke("take_open_request");
+}
+
+/** A file the app was asked to open while already running (a second launch,
+ *  forwarded by the single-instance plugin). */
+export function onOpenFile(cb: (path: string) => void): Promise<UnlistenFn> {
+  return listen<string>("open-file", (e) => cb(e.payload));
 }
 
 /** Re-run detection + species ID for one file (the review "Identify" button). */
@@ -461,6 +732,16 @@ export async function rateFiles(files: number[], rating: number): Promise<Rating
   return invoke("rate_files", { files, rating });
 }
 
+/** Set or clear the pick/reject flag (`"pick"`, `"reject"`, or `null`). */
+export async function setFlag(files: number[], flag: string | null): Promise<number> {
+  return invoke("set_flag", { files, flag });
+}
+
+/** Set or clear a colour label (`"red"`, `"yellow"`, `"green"`, `"blue"`, or null). */
+export async function setColor(files: number[], color: string | null): Promise<number> {
+  return invoke("set_color", { files, color });
+}
+
 /** Auto-rate a folder from the verdicts: sharp 5, uncertain 3, blurry 1, none 0. */
 export async function autoRate(folder: number): Promise<RatingResult> {
   return invoke("auto_rate", { folder });
@@ -484,6 +765,7 @@ export interface AppInfo {
   author: string;
   contact: string;
   contactLabel: string;
+  source: string;
   disclaimers: Disclaimer[];
 }
 
@@ -497,12 +779,29 @@ export async function cleanCache(clearAll = false): Promise<CacheReport> {
   return invoke("clean_cache", { clearAll });
 }
 
+/** Write a local diagnostics report (versions, compute device, model status,
+ *  library counts, redacted paths, recent crash lines) for a bug report.
+ *  Nothing is ever transmitted; the path of the written file is returned. When
+ *  `path` is omitted the backend picks a timestamped file in the config dir. */
+export async function saveDiagnostics(path?: string): Promise<string> {
+  return invoke("save_diagnostics", { path: path ?? null });
+}
+
+/** Layout for an export: `flat`, one folder per capture `date`, or per `species`. */
+export type ExportLayout = "flat" | "date" | "species";
+
 /** Copy (or move) keepers into `dest`. Selection is by latest user `label`,
  *  or by the scorer's `predicted` verdict when that is set. */
 export async function exportKeepers(
   folder: number,
   dest: string,
-  opts: { label?: string; predicted?: string; mode?: "copy" | "move" } = {},
+  opts: {
+    label?: string;
+    predicted?: string;
+    mode?: "copy" | "move";
+    layout?: ExportLayout;
+    rename?: string;
+  } = {},
 ): Promise<ExportResult> {
   return invoke("export_keepers", {
     folder,
@@ -510,7 +809,26 @@ export async function exportKeepers(
     label: opts.label ?? null,
     mode: opts.mode ?? "copy",
     predicted: opts.predicted ?? null,
+    opts: { layout: opts.layout ?? null, rename: opts.rename ?? null },
   });
+}
+
+export interface ContactSheetResult {
+  path: string;
+  width: number;
+  height: number;
+  cells: number;
+  skipped: number;
+}
+
+/** Render a contact sheet of `files` to `dest` (JPEG). */
+export async function exportContactSheet(
+  files: number[],
+  dest: string,
+  cols = 4,
+  size = 360,
+): Promise<ContactSheetResult> {
+  return invoke("contact_sheet", { files, dest, cols, size });
 }
 
 /** Copy (or move) one file into `dest` (the review view's Export button). */
@@ -518,8 +836,14 @@ export async function exportFile(
   file: number,
   dest: string,
   mode: "copy" | "move" = "copy",
+  opts: { layout?: ExportLayout; rename?: string } = {},
 ): Promise<ExportResult> {
-  return invoke("export_file", { file, dest, mode });
+  return invoke("export_file", {
+    file,
+    dest,
+    mode,
+    opts: { layout: opts.layout ?? null, rename: opts.rename ?? null },
+  });
 }
 
 export interface Burst {
@@ -528,9 +852,13 @@ export interface Burst {
   size: number;
   /** True when `best` is a manual choice, not the highest score. */
   winnerOverride: boolean;
+  /** True when the frames look like an exposure bracket. */
+  bracket: boolean;
+  /** Brightest-to-darkest exposure span in stops, when known. */
+  exposureSpanEv: number | null;
 }
 
-/** Burst groups for a folder (by EXIF capture time). */
+/** Burst groups for a folder (by capture time and visual similarity). */
 export async function bursts(folder: number): Promise<Burst[]> {
   return invoke("bursts", { folder });
 }

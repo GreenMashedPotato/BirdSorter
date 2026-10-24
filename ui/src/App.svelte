@@ -4,6 +4,7 @@
     inTauri,
     listFolders,
     addFolder,
+    importFolder,
     startScan,
     cancelScan,
     onScanProgress,
@@ -13,9 +14,17 @@
     cancelAnalysis,
     queryFiles,
     getThumbnail,
+    previewImage,
+    takeOpenRequest,
+    onOpenFile,
     labelFiles,
     undoLabels,
     rateFiles,
+    setFlag,
+    setColor,
+    clearEdits,
+    getEdits,
+    saveEdits,
     autoRate,
     resetRatings,
     trashFiles,
@@ -23,9 +32,14 @@
     setSettings,
     getDetectionSettings,
     setDetectionSettings,
+    getPreviewSettings,
+    setPreviewSettings,
+    DEFAULT_PREVIEW_SETTINGS,
     type DetectionSettings,
+    type PreviewSettings,
     rescoreFolder,
     exportKeepers,
+    exportContactSheet,
     train,
     scoreBreakdown,
     bursts,
@@ -33,31 +47,75 @@
     onDone,
     onError,
     matchesFilter,
+    setSpecies,
+    setBurstWinner,
+    type SpeciesUndo,
     type FolderInfo,
     type FileEntry,
+    type ExportLayout,
     type FilterKey,
     type UserLabel,
     type ScoreSettings,
     type TrainResult,
     type ScoreBreakdown as Breakdown,
+    type Adjustments,
   } from "./lib/api";
+  import { MAX_CACHED_THUMBS, pruneThumbs } from "./lib/thumbs";
+  import { sortFiles, type SortKey } from "./lib/sort";
+  import { loadSortKey, saveSortKey } from "./lib/sortPref";
+  import { loadFilter, saveFilter } from "./lib/filterPref";
+  import { parseSearch } from "./lib/search";
+  import {
+    addSavedSearch,
+    compileCollection,
+    loadSavedSearches,
+    loadSmartCollections,
+    removeSavedSearch,
+    removeSmartCollection,
+    saveSavedSearches,
+    saveSmartCollections,
+    upsertSmartCollection,
+    type SmartCollection,
+  } from "./lib/collections";
   import Settings from "./lib/Settings.svelte";
   import ModelManager from "./lib/ModelManager.svelte";
   import ScoreBreakdown from "./lib/ScoreBreakdown.svelte";
   import About from "./lib/About.svelte";
+  import Onboarding from "./lib/Onboarding.svelte";
   import AppToolbar from "./lib/AppToolbar.svelte";
   import FilterBar from "./lib/FilterBar.svelte";
   import LabelBar from "./lib/LabelBar.svelte";
   import PhotoGrid from "./lib/PhotoGrid.svelte";
   import Review from "./lib/Review.svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import ExportDialog from "./lib/ExportDialog.svelte";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { basename, dirname } from "@tauri-apps/api/path";
+  import { preferredDropPath } from "./lib/dnd";
+  import { pickStartupFolder, rememberedFolder, rememberFolder } from "./lib/session";
 
   let folders = $state<FolderInfo[]>([]);
   let activeFolder = $state<number | null>(null);
+  /// Folders currently shown together. The primary (`activeFolder`) is the
+  /// last clicked; folder-scoped actions target it.
+  let selectedFolders = $state<Set<number>>(new Set());
+  /// "All photos" is on: the view spans every folder in the library.
+  let libraryWide = $state(false);
+  const primaryFolder = $derived(folders.find((f) => f.id === activeFolder) ?? null);
+  const primaryLabel = $derived(primaryFolder ? folderLabel(primaryFolder.path) : "");
+  const folderNames = $derived(
+    Object.fromEntries(folders.map((f) => [f.id, folderLabel(f.path)])),
+  );
   let files = $state<FileEntry[]>([]);
   /// Teardown callbacks registered by onMount (listeners, Tauri subscriptions).
   const cleanups: (() => void)[] = [];
-  let filter = $state<FilterKey>("all");
+  let filter = $state<FilterKey>(loadFilter());
+  let sort = $state<SortKey>(loadSortKey());
+  let search = $state("");
+  let colorFilter = $state("");
+  let savedSearches = $state<string[]>(loadSavedSearches());
+  let smartCollections = $state<SmartCollection[]>(loadSmartCollections());
+  let activeCollection = $state<SmartCollection | null>(null);
   let selected = $state<Set<number>>(new Set());
   /// Index into `visible` of the tile that has keyboard focus (-1 = none).
   let focusIndex = $state(-1);
@@ -112,11 +170,27 @@
   let newPath = $state("");
   let model = $state("");
 
+  const searchMatches = $derived(parseSearch(search));
+  const collectionMatches = $derived(
+    activeCollection ? compileCollection(activeCollection) : () => true,
+  );
   const visible = $derived(
-    files.filter((f) =>
-      filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter),
+    sortFiles(
+      files.filter(
+        (f) =>
+          (filter === "burst" ? burstInfo[f.id]?.best === true : matchesFilter(f, filter)) &&
+          (!colorFilter || f.color === colorFilter) &&
+          searchMatches(f) &&
+          collectionMatches(f),
+      ),
+      sort,
     ),
   );
+
+  // Remember the active filter across launches.
+  $effect(() => {
+    saveFilter(filter);
+  });
 
   // --- virtualized grid ----------------------------------------------------
   // Only the tiles in (and just around) the viewport are rendered, so a folder
@@ -142,6 +216,21 @@
   const topPad = $derived(firstRow * ROW_H);
   const bottomPad = $derived(Math.max(0, (rowCount - lastRow - 1) * ROW_H));
 
+  // Bound the in-memory thumbnail record on long scrolls. The disk cache makes
+  // re-fetching a tile cheap; holding every visited 512 px JPEG is not.
+  $effect(() => {
+    if (Object.keys(thumbs).length <= MAX_CACHED_THUMBS) return;
+    const next = pruneThumbs(
+      thumbs,
+      slice.map((f) => f.id),
+    );
+    if (next === thumbs) return;
+    for (const key of Object.keys(thumbs)) {
+      if (!(Number(key) in next)) requested.delete(Number(key));
+    }
+    thumbs = next;
+  });
+
   $effect(() => {
     const el = gridEl;
     if (!el) return;
@@ -158,29 +247,50 @@
   /// Burst membership per file: `{ size, best }`.
   let burstInfo = $state<Record<number, { size: number; best: boolean }>>({});
   /// The full burst groups (frame ids + winner), for the review compare view.
-  let burstGroups = $state<{ frames: number[]; best: number; size: number; winnerOverride: boolean }[]>([]);
+  let burstGroups = $state<
+    {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[]
+  >([]);
 
   async function refreshBursts() {
-    const folder = activeFolder;
-    if (!inTauri || folder === null) {
+    const selected = [...selectedFolders];
+    if (!inTauri || selected.length === 0) {
       burstInfo = {};
       burstGroups = [];
       return;
     }
+    const snapshot = selected.join(",");
     try {
-      const groups = await bursts(folder);
-      if (activeFolder !== folder) return;
+      const groups = (
+        await Promise.all(selected.map((folder) => bursts(folder)))
+      ).flat();
+      if ([...selectedFolders].join(",") !== snapshot) return;
       burstGroups = groups;
       applyBurstInfo(groups);
     } catch {
-      burstInfo = {};
-      burstGroups = [];
+      if ([...selectedFolders].join(",") === snapshot) {
+        burstInfo = {};
+        burstGroups = [];
+      }
     }
   }
 
   /// Rebuild the per-file burst badge map from the group list.
   function applyBurstInfo(
-    groups: { frames: number[]; best: number; size: number; winnerOverride: boolean }[],
+    groups: {
+      frames: number[];
+      best: number;
+      size: number;
+      winnerOverride: boolean;
+      bracket: boolean;
+      exposureSpanEv: number | null;
+    }[],
   ) {
     const map: Record<number, { size: number; best: boolean }> = {};
     for (const g of groups) {
@@ -205,7 +315,15 @@
   let showSettings = $state(false);
   let showModels = $state(false);
   let showAbout = $state(false);
+  // Preview preferences (persisted; the first-run setup chooses the mode).
+  let previewSettings = $state<PreviewSettings>({ ...DEFAULT_PREVIEW_SETTINGS });
+  let showOnboarding = $state(false);
+  let preloadBusy = $state(false);
+  let preloadDone = $state(0);
+  let preloadTotal = $state(0);
+  let preloadCancel = false;
   let showBreakdown = $state(false);
+  let showExport = $state(false);
   let breakdown = $state<Breakdown | null>(null);
 
   async function openBreakdown() {
@@ -246,8 +364,8 @@
       if (activeFolder !== null) {
         const n = await rescoreFolder(activeFolder);
         status = detectionChanged
-          ? `settings saved · re-scored ${n} · distant-bird change applies to the next analysis run`
-          : `settings saved · re-scored ${n} files`;
+          ? `settings saved · re-scored ${n} in ${primaryLabel} · distant-bird change applies to the next analysis run`
+          : `settings saved · re-scored ${n} files in ${primaryLabel}`;
         await refreshFiles();
       } else {
         status = "settings saved";
@@ -274,37 +392,138 @@
   }
 
   // --- undo ----------------------------------------------------------------
-  /// One reversible label action: the ids touched and the label each had before.
-  type UndoEntry = { ids: number[]; prev: (UserLabel | null)[] };
+  /// A reversible action. Labels keep their server-side undo; the others
+  /// snapshot the previous value so a bulk change can be restored.
+  type UndoEntry =
+    | { kind: "labels"; ids: number[]; prev: (UserLabel | null)[] }
+    | { kind: "rating"; values: { id: number; rating: number }[] }
+    | { kind: "flag"; values: { id: number; flag: string | null }[] }
+    | { kind: "color"; values: { id: number; color: string | null }[] }
+    | { kind: "edits"; values: { id: number; adjustments: Adjustments | null }[] }
+    | { kind: "species"; id: number; prev: SpeciesUndo }
+    | { kind: "burst"; id: number; wasManual: boolean };
   let undoStack = $state<UndoEntry[]>([]);
   const canUndo = $derived(undoStack.length > 0);
+
+  function pushUndoEntry(entry: UndoEntry) {
+    undoStack = [...undoStack.slice(-19), entry];
+  }
+
+  /// Group ids by their previous value. Appending in place matters: a fresh
+  /// `[...group, id]` per item copies the array once per file.
+  function pushGroup<T>(groups: Map<T, number[]>, key: T, id: number) {
+    const group = groups.get(key);
+    if (group) group.push(id);
+    else groups.set(key, [id]);
+  }
 
   function pushUndo(ids: number[]) {
     const prev = ids.map(
       (id) => (files.find((f) => f.id === id)?.label ?? null) as UserLabel | null,
     );
-    undoStack = [...undoStack.slice(-19), { ids, prev }];
+    pushUndoEntry({ kind: "labels", ids, prev });
   }
 
-  /// Revert the last label action: restore the previous label, or drop the row
-  /// for files that had none before.
+  function pushRatingUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "rating",
+      values: ids.map((id) => ({
+        id,
+        rating: files.find((f) => f.id === id)?.rating ?? 0,
+      })),
+    });
+  }
+
+  function pushFlagUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "flag",
+      values: ids.map((id) => ({
+        id,
+        flag: files.find((f) => f.id === id)?.flag ?? null,
+      })),
+    });
+  }
+
+  function pushColorUndo(ids: number[]) {
+    pushUndoEntry({
+      kind: "color",
+      values: ids.map((id) => ({
+        id,
+        color: files.find((f) => f.id === id)?.color ?? null,
+      })),
+    });
+  }
+
+  /// Snapshot the saved preview edits for a bulk preset sync so Ctrl+Z can put
+  /// every photo back (including "had no saved edits").
+  async function pushEditsUndo(ids: number[]) {
+    const unique = [...new Set(ids)];
+    const values = await Promise.all(
+      unique.map(async (id) => ({ id, adjustments: await getEdits(id) })),
+    );
+    pushUndoEntry({ kind: "edits", values });
+  }
+
+  /// Revert the last action. Labels use the server-side undo; the other fields
+  /// are grouped by their previous value so one command restores each group.
   async function undoLast() {
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
     undoStack = undoStack.slice(0, -1);
     try {
-      const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
-      const byLabel = new Map<UserLabel, number[]>();
-      entry.ids.forEach((id, i) => {
-        const p = entry.prev[i];
-        if (p) byLabel.set(p, [...(byLabel.get(p) ?? []), id]);
-      });
-      if (toClear.length > 0) await undoLabels(toClear);
-      for (const [label, ids] of byLabel) await labelFiles(ids, label);
+      if (entry.kind === "labels") {
+        const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
+        const byLabel = new Map<UserLabel, number[]>();
+        entry.ids.forEach((id, i) => {
+          const p = entry.prev[i];
+          if (p) pushGroup(byLabel, p, id);
+        });
+        if (toClear.length > 0) await undoLabels(toClear);
+        for (const [label, ids] of byLabel) await labelFiles(ids, label);
+        status = `undid a label change on ${entry.ids.length} file(s)`;
+      } else if (entry.kind === "rating") {
+        const byRating = new Map<number, number[]>();
+        for (const { id, rating } of entry.values) {
+          pushGroup(byRating, rating, id);
+        }
+        for (const [rating, ids] of byRating) await rateFiles(ids, rating);
+        status = `undid a rating change on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "flag") {
+        const byFlag = new Map<string | null, number[]>();
+        for (const { id, flag } of entry.values) {
+          pushGroup(byFlag, flag, id);
+        }
+        for (const [flag, ids] of byFlag) await setFlag(ids, flag);
+        status = `undid a flag change on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "edits") {
+        for (const { id, adjustments } of entry.values) {
+          if (adjustments) await saveEdits(id, adjustments);
+          else await clearEdits(id);
+        }
+        status = `undid a preset sync on ${entry.values.length} file(s)`;
+      } else if (entry.kind === "species") {
+        await setSpecies(entry.id, entry.prev.species, entry.prev.confidence ?? undefined);
+        status = entry.prev.species
+          ? `undid a species change — back to ${entry.prev.species}`
+          : "undid a species change";
+      } else if (entry.kind === "burst") {
+        const groups = await setBurstWinner(entry.id, entry.wasManual);
+        burstGroups = groups;
+        applyBurstInfo(groups);
+        status = entry.wasManual
+          ? "undid a burst winner change — manual winner restored"
+          : "undid a burst winner change";
+      } else {
+        const byColor = new Map<string | null, number[]>();
+        for (const { id, color } of entry.values) {
+          pushGroup(byColor, color, id);
+        }
+        for (const [color, ids] of byColor) await setColor(ids, color);
+        status = `undid a colour change on ${entry.values.length} file(s)`;
+      }
       await refreshFiles();
-      // Keep an open review's label display in sync.
+      // Keep an open review's labels/colours/flags in sync.
       if (reviewFile !== null) reviewRefresh++;
-      status = `undid a label change on ${entry.ids.length} file(s)`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -333,6 +552,7 @@
   /// Rate one file (0 clears). Updates the grid immediately, then persists.
   async function rateOne(id: number, rating: number) {
     try {
+      pushRatingUndo([id]);
       const r = await rateFiles([id], rating);
       files = files.map((f) => (f.id === id ? { ...f, rating } : f));
       if (r.xmpFailed.length > 0) {
@@ -343,11 +563,55 @@
     }
   }
 
+  /// Set or clear the pick/reject flag for a set of files.
+  async function flagFiles(ids: number[], flag: string | null) {
+    if (ids.length === 0) return;
+    try {
+      pushFlagUndo(ids);
+      const changed = await setFlag(ids, flag);
+      const selectedIds = new Set(ids);
+      files = files.map((f) => (selectedIds.has(f.id) ? { ...f, flag } : f));
+      status = flag
+        ? `${flag === "pick" ? "picked" : "rejected"} ${changed} file(s)`
+        : `cleared flag on ${changed} file(s)`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  function flagOne(id: number, flag: string | null) {
+    return flagFiles([id], flag);
+  }
+
+  async function colorFiles(ids: number[], color: string | null) {
+    if (ids.length === 0) return;
+    try {
+      pushColorUndo(ids);
+      const changed = await setColor(ids, color);
+      const selectedIds = new Set(ids);
+      files = files.map((f) => (selectedIds.has(f.id) ? { ...f, color } : f));
+      status = color
+        ? `${color} label on ${changed} file(s)`
+        : `cleared colour on ${changed} file(s)`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  function colorOne(id: number, color: string | null) {
+    return colorFiles([id], color);
+  }
+
+  function flagSelected(flag: string | null) {
+    return flagFiles([...selected], flag);
+  }
+
   /// Rate every selected file.
   async function rateSelected(rating: number) {
     if (selected.size === 0) return;
     const ids = [...selected];
     try {
+      pushRatingUndo(ids);
       const r = await rateFiles(ids, rating);
       files = files.map((f) => (selected.has(f.id) ? { ...f, rating } : f));
       status =
@@ -407,8 +671,52 @@
     setSelected(next);
   }
 
-  async function selectFolder(id: number) {
-    activeFolder = id;
+  function folderLabel(path: string) {
+    return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  }
+
+  /// Show every registered folder at once. The primary action target stays on
+  /// the folder it was, so Analyze/Export remain unambiguous.
+  async function showLibrary() {
+    if (folders.length === 0) return;
+    libraryWide = true;
+    selectedFolders = new Set(folders.map((folder) => folder.id));
+    if (activeFolder === null || !folders.some((folder) => folder.id === activeFolder)) {
+      activeFolder = folders[0].id;
+      rememberFolder(activeFolder);
+    }
+    setSelected(new Set());
+    resetThumbs();
+    await refreshFiles();
+  }
+
+  /// Plain click shows one folder; Ctrl/Cmd-click adds or removes a folder.
+  /// The last folder added becomes the primary action target.
+  async function selectFolder(id: number, additive = false) {
+    libraryWide = false;
+    if (additive) {
+      const next = new Set(selectedFolders);
+      if (next.has(id)) {
+        if (next.size === 1) return;
+        next.delete(id);
+        if (activeFolder === id) {
+          const first = [...next][0];
+          if (first !== undefined) {
+            activeFolder = first;
+            rememberFolder(first);
+          }
+        }
+      } else {
+        next.add(id);
+        activeFolder = id;
+        rememberFolder(id);
+      }
+      selectedFolders = next;
+    } else {
+      selectedFolders = new Set([id]);
+      activeFolder = id;
+      rememberFolder(id);
+    }
     setSelected(new Set());
     resetThumbs();
     await refreshFiles();
@@ -473,34 +781,49 @@
 
   async function refreshFolders() {
     folders = await listFolders();
-    if (activeFolder === null && folders.length > 0) {
-      activeFolder = folders[0].id;
+    const available = new Set(folders.map((f) => f.id));
+    if (activeFolder === null || !available.has(activeFolder)) {
+      // Reopen the folder from last session when it is still in the library.
+      activeFolder = pickStartupFolder(folders, rememberedFolder());
     }
+    if (libraryWide && folders.length > 0) {
+      selectedFolders = new Set(folders.map((folder) => folder.id));
+    } else {
+      libraryWide = false;
+      const next = new Set(
+        [...selectedFolders].filter((id) => available.has(id)),
+      );
+      if (activeFolder !== null) next.add(activeFolder);
+      selectedFolders = next;
+    }
+    if (activeFolder !== null) rememberFolder(activeFolder);
   }
 
   async function refreshFiles() {
-    const folder = activeFolder;
-    if (folder === null) {
+    const selected = [...selectedFolders];
+    if (selected.length === 0) {
       files = [];
       return;
     }
-    const rows = await queryFiles(folder);
-    // Ignore a stale response if the user switched folders while it loaded.
-    if (activeFolder !== folder) return;
+    const snapshot = selected.join(",");
+    const rows = await queryFiles(selected);
+    // Ignore a stale response if the folder selection changed while it loaded.
+    if ([...selectedFolders].join(",") !== snapshot) return;
     files = rows;
     await refreshBursts();
   }
 
-  async function addAndScan() {
-    const path = newPath.trim();
-    if (!path || !inTauri) return;
+  /// Add (or re-open) a folder and start scanning it — the toolbar's Add button
+  /// and a folder dropped on the window both go through here.
+  async function addFolderAndScan(path: string) {
     busy = true;
     try {
       const id = await addFolder(path);
-      newPath = "";
       activeFolder = id;
+      selectedFolders = new Set([id]);
+      rememberFolder(id);
       await refreshFolders();
-      status = "scanning…";
+      status = `scanning ${folderLabel(path)}…`;
       progress = { label: "Scanning", done: 0, total: 0 };
       // Fire-and-forget: progress/completion arrive as events, so the window
       // keeps painting while thousands of files are hashed.
@@ -509,6 +832,60 @@
       status = `error: ${e}`;
       busy = false;
       progress = null;
+    }
+  }
+
+  async function addAndScan() {
+    const path = newPath.trim();
+    if (!path || !inTauri) return;
+    newPath = "";
+    await addFolderAndScan(path);
+  }
+
+  /// A file the OS launched us to open: add its folder, then open that file in
+  /// the review once the scan has run (see the `onScanDone` handler).
+  let pendingOpenFile: string | null = null;
+
+  async function openFilePath(path: string) {
+    if (!inTauri) return;
+    try {
+      const folder = await dirname(path);
+      pendingOpenFile = await basename(path);
+      await addFolderAndScan(folder);
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Offload a card: copy the chosen source into the chosen library folder
+  /// (one subfolder per capture day), then add and scan it. The card keeps its
+  /// originals; nothing is overwritten.
+  async function importFromCard() {
+    if (!inTauri) return;
+    try {
+      const source = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Import photos from…",
+      });
+      if (typeof source !== "string") return;
+      const dest = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Copy photos into…",
+      });
+      if (typeof dest !== "string") return;
+
+      busy = true;
+      status = `importing from ${folderLabel(source)}…`;
+      const r = await importFolder(source, dest);
+      const failed = r.failed.length ? ` · ${r.failed.length} failed` : "";
+      busy = false;
+      await addFolderAndScan(dest);
+      status = `imported ${r.copied} file${r.copied === 1 ? "" : "s"} into ${folderLabel(dest)} (${r.skipped} already there)${failed}`;
+    } catch (e) {
+      status = `error: ${e}`;
+      busy = false;
     }
   }
 
@@ -532,7 +909,7 @@
   async function rescan() {
     if (activeFolder === null || !inTauri) return;
     busy = true;
-    status = "scanning…";
+    status = `scanning ${primaryLabel}…`;
     progress = { label: "Scanning", done: 0, total: 0 };
     try {
       await startScan(activeFolder);
@@ -561,7 +938,7 @@
       force = true;
     }
     busy = true;
-    status = "analysing…";
+    status = `analysing ${primaryLabel}…`;
     progress = { label: "Analysing", done: 0, total: force ? files.length : pending };
     try {
       await analyzeFolder(activeFolder, model.trim() || null, force);
@@ -584,7 +961,7 @@
       return;
     }
     busy = true;
-    status = "analysing…";
+    status = `analysing ${primaryLabel}…`;
     progress = { label: "Analysing", done: 0, total: files.length };
     try {
       await analyzeFolder(activeFolder, model.trim() || null, true);
@@ -631,10 +1008,13 @@
     }
   }
 
-  /// Copy keepers into a folder the user picks. Prefers the user's own "Sharp"
-  /// labels; falls back to the scorer's "sharp" verdicts when none exist.
-  async function exportKeepersFlow() {
+  /// Copy keepers into a folder the user picks, arranged per the export dialog.
+  /// Prefers the user's own "Sharp" labels; falls back to the scorer's "sharp"
+  /// verdicts when none exist.
+  async function runExportKeepers(opts: { layout: ExportLayout; rename: string }) {
+    showExport = false;
     if (activeFolder === null || !inTauri) return;
+    const rename = opts.rename || undefined;
     try {
       const dest = await openDialog({
         directory: true,
@@ -642,21 +1022,32 @@
         title: "Export keepers to…",
       });
       if (typeof dest !== "string") return;
-      status = "exporting…";
-      let r = await exportKeepers(activeFolder, dest, { label: "sharp", mode: "copy" });
+      status = `exporting keepers from ${primaryLabel}…`;
+      let r = await exportKeepers(activeFolder, dest, {
+        label: "sharp",
+        mode: "copy",
+        layout: opts.layout,
+        rename,
+      });
       if (r.exported === 0) {
         const usePredicted = confirm(
           "No files are labelled Sharp.\n\nExport the files the scorer rated sharp instead?",
         );
         if (usePredicted) {
-          r = await exportKeepers(activeFolder, dest, { predicted: "sharp", mode: "copy" });
+          r = await exportKeepers(activeFolder, dest, {
+            predicted: "sharp",
+            mode: "copy",
+            layout: opts.layout,
+            rename,
+          });
         }
       }
+      const warn = r.warning ? ` · warning: ${r.warning}` : "";
       status = r.exported
         ? `exported ${r.exported} keeper${r.exported === 1 ? "" : "s"} to ${r.destination}${
             r.failed.length ? ` · ${r.failed.length} failed` : ""
-          }`
-        : "nothing to export";
+          }${warn}`
+        : `nothing to export${warn}`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -666,6 +1057,7 @@
   /// by burst. Files you have already labelled are left untouched.
   async function keepBurstWinners() {
     if (activeFolder === null || !inTauri) return;
+    status = `finding burst winners in ${primaryLabel}…`;
     let groups: { frames: number[]; best: number }[] = [];
     try {
       groups = await bursts(activeFolder);
@@ -696,9 +1088,147 @@
       pushUndo(unlabelled);
       await labelFiles(unlabelled, "sharp");
       await refreshFiles();
-      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp`;
+      status = `labelled ${unlabelled.length} burst winner${unlabelled.length === 1 ? "" : "s"} Sharp in ${primaryLabel}`;
     } catch (e) {
       status = `error: ${e}`;
+    }
+  }
+
+  /// Render the selected (or visible) photos into a contact-sheet JPEG.
+  async function exportContactSheetAction() {
+    if (!inTauri) return;
+    const ids = (selected.size > 0 ? visible.filter((f) => selected.has(f.id)) : visible).map(
+      (f) => f.id,
+    );
+    if (ids.length === 0) {
+      status = "nothing to put on a contact sheet";
+      return;
+    }
+    const dest = await saveDialog({
+      title: "Export contact sheet…",
+      defaultPath: "contact-sheet.jpg",
+      filters: [{ name: "JPEG", extensions: ["jpg", "jpeg"] }],
+    });
+    if (typeof dest !== "string") return;
+    status = `rendering a ${ids.length}-photo contact sheet…`;
+    try {
+      const result = await exportContactSheet(ids, dest);
+      const skipped = result.skipped ? ` · ${result.skipped} skipped` : "";
+      status = `contact sheet: ${result.cells} cells${skipped} · ${result.width}×${result.height}`;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Re-sorting changes what the virtualized grid shows, so return to the top.
+  function changeSort(next: SortKey) {
+    sort = next;
+    saveSortKey(next);
+    focusIndex = -1;
+    gridScrollTop = 0;
+    if (gridEl) gridEl.scrollTop = 0;
+  }
+
+  function saveSearch(query: string) {
+    const next = addSavedSearch(savedSearches, query);
+    savedSearches = next;
+    saveSavedSearches(next);
+    status = `saved search: ${query.trim()}`;
+  }
+
+  function applySavedSearch(query: string) {
+    search = query;
+  }
+
+  function deleteSavedSearch(query: string) {
+    savedSearches = removeSavedSearch(savedSearches, query);
+    saveSavedSearches(savedSearches);
+    status = `removed saved search: ${query}`;
+  }
+
+  function applyCollection(collection: SmartCollection | null) {
+    activeCollection = collection;
+    status = collection ? `collection: ${collection.name}` : "collection cleared";
+  }
+
+  function saveCollection(collection: SmartCollection) {
+    smartCollections = upsertSmartCollection(smartCollections, collection);
+    saveSmartCollections(smartCollections);
+    if (activeCollection?.name === collection.name) activeCollection = collection;
+    status = `saved collection: ${collection.name}`;
+  }
+
+  function deleteCollection(name: string) {
+    smartCollections = removeSmartCollection(smartCollections, name);
+    saveSmartCollections(smartCollections);
+    if (activeCollection?.name === name) activeCollection = null;
+    status = `removed collection: ${name}`;
+  }
+
+  // A new search changes the virtualized list; return to the top.
+  let lastSearch = "";
+  $effect(() => {
+    if (search === lastSearch) return;
+    lastSearch = search;
+    focusIndex = -1;
+    gridScrollTop = 0;
+    if (gridEl) gridEl.scrollTop = 0;
+  });
+
+  /// Persist the first-run choice and apply it to the review immediately.
+  async function finishOnboarding(mode: "fast" | "full", preload: boolean) {
+    previewSettings = { mode, preload, onboardingDone: true };
+    showOnboarding = false;
+    try {
+      await setPreviewSettings(previewSettings);
+    } catch {
+      /* settings are a convenience; never block the app on them */
+    }
+  }
+
+  /// The review's mode change is sticky: it is saved and reused for every photo.
+  async function changePreviewMode(mode: "fast" | "full") {
+    previewSettings = { ...previewSettings, mode };
+    try {
+      await setPreviewSettings(previewSettings);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /// Render every preview in the current folder once, so stepping through the
+  /// shoot is instant. Cancellable; detailed previews are slow but cached.
+  async function preloadPreviews() {
+    if (preloadBusy) {
+      preloadCancel = true;
+      return;
+    }
+    const list = [...files];
+    if (list.length === 0) return;
+    preloadBusy = true;
+    preloadCancel = false;
+    preloadDone = 0;
+    preloadTotal = list.length;
+    const mode = previewSettings.mode === "full" ? "full" : "fast";
+    try {
+      for (const f of list) {
+        if (preloadCancel) break;
+        try {
+          await previewImage(f.id, mode);
+        } catch {
+          /* a single unreadable file must not stop the preload */
+        }
+        preloadDone++;
+        if (preloadDone % 10 === 0 || preloadDone === preloadTotal) {
+          status = `preloading previews ${preloadDone}/${preloadTotal}`;
+        }
+      }
+      status = preloadCancel
+        ? `preload stopped at ${preloadDone}/${preloadTotal}`
+        : `preloaded ${preloadDone} preview${preloadDone === 1 ? "" : "s"}`;
+    } finally {
+      preloadBusy = false;
+      preloadCancel = false;
     }
   }
 
@@ -744,6 +1274,11 @@
         hasBokeh: i % 3 === 0,
         species: null,
         subjectClass: i % 4 === 0 ? null : "bird",
+        rating: 0,
+        capturedAt: null,
+        flag: null,
+        color: null,
+        folderId: 1,
       })) as FileEntry[];
       status = "browser preview (not connected to the backend)";
       return;
@@ -752,10 +1287,40 @@
     await refreshFolders();
     await refreshFiles();
 
+    // Preview preferences: the first-run setup is shown once.
+    try {
+      previewSettings = await getPreviewSettings();
+      showOnboarding = !previewSettings.onboardingDone;
+    } catch {
+      /* settings unavailable (tests/browser) — keep the defaults */
+    }
+
+    // Drag a folder onto the window to add and scan it. `getCurrentWebview`
+    // throws synchronously outside a real Tauri webview (browser preview/tests).
+    try {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const path = preferredDropPath(event.payload.paths ?? []);
+          if (path) void addFolderAndScan(path);
+        })
+        .then((off) => cleanups.push(off))
+        .catch(() => {});
+    } catch {
+      /* not running inside Tauri */
+    }
+
+    // File association / "Open with": the OS may have launched us with a file.
+    void takeOpenRequest()
+      .then((path) => {
+        if (path) void openFilePath(path);
+      })
+      .catch(() => {});
+
     const unlisteners = [
       onProgress((p) => {
         progress = { label: "Analysing", done: p.decoded + p.failed, total: p.total };
-        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}`;
+        status = `analysing ${p.decoded + p.failed}/${p.total} · analysed ${p.analyzed} · failed ${p.failed}${primaryLabel ? ` · ${primaryLabel}` : ""}`;
       }),
       onDone(async () => {
         busy = false;
@@ -771,23 +1336,35 @@
       onScanProgress((p) => {
         progress = { label: "Scanning", done: p.done, total: p.total };
         status = p.total
-          ? `scanning ${p.done}/${p.total} (hashing new and changed files)`
-          : "scanning…";
+          ? `scanning ${p.done}/${p.total} (hashing new and changed files)${primaryLabel ? ` · ${primaryLabel}` : ""}`
+          : `scanning ${primaryLabel}…`;
       }),
       onScanDone(async (r) => {
         busy = false;
         progress = null;
         status = `scanned ${r.seen} files (${r.added} new, ${r.updated} updated${
           r.restored ? `, ${r.restored} restored` : ""
-        })`;
+        }${r.relinked ? `, ${r.relinked} moved` : ""}${
+          r.missing ? `, ${r.missing} no longer on disk` : ""
+        })${primaryLabel ? ` · ${primaryLabel}` : ""}`;
         await refreshFolders();
         await refreshFiles();
+        // Opt-in: warm the preview cache after a scan.
+        if (previewSettings.preload) void preloadPreviews();
+        // Open the file the OS launched us with, now that it is in the library.
+        if (pendingOpenFile !== null) {
+          const name = pendingOpenFile.toLowerCase();
+          pendingOpenFile = null;
+          const f = files.find((x) => x.filename.toLowerCase() === name);
+          if (f) openReview(f.id);
+        }
       }),
       onScanError((message) => {
         busy = false;
         progress = null;
         status = `scan error: ${message}`;
       }),
+      onOpenFile((path) => void openFilePath(path)),
     ];
     for (const pending of unlisteners) {
       void pending.then((off) => cleanups.push(off)).catch(() => {});
@@ -840,19 +1417,63 @@
     <button style="width:100%; margin-bottom:12px" onclick={browseForFolder} disabled={busy}>
       Browse… (folder picker)
     </button>
+    <button
+      style="width:100%; margin-bottom:12px"
+      onclick={importFromCard}
+      disabled={busy}
+      title="Copy photos from a card into the library, one folder per capture day"
+    >
+      Import from card…
+    </button>
+
+    <div
+      class="folder library"
+      class:selected={libraryWide}
+      role="button"
+      tabindex="0"
+      title="Show every folder in the library"
+      aria-label="All photos"
+      onclick={showLibrary}
+      onkeydown={(e) => e.key === "Enter" && showLibrary()}
+    >
+      <span class="path">All photos</span>
+      {#if libraryWide}
+        <span class="badge picked" title="The grid spans every folder">library</span>
+      {/if}
+    </div>
 
     {#each folders as folder (folder.id)}
       <div
         class="folder"
         class:active={folder.id === activeFolder}
+        class:selected={selectedFolders.has(folder.id)}
+        class:primary={folder.id === activeFolder}
         role="button"
         tabindex="0"
-        onclick={() => selectFolder(folder.id)}
+        title="Click to show only this folder · Ctrl/Cmd-click to add it to the view"
+        onclick={(e) => selectFolder(folder.id, e.ctrlKey || e.metaKey)}
         onkeydown={(e) => e.key === "Enter" && selectFolder(folder.id)}
       >
-        {folder.path}
+        <span class="path">{folder.path}</span>
+        {#if folder.id === activeFolder}
+          <span class="badge picked" title="Folder-scoped actions target this folder">primary</span>
+        {/if}
       </div>
     {/each}
+    {#if folders.length > 1}
+      <p class="status">Ctrl/Cmd-click a folder to add it to the view.</p>
+    {/if}
+    {#if primaryFolder}
+      <p class="status" title={primaryFolder.path}>
+        {#if libraryWide}
+          Library: <strong>{selectedFolders.size} folders</strong> · actions target
+          <strong>{folderLabel(primaryFolder.path)}</strong>
+        {:else}
+          Actions target: <strong>{folderLabel(primaryFolder.path)}</strong>
+          {#if selectedFolders.size > 1}· {selectedFolders.size} folders shown{/if}
+        {/if}
+      </p>
+    {/if}
   </aside>
 
   <main class="main">
@@ -868,8 +1489,13 @@
       onOpenSettings={openSettings}
       onOpenModels={() => (showModels = true)}
       onRetrain={retrain}
-      onExportKeepers={exportKeepersFlow}
+      onExportKeepers={() => (showExport = true)}
+      onContactSheet={exportContactSheetAction}
       onKeepBurstWinners={keepBurstWinners}
+      onPreload={preloadPreviews}
+      {preloadBusy}
+      {preloadDone}
+      {preloadTotal}
     />
 
     {#if progress}
@@ -894,6 +1520,19 @@
 
     <FilterBar
       bind:filter
+      {sort}
+      bind:search
+      {savedSearches}
+      collections={smartCollections}
+      {activeCollection}
+      bind:colorFilter
+      onSort={changeSort}
+      onSaveSearch={saveSearch}
+      onApplySearch={applySavedSearch}
+      onDeleteSearch={deleteSavedSearch}
+      onApplyCollection={applyCollection}
+      onSaveCollection={saveCollection}
+      onDeleteCollection={deleteCollection}
       shown={visible.length}
       selectedCount={selected.size}
       onSelectAll={() => setSelected(new Set(visible.map((f) => f.id)))}
@@ -904,6 +1543,7 @@
       {busy}
       hasFolder={activeFolder !== null}
       onLabel={applyLabel}
+      onFlag={flagSelected}
       onTrash={trashSelected}
       onRate={rateSelected}
       onAutoStar={autoStar}
@@ -927,6 +1567,8 @@
         {selected}
         {focusIndex}
         {burstInfo}
+        showFolder={selectedFolders.size > 1}
+        {folderNames}
         emptyText={activeFolder === null ? "Add a folder to begin." : "No files match this filter."}
         onFocus={(i) => (focusIndex = i)}
         onToggle={toggle}
@@ -941,8 +1583,15 @@
     <Review
       fileId={reviewFile}
       ids={visible.map((f) => f.id)}
+      selectedIds={[...selected]}
       {burstGroups}
       rating={files.find((f) => f.id === reviewFile)?.rating ?? 0}
+      flag={files.find((f) => f.id === reviewFile)?.flag ?? null}
+      onFlag={flagOne}
+      color={files.find((f) => f.id === reviewFile)?.color ?? null}
+      onColor={colorOne}
+      previewMode={previewSettings.mode === "full" ? "full" : "fast"}
+      onPreviewModeChange={changePreviewMode}
       refreshToken={reviewRefresh}
       {canUndo}
       bind:status
@@ -950,6 +1599,10 @@
       onNavigate={openReview}
       onFilesChanged={refreshFiles}
       onPushUndo={pushUndo}
+      onPushEditsUndo={pushEditsUndo}
+      onPushSpeciesUndo={(id, prev) => pushUndoEntry({ kind: "species", id, prev })}
+      onPushBurstUndo={(id, wasManual) =>
+        pushUndoEntry({ kind: "burst", id, wasManual })}
       onRate={rateOne}
       onBurstGroups={(groups) => {
         burstGroups = groups;
@@ -978,6 +1631,14 @@
     <About onClose={() => (showAbout = false)} />
   {/if}
 
+  {#if showOnboarding}
+    <Onboarding
+      initialMode={previewSettings.mode}
+      initialPreload={previewSettings.preload}
+      onDone={finishOnboarding}
+    />
+  {/if}
+
   {#if showBreakdown && breakdown}
     <ScoreBreakdown
       {breakdown}
@@ -986,6 +1647,14 @@
         showBreakdown = false;
         await openSettings();
       }}
+    />
+  {/if}
+
+  {#if showExport}
+    <ExportDialog
+      folderPath={primaryFolder?.path ?? ""}
+      onClose={() => (showExport = false)}
+      onExport={runExportKeepers}
     />
   {/if}
 </div>
