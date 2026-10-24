@@ -178,9 +178,9 @@ pub struct DetectionSettings {
     /// `"gpu"`. CPU wins for these small models; GPU providers pay off for
     /// larger networks.
     pub device: String,
-    /// Parallel decode workers. `0` = auto (all available cores). Lower values
-    /// bound peak memory (each worker holds a decoded analysis image) and reduce
-    /// CPU contention on low-end machines.
+    /// Parallel decode workers. `0` = auto (a bounded count chosen by the
+    /// caller); lower values bound peak memory (each worker holds a decoded
+    /// analysis image) and reduce CPU contention on low-end machines.
     pub threads: u32,
     /// Run species identification when a model is installed. The iNat21 model is
     /// ~818 MB of RSS and ~350 ms per crop, so disabling it is the single biggest
