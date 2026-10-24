@@ -276,7 +276,7 @@
             onchange={(e) =>
               (localDetection = { ...localDetection, threads: Number(e.currentTarget.value) })}
           >
-            <option value="0">Auto — 4 workers</option>
+            <option value="0">Auto — up to 4 workers</option>
             <option value="1">1 — least memory</option>
             <option value="2">2</option>
             <option value="3">3</option>
