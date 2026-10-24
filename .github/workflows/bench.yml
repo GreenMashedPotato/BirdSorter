@@ -20,6 +20,10 @@ concurrency:
   group: bench-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only: benchmarks build and upload an artifact, nothing else.
+permissions:
+  contents: read
+
 jobs:
   criterion:
     name: criterion (analysis)

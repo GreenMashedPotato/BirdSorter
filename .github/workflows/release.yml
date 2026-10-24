@@ -7,6 +7,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# tauri-action publishes the installers as release assets, which needs write.
+permissions:
+  contents: write
+
 jobs:
   bundle:
     name: bundle (${{ matrix.os }})
