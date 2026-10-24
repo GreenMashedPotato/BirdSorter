@@ -23,8 +23,15 @@ pub(crate) struct AppState {
     pub(crate) cancel: Mutex<Option<CancelToken>>,
     /// Separate token so a long scan can be cancelled independently.
     pub(crate) scan_cancel: Mutex<Option<CancelToken>>,
+    /// The running analysis thread, so a restart can wait for it to stop.
+    pub(crate) analysis_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// A file path the app was launched to open (file association / "Open with").
     pub(crate) open_request: Mutex<Option<String>>,
     /// The current file's decoded preview, for windowed 1:1 crops.
     pub(crate) region: Arc<Mutex<Option<RegionSource>>>,
+    /// Detector/species/scorer stack reused by review actions, so drawing a box
+    /// does not reload an 800 MB model.
+    pub(crate) pipeline: Arc<Mutex<Option<crate::analysis::PipelineCache>>>,
+    /// A failed `init_schema`/migration at startup, shown once the window exists.
+    pub(crate) startup_error: Option<String>,
 }

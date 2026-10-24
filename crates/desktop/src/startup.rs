@@ -139,10 +139,14 @@ pub(crate) fn run() {
     // it in argv; macOS delivers it via `RunEvent::Opened`, see MACOS_TODO.md).
     let open_request = first_file_arg(&std::env::args().collect::<Vec<_>>());
 
-    // Fail fast on a broken schema, but do not prevent the window from opening.
-    let _ = open(&db_path);
+    // Migrate before the window opens. A failure is kept (not discarded) so the
+    // user is told why every command will fail, instead of a bare SQL error.
+    let startup_error = open(&db_path).err();
+    if let Some(error) = &startup_error {
+        tracing::error!(%error, "the library database could not be opened");
+    }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Must be the first plugin: a second launch (e.g. double-clicking another
         // RAW) forwards its argv here so the running window opens that file.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -156,9 +160,32 @@ pub(crate) fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    // Dev-only MCP bridge: lets a local agent screenshot the window, query the
+    // DOM, click/type, and read console + IPC traffic. Release builds link the
+    // crate but never start the bridge, so it exposes no port in shipped apps.
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+
+    builder
         .setup(|app| {
             seed_bundled_models(app.handle());
+            if let Some(error) = app
+                .try_state::<AppState>()
+                .and_then(|state| state.startup_error.clone())
+            {
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                app.dialog()
+                    .message(format!(
+                        "The library database could not be opened:\n\n{error}\n\n\
+                         The window opens, but scanning and analysis will fail until \
+                         this is fixed (a newer BirdSorter build may have written it)."
+                    ))
+                    .title("BirdSorter: library database")
+                    .kind(MessageDialogKind::Error)
+                    .show(|_| {});
+            }
             Ok(())
         })
         .manage(AppState {
@@ -167,18 +194,24 @@ pub(crate) fn run() {
             render_gates: Arc::new(RenderGates::new()),
             cancel: Mutex::new(None),
             scan_cancel: Mutex::new(None),
+            analysis_thread: Mutex::new(None),
             open_request: Mutex::new(open_request),
             region: Arc::new(Mutex::new(None)),
+            pipeline: Arc::new(Mutex::new(None)),
+            startup_error,
         })
         .invoke_handler(tauri::generate_handler![
             library::list_folders,
             library::add_folder,
+            library::import_folder,
             library::scan_folder,
             library::cancel_scan,
             library::query_files,
             preview::thumbnail,
             preview::preview_image,
             preview::preview_adjusted,
+            preview::preview_denoised,
+            preview::denoise_available,
             preview::preview_region,
             preview::export_edited,
             export::contact_sheet,

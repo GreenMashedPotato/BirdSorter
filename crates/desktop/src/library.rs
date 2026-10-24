@@ -19,6 +19,40 @@ use crate::xmp_sync;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ImportReportDto {
+    copied: usize,
+    skipped: usize,
+    bytes: u64,
+    /// `"<path>: <reason>"` for files that could not be copied.
+    failed: Vec<String>,
+}
+
+/// Copy photos from a card or folder into the library, grouped by capture day.
+#[tauri::command]
+pub(crate) async fn import_folder(source: String, dest: String) -> Result<ImportReportDto, String> {
+    blocking(move || {
+        let report = birdsorter_core::io::import::import_folder(
+            Path::new(&source),
+            Path::new(&dest),
+            &birdsorter_core::io::import::ImportOptions::default(),
+        )
+        .map_err(err)?;
+        Ok(ImportReportDto {
+            copied: report.copied,
+            skipped: report.skipped,
+            bytes: report.bytes,
+            failed: report
+                .failed
+                .into_iter()
+                .map(|(path, why)| format!("{}: {why}", path.display()))
+                .collect(),
+        })
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FolderDto {
     id: i64,
     path: String,
@@ -34,6 +68,10 @@ pub(crate) struct ScanReportDto {
     updated: usize,
     untouched: usize,
     restored: usize,
+    /// Rows matched to a renamed file by content hash (analysis kept).
+    relinked: usize,
+    /// Rows soft-deleted because the file is no longer on disk.
+    missing: usize,
 }
 
 /// Scan progress: `done` of `total` photos (hashing is the slow part).
@@ -172,7 +210,6 @@ fn run_scan(
     let mut last_emit = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(std::time::Instant::now);
-    let mut last_done = 0usize;
     let handle = app.clone();
 
     let report = library::scan_folder_streaming(
@@ -183,13 +220,11 @@ fn run_scan(
             let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
             if due || done == total || done == 0 {
                 last_emit = std::time::Instant::now();
-                last_done = done;
                 let _ = handle.emit("scan-progress", ScanProgressDto { done, total });
             }
         },
     )
     .map_err(err)?;
-    let _ = last_done;
 
     Ok(ScanReportDto {
         seen: report.seen,
@@ -197,6 +232,8 @@ fn run_scan(
         updated: report.updated,
         untouched: report.untouched,
         restored: report.restored,
+        relinked: report.relinked,
+        missing: report.missing,
     })
 }
 

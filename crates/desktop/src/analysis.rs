@@ -224,6 +224,54 @@ struct Pipeline {
     eye: Option<Box<dyn EyeDetector>>,
 }
 
+/// A built [`Pipeline`] plus the settings it was built from. Reloading the
+/// species model (~818 MB) on every box edit is the expensive part, so review
+/// actions reuse this until the settings or the trained model change.
+pub(crate) struct PipelineCache {
+    fingerprint: String,
+    pipeline: std::sync::Arc<Pipeline>,
+}
+
+/// Everything `build_pipeline` depends on, cheap to compute per call.
+fn pipeline_fingerprint(conn: &Connection) -> String {
+    let detection = DetectionSettings::load_default();
+    let score = ScoreSettings::load_default();
+    // `scorer_for` picks the latest trained model when one exists.
+    let trained = birdsorter_core::data::models::latest_model(conn)
+        .ok()
+        .flatten()
+        .map(|row| row.version)
+        .unwrap_or_default();
+    format!("{detection:?}|{score:?}|{trained}")
+}
+
+/// The cached pipeline, rebuilt only when its settings fingerprint changes.
+fn pipeline_cached(
+    slot: &std::sync::Mutex<Option<PipelineCache>>,
+    conn: &Connection,
+) -> Result<std::sync::Arc<Pipeline>, String> {
+    let fingerprint = pipeline_fingerprint(conn);
+    {
+        let guard = slot
+            .lock()
+            .map_err(|_| "pipeline cache poisoned".to_string())?;
+        if let Some(cache) = guard.as_ref() {
+            if cache.fingerprint == fingerprint {
+                return Ok(cache.pipeline.clone());
+            }
+        }
+    }
+    let pipeline = std::sync::Arc::new(build_pipeline(conn, None)?);
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "pipeline cache poisoned".to_string())?;
+    *guard = Some(PipelineCache {
+        fingerprint,
+        pipeline: pipeline.clone(),
+    });
+    Ok(pipeline)
+}
+
 /// Build the decoder/detector/scorer/species stack from the current settings.
 fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, String> {
     let decoder = CompositeDecoder::new(default_decoders(Some(ANALYSIS_LONG_SIDE)));
@@ -273,6 +321,7 @@ fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, St
 fn run_analysis(
     app: &AppHandle,
     db_path: &Path,
+    cache_root: &Path,
     folder: i64,
     model: Option<&str>,
     cancel: &CancelToken,
@@ -308,23 +357,43 @@ fn run_analysis(
     };
 
     let handle = app.clone();
+    // Throttle like the scan path: one event per file is thousands of IPC calls.
+    let mut last_emit = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
     ingest_folder(&conn, folder, &ctx, move |p| {
-        let _ = handle.emit(
-            "analysis-progress",
-            ProgressDto {
-                total: p.total,
-                decoded: p.decoded,
-                analyzed: p.analyzed,
-                failed: p.failed,
-                current_file: p.current_file.clone(),
-            },
-        );
+        let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
+        if due || p.is_finished() || (p.decoded + p.failed == 0) {
+            last_emit = std::time::Instant::now();
+            let _ = handle.emit(
+                "analysis-progress",
+                ProgressDto {
+                    total: p.total,
+                    decoded: p.decoded,
+                    analyzed: p.analyzed,
+                    failed: p.failed,
+                    current_file: p.current_file.clone(),
+                },
+            );
+        }
     })
     .map_err(err)?;
     // A frame can clear the sharp threshold while being visibly softer than the
     // keeper next to it; within a burst, downgrade those.
     if let Err(e) = burst::mark_soft_members(&conn, folder, burst::SOFT_BURST_RATIO) {
         tracing::warn!(error = %e, "burst softness pass failed");
+    }
+    // Analysis is the only thing that adds many renders at once, so keep the
+    // cache inside its budget here (off the UI thread). A cancelled run has not
+    // written much, and the walk costs a second, so skip it.
+    if !cancel.is_cancelled() {
+        match birdsorter_core::io::cache::ThumbCache::new(cache_root)
+            .prune_to_budget(birdsorter_core::io::cache::DEFAULT_CACHE_BUDGET_BYTES)
+        {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "pruned the render cache to its budget"),
+            Err(e) => tracing::warn!(error = %e, "render cache prune failed"),
+        }
     }
     Ok(())
 }
@@ -333,6 +402,7 @@ fn run_analysis(
 /// or a list of boxes to drop, then return the refreshed detail.
 fn reevaluate(
     db_path: &Path,
+    pipeline: &std::sync::Mutex<Option<PipelineCache>>,
     file: i64,
     manual: Option<BBox>,
     exclude: &[BBox],
@@ -341,7 +411,7 @@ fn reevaluate(
     let lf = library::get_file(&conn, file)
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
-    let pipe = build_pipeline(&conn, None)?;
+    let pipe = pipeline_cached(pipeline, &conn)?;
     analyze_file_with(
         &conn,
         &lf,
@@ -462,8 +532,9 @@ pub(crate) async fn set_burst_winner(
 
 /// Kick off analysis on a background thread, streaming progress as events.
 ///
-/// `force` deletes the folder's stored results first, so already-analysed files
-/// are recomputed (necessary after a detection/scoring change).
+/// `force` marks the folder's stored results stale first, so already-analysed
+/// files are recomputed (necessary after a detection/scoring change) without
+/// losing the old verdicts if the run is stopped.
 #[tauri::command]
 pub(crate) fn analyze_folder(
     app: AppHandle,
@@ -473,6 +544,7 @@ pub(crate) fn analyze_folder(
     force: Option<bool>,
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
     let cancel = CancelToken::new();
     {
         // Supersede any run that is still winding down, so restarting after a
@@ -485,14 +557,32 @@ pub(crate) fn analyze_folder(
     }
     let force = force.unwrap_or(false);
 
-    std::thread::spawn(move || {
+    // Hold the thread slot across take+spawn+store: a second click must see the
+    // first run's handle so it can wait for it.
+    let mut slot = state.analysis_thread.lock().map_err(err)?;
+    let previous = slot.take();
+    let handle = std::thread::spawn(move || {
+        // Never let two ingest threads write at once (and never let a `force`
+        // clear race with the run it is replacing).
+        if let Some(previous) = previous {
+            let _ = previous.join();
+        }
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if force {
+                // Stale, not deleted: stopping straight after the restart keeps
+                // the old verdicts instead of losing the whole folder.
                 let conn = open(&db_path)?;
-                let cleared = analysis_store::clear_folder(&conn, folder).map_err(err)?;
-                tracing::info!(cleared, "re-analysing: cleared stored results");
+                let stale = analysis_store::mark_folder_stale(&conn, folder).map_err(err)?;
+                tracing::info!(stale, "re-analysing: marked stored results stale");
             }
-            run_analysis(&app, &db_path, folder, model.as_deref(), &cancel)
+            run_analysis(
+                &app,
+                &db_path,
+                &cache_root,
+                folder,
+                model.as_deref(),
+                &cancel,
+            )
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -515,6 +605,7 @@ pub(crate) fn analyze_folder(
             }
         }
     });
+    *slot = Some(handle);
     Ok(())
 }
 
@@ -536,8 +627,12 @@ pub(crate) async fn set_subject_box(
     w: i32,
     h: i32,
 ) -> Result<AnalysisDetailDto, String> {
+    if w <= 0 || h <= 0 {
+        return Err("the box needs a positive width and height".to_string());
+    }
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, Some(BBox::new(x, y, w, h)), &[])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, Some(BBox::new(x, y, w, h)), &[])).await
 }
 
 /// Drop one subject box (and re-score the rest); removing the last one leaves
@@ -552,7 +647,8 @@ pub(crate) async fn remove_subject(
     h: i32,
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, None, &[BBox::new(x, y, w, h)])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[BBox::new(x, y, w, h)])).await
 }
 
 /// Re-run detection + species ID for one file (the review view's "Identify").
@@ -562,7 +658,8 @@ pub(crate) async fn identify_subject(
     file: i64,
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
-    blocking(move || reevaluate(&db_path, file, None, &[])).await
+    let pipeline = state.pipeline.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[])).await
 }
 
 /// Recompute verdicts for a folder from stored features (no re-decode).

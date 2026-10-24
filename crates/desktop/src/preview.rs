@@ -15,8 +15,9 @@ use birdsorter_core::io::adjust;
 use birdsorter_core::io::cache::{ThumbCache, RENDER_CACHE_VERSION};
 use birdsorter_core::io::decoder::{dynamic_to_rgb, CompositeDecoder, ImageDecoder};
 use birdsorter_core::io::default_decoders;
-use birdsorter_core::io::develop::develop_preview;
-use birdsorter_core::io::export::ImageFormat;
+use birdsorter_core::io::denoise::{blend_strength, MIN_STRENGTH};
+use birdsorter_core::io::develop::{develop_preview, resize_max};
+use birdsorter_core::io::export::{unique_target, ImageFormat};
 use birdsorter_core::io::thumb::{
     cached_coalesced, encode_rgb_jpeg, encode_rgb_tiff, render_key, thumbnail_cached_with,
     RenderGates,
@@ -32,6 +33,48 @@ type RenderFn = Box<dyn FnOnce() -> birdsorter_core::Result<Vec<u8>>>;
 fn data_url(bytes: Vec<u8>) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!("data:image/jpeg;base64,{b64}")
+}
+
+/// Write bytes through a unique temp file in the same directory, then rename.
+///
+/// A crash or a full disk must not leave a truncated file under the final name —
+/// for an export that would look like a finished image, and for the denoise
+/// cache it would be served as model output for the wrong pixels.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("part.{}.{}", std::process::id(), seq));
+    std::fs::write(&tmp, bytes).map_err(err)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(e));
+    }
+    Ok(())
+}
+
+/// Resolve a user-chosen export destination: only the two encodings we can
+/// write, and never an existing file (the save dialog lets any name through,
+/// and a RAW original must never be overwritten — see `rule.md`).
+fn export_target(dest: &str) -> Result<std::path::PathBuf, String> {
+    let path = Path::new(dest);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "tif" | "tiff") {
+        return Err("export destination must end in .jpg, .jpeg, .tif or .tiff".to_string());
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "export destination needs a folder".to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "export destination has an invalid file name".to_string())?;
+    Ok(unique_target(parent, name))
 }
 
 fn thumbnail_impl(
@@ -134,6 +177,134 @@ fn preview_adjusted_impl(
     Ok(data_url(bytes))
 }
 
+/// Bump when a change makes previously cached model output wrong (e.g. the
+/// unstable-tile retry). Kept separate from `RENDER_CACHE_VERSION`, which is for
+/// previews.
+const DENOISE_CACHE_VERSION: u32 = 2;
+
+/// Where the cached model output for one render lives.
+///
+/// Kept outside the `*.thumb` shard tree: those names encode `{hash}@v@{dim}` and
+/// the cache pruner would reject this suffix.
+///
+/// shortcut: denoised previews are never pruned or counted against the cache
+/// budget; fold them into `ThumbCache` when the cache UI is next touched.
+fn denoised_cache_path(cache_root: &Path, hash: &str, mode: &str) -> std::path::PathBuf {
+    cache_root.join("denoise").join(format!(
+        "{hash}@v{RENDER_CACHE_VERSION}@{mode}@dn{DENOISE_CACHE_VERSION}.jpg"
+    ))
+}
+
+/// Model output for one preview, computed once and cached next to the renders.
+fn denoised_rgb(
+    cache_root: &Path,
+    db_path: &Path,
+    gates: &RenderGates,
+    file: i64,
+    mode: &str,
+) -> Result<std::path::PathBuf, String> {
+    let conn = open_ready(db_path)?;
+    let lf = library::get_file(&conn, file)
+        .map_err(err)?
+        .ok_or_else(|| "file not found".to_string())?;
+    drop(conn);
+
+    let cached = denoised_cache_path(cache_root, &lf.file.content_hash, mode);
+    if cached.is_file() {
+        return Ok(cached);
+    }
+
+    let base = base_preview(cache_root, db_path, gates, file, mode)?;
+    let rgb = dynamic_to_rgb(image::load_from_memory(&base).map_err(err)?, None);
+    let dir = birdsorter_core::data::registry::default_model_dir().map_err(err)?;
+    // Denoise is the one heavy model, and the GPU wins big here: measured
+    // 0.5 s/MP on DirectML vs 3.5 s/MP on a 28-core CPU. Prefer it and fall back
+    // to CPU automatically; the shared `device` setting stays a detector/species
+    // choice (those small models are faster on CPU).
+    let denoiser = birdsorter_core::runtime::OnnxDenoiser::load(
+        &dir,
+        birdsorter_core::runtime::DevicePreference::Auto,
+    )
+    .map_err(err)?
+    .ok_or_else(|| {
+        format!(
+            "no denoise model installed — put denoise_srgb.onnx in {}",
+            dir.display()
+        )
+    })?;
+
+    tracing::info!(
+        file,
+        mode,
+        provider = if denoiser.is_gpu() { "gpu" } else { "cpu" },
+        "denoising a preview (first run for this photo)"
+    );
+    let clean = denoiser.denoise(&rgb).map_err(err)?;
+    let bytes = encode_rgb_jpeg(&clean, 95).map_err(err)?;
+    if let Some(parent) = cached.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
+    }
+    write_atomic(&cached, &bytes)?;
+    Ok(cached)
+}
+
+/// The base preview blended `strength` of the way toward its cached denoised
+/// render. `strength` is clamped; `0` returns the untouched base.
+fn blended_preview_rgb(
+    cache_root: &Path,
+    db_path: &Path,
+    gates: &RenderGates,
+    file: i64,
+    mode: &str,
+    strength: f32,
+) -> Result<Array3<u8>, String> {
+    let denoised = denoised_rgb(cache_root, db_path, gates, file, mode)?;
+    let base = base_preview(cache_root, db_path, gates, file, mode)?;
+    let original = dynamic_to_rgb(image::load_from_memory(&base).map_err(err)?, None);
+    let clean = dynamic_to_rgb(
+        image::load_from_memory(&std::fs::read(&denoised).map_err(err)?).map_err(err)?,
+        None,
+    );
+    Ok(blend_strength(&original, &clean, strength))
+}
+
+/// Preview with AI denoise: run the model once per photo (cached on disk), then
+/// blend toward the original by `strength` and apply `adjustments`.
+///
+/// `strength` is residual re-injection, `0` = untouched and `1` = full model
+/// output, so the slider never re-runs the network after the first use.
+#[tauri::command]
+pub(crate) async fn preview_denoised(
+    state: State<'_, AppState>,
+    file: i64,
+    mode: Option<String>,
+    adjustments: adjust::Adjustments,
+    strength: f32,
+) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    let gates = state.render_gates.clone();
+    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    blocking(move || {
+        let strength = strength.clamp(0.0, 1.0);
+        if strength <= MIN_STRENGTH {
+            return preview_adjusted_impl(&cache_root, &db_path, &gates, file, &mode, &adjustments);
+        }
+        let blended = blended_preview_rgb(&cache_root, &db_path, &gates, file, &mode, strength)?;
+        let adjusted = adjust::apply(&blended, &adjustments);
+        let bytes = encode_rgb_jpeg(&adjusted, 92).map_err(err)?;
+        Ok(data_url(bytes))
+    })
+    .await
+}
+
+/// True when a denoise model is installed (drives the review's switch).
+#[tauri::command]
+pub(crate) async fn denoise_available() -> Result<bool, String> {
+    let dir = birdsorter_core::data::registry::default_model_dir().map_err(err)?;
+    Ok(dir.join(birdsorter_core::runtime::DENOISE_ONNX).is_file())
+}
+
 /// Grid thumbnail as a data URL (generated on demand and cached on disk).
 #[tauri::command]
 pub(crate) async fn thumbnail(state: State<'_, AppState>, file: i64) -> Result<String, String> {
@@ -160,7 +331,8 @@ pub(crate) async fn preview_image(
 /// Write a JPEG or lossless TIFF (chosen by the destination suffix) of the
 /// cached preview with `adjustments` applied. The original file is never
 /// touched; `mode` chooses the resolution (fast = 2400 px, full = the camera's
-/// native preview).
+/// native preview), `max_edge` optionally downscales the written file, and
+/// `denoise` applies the same AI-denoise strength the review preview uses.
 #[tauri::command]
 pub(crate) async fn export_edited(
     state: State<'_, AppState>,
@@ -168,20 +340,36 @@ pub(crate) async fn export_edited(
     mode: Option<String>,
     adjustments: adjust::Adjustments,
     dest: String,
+    max_edge: Option<u32>,
+    denoise: Option<f32>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
     let mode = mode.unwrap_or_else(|| "fast".to_string());
     blocking(move || {
-        let base = base_preview(&cache_root, &db_path, &gates, file, &mode)?;
-        let rgb = adjust::decode_and_apply(&base, &adjustments).map_err(err)?;
-        let bytes = match ImageFormat::from_path(Path::new(&dest)) {
+        let target = export_target(&dest)?;
+        let rgb = match denoise.map(|s| s.clamp(0.0, 1.0)) {
+            Some(strength) if strength > MIN_STRENGTH => {
+                let blended =
+                    blended_preview_rgb(&cache_root, &db_path, &gates, file, &mode, strength)?;
+                adjust::apply(&blended, &adjustments)
+            }
+            _ => {
+                let base = base_preview(&cache_root, &db_path, &gates, file, &mode)?;
+                adjust::decode_and_apply(&base, &adjustments).map_err(err)?
+            }
+        };
+        let rgb = match max_edge {
+            Some(edge) => resize_max(rgb, edge.clamp(64, 8192)),
+            None => rgb,
+        };
+        let bytes = match ImageFormat::from_path(&target) {
             ImageFormat::Tiff => encode_rgb_tiff(&rgb).map_err(err)?,
             ImageFormat::Jpeg => encode_rgb_jpeg(&rgb, 92).map_err(err)?,
         };
-        std::fs::write(&dest, &bytes).map_err(err)?;
-        Ok(dest)
+        write_atomic(&target, &bytes)?;
+        Ok(target.to_string_lossy().into_owned())
     })
     .await
 }
@@ -344,6 +532,33 @@ mod tests {
             .decode(encoded)
             .expect("base64");
         image::load_from_memory(&bytes).expect("JPEG")
+    }
+
+    #[test]
+    fn export_target_rejects_foreign_suffixes_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        let dest = dir_path.join("shot.jpg");
+
+        // A fresh name is used as typed.
+        let target = export_target(dest.to_str().unwrap()).unwrap();
+        assert_eq!(target, dest);
+
+        // An existing file gets the batch exporter's ` (1)` suffix.
+        std::fs::write(&dest, b"keep me").unwrap();
+        let target = export_target(dest.to_str().unwrap()).unwrap();
+        assert_eq!(target, dir_path.join("shot (1).jpg"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"keep me");
+
+        // Only the two encodings we can write are accepted: a RAW original or a
+        // misleading suffix must be rejected before anything touches the disk.
+        for bad in ["shot.cr3", "shot.png", "shot", "shot.tiff.bak"] {
+            let path = dir_path.join(bad);
+            assert!(
+                export_target(path.to_str().unwrap()).is_err(),
+                "{bad} should be rejected"
+            );
+        }
     }
 
     #[test]

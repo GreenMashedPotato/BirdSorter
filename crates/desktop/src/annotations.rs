@@ -10,18 +10,28 @@ use crate::state::AppState;
 use crate::util::{blocking, err, open, open_ready};
 use crate::xmp_sync;
 
+/// The species override that was in place before a change, so the UI can undo it
+/// (`None` means there was no override, not "unknown").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpeciesUndo {
+    pub(crate) species: Option<String>,
+    pub(crate) confidence: Option<f32>,
+}
+
 /// Set or clear the species override for a file, mirroring the effective
-/// species into the sidecar as a keyword.
+/// species into the sidecar as a keyword. Returns the previous override state.
 #[tauri::command]
 pub(crate) async fn set_species(
     state: State<'_, AppState>,
     file: i64,
     species: Option<String>,
     confidence: Option<f32>,
-) -> Result<(), String> {
+) -> Result<SpeciesUndo, String> {
     let db_path = state.db_path.clone();
     blocking(move || {
         let conn = open(&db_path)?;
+        let previous = analysis_store::get_species_override(&conn, file).map_err(err)?;
         let before = analysis_store::get_analysis(&conn, file)
             .map_err(err)?
             .and_then(|analysis| analysis.species_name);
@@ -36,7 +46,16 @@ pub(crate) async fn set_species(
             .map_err(err)?
             .and_then(|analysis| analysis.species_name);
         xmp_sync::sync_species_keyword(&conn, file, before.as_deref(), after.as_deref());
-        Ok(())
+        Ok(match previous {
+            Some((species, confidence)) => SpeciesUndo {
+                species: Some(species),
+                confidence: Some(confidence),
+            },
+            None => SpeciesUndo {
+                species: None,
+                confidence: None,
+            },
+        })
     })
     .await
 }
@@ -84,54 +103,76 @@ pub(crate) struct EyePointDto {
 
 /// Keypoints stored for a file (eye/head/beak), for the review overlay.
 #[tauri::command]
-pub(crate) fn eye_points(state: State<AppState>, file: i64) -> Result<Vec<EyePointDto>, String> {
-    let conn = open_ready(&state.db_path)?;
-    let points = eye_labels::eye_points(&conn, file).map_err(err)?;
-    Ok(points
-        .into_iter()
-        .map(|p| EyePointDto {
-            x: p.x,
-            y: p.y,
-            kind: p.kind.as_str().to_string(),
-        })
-        .collect())
+pub(crate) async fn eye_points(
+    state: State<'_, AppState>,
+    file: i64,
+) -> Result<Vec<EyePointDto>, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open_ready(&db_path)?;
+        let points = eye_labels::eye_points(&conn, file).map_err(err)?;
+        Ok(points
+            .into_iter()
+            .map(|p| EyePointDto {
+                x: p.x,
+                y: p.y,
+                kind: p.kind.as_str().to_string(),
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Append one hand-labelled keypoint (analysis-image pixels).
 #[tauri::command]
-pub(crate) fn add_eye_point(
-    state: State<AppState>,
+pub(crate) async fn add_eye_point(
+    state: State<'_, AppState>,
     file: i64,
     x: i32,
     y: i32,
     kind: String,
 ) -> Result<usize, String> {
     let kind: eye_labels::EyePointKind = kind.parse().map_err(err)?;
-    let conn = open(&state.db_path)?;
-    let dims = analysis_store::get_analysis(&conn, file)
-        .map_err(err)?
-        .and_then(|a| a.image_width.zip(a.image_height));
-    if let Some((width, height)) = dims {
-        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
-            return Err(format!(
-                "point ({x},{y}) is outside the {width}x{height} analysis image"
-            ));
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        let dims = analysis_store::get_analysis(&conn, file)
+            .map_err(err)?
+            .and_then(|a| a.image_width.zip(a.image_height));
+        if let Some((width, height)) = dims {
+            if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+                return Err(format!(
+                    "point ({x},{y}) is outside the {width}x{height} analysis image"
+                ));
+            }
         }
-    }
-    eye_labels::add_eye_point(&conn, file, x, y, kind).map_err(err)?;
-    Ok(eye_labels::eye_points(&conn, file).map_err(err)?.len())
+        eye_labels::add_eye_point(&conn, file, x, y, kind).map_err(err)?;
+        Ok(eye_labels::eye_points(&conn, file).map_err(err)?.len())
+    })
+    .await
 }
 
 /// Remove every keypoint from a file.
 #[tauri::command]
-pub(crate) fn clear_eye_points(state: State<AppState>, file: i64) -> Result<usize, String> {
-    let conn = open(&state.db_path)?;
-    eye_labels::clear_eye_points(&conn, file).map_err(err)
+pub(crate) async fn clear_eye_points(
+    state: State<'_, AppState>,
+    file: i64,
+) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        eye_labels::clear_eye_points(&conn, file).map_err(err)
+    })
+    .await
 }
 
 /// How many files have eye labels — progress toward the training set.
 #[tauri::command]
-pub(crate) fn eye_label_stats(state: State<AppState>) -> Result<usize, String> {
-    let conn = open(&state.db_path)?;
-    eye_labels::labelled_file_count(&conn).map_err(err)
+pub(crate) async fn eye_label_stats(state: State<'_, AppState>) -> Result<usize, String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        eye_labels::labelled_file_count(&conn).map_err(err)
+    })
+    .await
 }

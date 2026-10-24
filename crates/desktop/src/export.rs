@@ -101,11 +101,16 @@ pub(crate) async fn export_file(
             .map_err(err)?
             .ok_or_else(|| "file not found".to_string())?;
         let items = vec![ExportItem {
-            src: lf.absolute_path,
+            src: lf.absolute_path.clone(),
             species: species_of(&conn, file)?,
         }];
         let warning = copy_space_warning(mode, &items, Path::new(&dest));
         let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
+        // A move removes the original: hide the row so the grid does not keep
+        // listing a photo that is no longer there.
+        if mode == ExportMode::Move && !lf.absolute_path.exists() {
+            library::set_trashed(&conn, &[file], true).map_err(err)?;
+        }
         Ok(to_dto(report, warning))
     })
     .await
@@ -258,14 +263,26 @@ pub(crate) async fn export_keepers(
             }
         };
         let mut items: Vec<ExportItem> = Vec::with_capacity(files.len());
-        for f in files {
+        for f in &files {
             items.push(ExportItem {
-                src: f.absolute_path,
+                src: f.absolute_path.clone(),
                 species: species_of(&conn, f.file.id)?,
             });
         }
         let warning = copy_space_warning(mode, &items, Path::new(&dest));
         let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
+        // Moved originals are gone: soft-delete their rows so the grid and the
+        // next "export keepers" do not list them again.
+        if mode == ExportMode::Move {
+            let moved: Vec<i64> = files
+                .iter()
+                .filter(|f| !f.absolute_path.exists())
+                .map(|f| f.file.id)
+                .collect();
+            if !moved.is_empty() {
+                library::set_trashed(&conn, &moved, true).map_err(err)?;
+            }
+        }
         Ok(to_dto(report, warning))
     })
     .await
