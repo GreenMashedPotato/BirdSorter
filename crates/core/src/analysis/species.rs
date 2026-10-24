@@ -118,6 +118,40 @@ pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {
     Some(view.to_owned())
 }
 
+/// Mean Rec.709 luma of an image, in `[0, 1]`.
+fn mean_luma(img: &image::RgbImage) -> f32 {
+    if img.width() == 0 || img.height() == 0 {
+        return 0.0;
+    }
+    let sum: f32 = img
+        .pixels()
+        .map(|p| 0.2126 * p.0[0] as f32 + 0.7152 * p.0[1] as f32 + 0.0722 * p.0[2] as f32)
+        .sum();
+    sum / (img.width() * img.height()) as f32 / 255.0
+}
+
+/// Exposure gain applied to a crop before classification.
+///
+/// A bird shot at high ISO or in deep shadow hands the classifier a nearly black
+/// rectangle, far outside the daylight images it was trained on. Crops whose
+/// mean luma is below `DARK_MEAN` are lifted toward `TARGET_MEAN`; anything
+/// brighter is left alone, the gain is capped at [`MAX_GAIN`] (about two stops),
+/// and a pure-black crop is not amplified at all — there is no detail to recover.
+pub fn exposure_gain(img: &image::RgbImage) -> f32 {
+    /// Below this mean luma a crop counts as underexposed.
+    const DARK_MEAN: f32 = 0.16;
+    /// Mean luma the lift aims for.
+    const TARGET_MEAN: f32 = 0.30;
+    /// Never brighten more than ~2 stops, or a real silhouette turns grey.
+    const MAX_GAIN: f32 = 4.0;
+
+    let mean = mean_luma(img);
+    if mean >= DARK_MEAN || mean <= 0.001 {
+        return 1.0;
+    }
+    (TARGET_MEAN / mean).clamp(1.0, MAX_GAIN)
+}
+
 /// Resize a crop to `size x size` and normalise to NCHW `f32`.
 ///
 /// Two layouts are supported, selected by [`SpeciesPreprocess::resize`]:
@@ -126,7 +160,8 @@ pub fn crop_rgb(rgb: &Array3<u8>, bbox: BBox) -> Option<Array3<u8>> {
 ///   centre-crop, which is what the iNat21 ConvNeXt model expects.
 ///
 /// [`SpeciesPreprocess::filter`] picks the resampling kernel (`nearest`,
-/// `triangle` or `bicubic`).
+/// `triangle` or `bicubic`). Underexposed crops are lifted by
+/// [`exposure_gain`] before normalisation.
 pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
     let (h, w, _) = crop.dim();
     let s = cfg.size as usize;
@@ -161,11 +196,12 @@ pub fn preprocess_crop(crop: &Array3<u8>, cfg: &SpeciesPreprocess) -> Vec<f32> {
         image::imageops::resize(&img, cfg.size, cfg.size, filter)
     };
 
+    let gain = exposure_gain(&resized);
     for y in 0..s {
         for x in 0..s {
             let px = resized.get_pixel(x as u32, y as u32).0;
             for c in 0..3 {
-                let v = px[c] as f32 / 255.0;
+                let v = (px[c] as f32 / 255.0 * gain).min(1.0);
                 out[c * s * s + y * s + x] = (v - cfg.mean[c]) / cfg.std[c];
             }
         }
@@ -300,6 +336,46 @@ mod tests {
         let s = cfg.size as usize;
         assert_eq!(buf.len(), 3 * s * s);
         assert!(buf.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn dark_crops_get_an_exposure_lift_bounded_to_two_stops() {
+        let img = |v: u8| image::RgbImage::from_pixel(8, 8, image::Rgb([v, v, v]));
+
+        assert_eq!(
+            exposure_gain(&img(0)),
+            1.0,
+            "black has no detail to recover"
+        );
+        assert_eq!(exposure_gain(&img(200)), 1.0, "bright crops are untouched");
+        assert_eq!(exposure_gain(&img(10)), 4.0, "capped at about two stops");
+
+        let mid_dark = exposure_gain(&img(40));
+        let expected = 0.30 / (40.0 / 255.0);
+        assert!((mid_dark - expected).abs() < 0.01, "got {mid_dark}");
+    }
+
+    #[test]
+    fn preprocess_lifts_an_underexposed_crop_to_mid_tone() {
+        let cfg = SpeciesPreprocess {
+            size: 16,
+            mean: [0.0; 3],
+            std: [1.0; 3],
+            resize: Some("squash".to_string()),
+            filter: None,
+            crop_pct: None,
+        };
+        let buf = preprocess_crop(&solid(30, 30, 20), &cfg);
+        let mean = buf.iter().sum::<f32>() / buf.len() as f32;
+        assert!((mean - 0.30).abs() < 0.02, "crop was not lifted: {mean}");
+
+        // The same crop at full exposure keeps its value.
+        let bright = preprocess_crop(&solid(30, 30, 200), &cfg);
+        let bright_mean = bright.iter().sum::<f32>() / bright.len() as f32;
+        assert!(
+            (bright_mean - 200.0 / 255.0).abs() < 1e-3,
+            "got {bright_mean}"
+        );
     }
 
     #[test]

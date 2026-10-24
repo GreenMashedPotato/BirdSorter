@@ -23,11 +23,14 @@ use birdsorter_core::io::contact_sheet::PageSize;
 use birdsorter_core::io::decoder::{CompositeDecoder, ImageDecoder};
 use birdsorter_core::io::exif;
 use birdsorter_core::io::hash::hash_file;
+use birdsorter_core::io::import::{import_folder, ImportOptions};
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     ingest_folder, IngestContext, IngestProgress, RulesScorer, VerdictScorer,
 };
-use birdsorter_core::runtime::{DevicePreference, OnnxDetector, OnnxSpeciesClassifier};
+use birdsorter_core::runtime::{
+    DevicePreference, OnnxDenoiser, OnnxDetector, OnnxSpeciesClassifier,
+};
 use ndarray::Array3;
 
 fn usage() -> &'static str {
@@ -35,6 +38,11 @@ fn usage() -> &'static str {
 
 Commands:
   hash <file>...              Print xxh3 content hashes (file identity)
+  import <source> <dest> [--flat]  Copy photos off a card, one folder per capture day
+                              (originals stay on the card; nothing is overwritten)
+  denoise <in> <out> [--strength 0..1] [--device auto|cpu|gpu] [--tile <px>] [--model <dir>]
+                              Tiled AI denoise of one image (render only; the
+                              verdict path is never touched)
   analyze <folder> [options]  Scan a folder and analyse every pending RAW
       --force                   Re-analyse files that already have results
       --model <path.onnx>       Use a YOLO ONNX detector (needs a model file)
@@ -117,6 +125,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("hash") => cmd_hash(&args[1..]),
+        Some("import") => cmd_import(&args[1..]),
+        Some("denoise") => cmd_denoise(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("bursts") => cmd_bursts(&args[1..]),
@@ -142,6 +152,182 @@ fn main() -> ExitCode {
         Some(other) => {
             eprintln!("unknown command: {other}\n");
             print!("{}", usage());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `birdsorter denoise <in> <out> [--strength 0..1] [--model <dir>]`
+///
+/// Tiled AI denoise of one image. Render-only: nothing here touches the verdict
+/// path. `--strength` blends the model output back toward the original.
+fn cmd_denoise(args: &[String]) -> ExitCode {
+    let mut files: Vec<String> = Vec::new();
+    let mut strength = 1.0f32;
+    let mut model_dir: Option<PathBuf> = None;
+    let mut device = DevicePreference::Auto;
+    let mut plan = birdsorter_core::io::denoise::TilePlan::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--strength" => {
+                strength = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(1.0)
+                    .clamp(0.0, 1.0);
+                i += 2;
+            }
+            "--device" => {
+                device = DevicePreference::from_setting(
+                    args.get(i + 1).map(String::as_str).unwrap_or("auto"),
+                );
+                i += 2;
+            }
+            "--model" => {
+                model_dir = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--tile" => {
+                if let Some(tile) = args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                    plan.tile = tile;
+                }
+                i += 2;
+            }
+            other if other.starts_with("--") => {
+                eprintln!("denoise: unknown option {other}");
+                return ExitCode::FAILURE;
+            }
+            other => {
+                files.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+    let (Some(input), Some(output)) = (files.first(), files.get(1)) else {
+        eprintln!("usage: birdsorter denoise <in> <out> [--strength 0..1] [--model <dir>]");
+        return ExitCode::FAILURE;
+    };
+
+    let dir = match model_dir {
+        Some(dir) => dir,
+        None => match registry::default_model_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("denoise: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let denoiser = match OnnxDenoiser::load_with(&dir, device, plan) {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            eprintln!(
+                "denoise: no model installed — put denoise_srgb.onnx in {}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("denoise: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let decoder = birdsorter_core::io::default_decoders(None);
+    let mut decoded = None;
+    for d in &decoder {
+        if let Ok(img) = d.decode(Path::new(input)) {
+            decoded = Some(img);
+            break;
+        }
+    }
+    let Some(decoded) = decoded else {
+        eprintln!("denoise: cannot decode {input}");
+        return ExitCode::FAILURE;
+    };
+    let (w, h) = decoded.dimensions();
+    println!(
+        "{input}: {w}x{h} ({})",
+        if denoiser.is_gpu() { "GPU" } else { "CPU" }
+    );
+
+    let started = std::time::Instant::now();
+    let clean = match denoiser.denoise(&decoded.rgb) {
+        Ok(img) => img,
+        Err(e) => {
+            eprintln!("denoise: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let blended = birdsorter_core::io::denoise::blend_strength(&decoded.rgb, &clean, strength);
+    let elapsed = started.elapsed();
+
+    let bytes = if Path::new(output)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("tif") || e.eq_ignore_ascii_case("tiff"))
+        .unwrap_or(false)
+    {
+        birdsorter_core::io::thumb::encode_rgb_tiff(&blended)
+    } else {
+        birdsorter_core::io::thumb::encode_rgb_jpeg(&blended, 95)
+    };
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("denoise: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match std::fs::write(output, &bytes) {
+        Ok(()) => {
+            println!(
+                "wrote {output} (strength {strength:.2}) in {:.1}s — {:.1} MP, {:.2}s/MP",
+                elapsed.as_secs_f32(),
+                (w * h) as f32 / 1e6,
+                elapsed.as_secs_f32() / ((w * h) as f32 / 1e6)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("denoise: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `birdsorter import <source> <dest> [--flat]` — copy photos out of a card,
+/// one folder per capture day unless `--flat` is given.
+fn cmd_import(args: &[String]) -> ExitCode {
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let (Some(source), Some(dest)) = (positional.first(), positional.get(1)) else {
+        eprintln!("usage: birdsorter import <source> <dest> [--flat]");
+        return ExitCode::FAILURE;
+    };
+    let opts = ImportOptions {
+        by_day: !args.iter().any(|a| a == "--flat"),
+    };
+    match import_folder(Path::new(source), Path::new(dest), &opts) {
+        Ok(report) => {
+            println!(
+                "copied {} file(s) ({} MB), {} already there, {} failed",
+                report.copied,
+                report.bytes / (1024 * 1024),
+                report.skipped,
+                report.failed.len()
+            );
+            for (path, why) in &report.failed {
+                eprintln!("  {}: {why}", path.display());
+            }
+            if report.failed.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!("import: {e}");
             ExitCode::FAILURE
         }
     }
@@ -965,11 +1151,11 @@ fn cmd_export(args: &[String]) -> ExitCode {
         }
         // Species for `--by species` / `{species}` comes from the library.
         let mut items: Vec<ExportItem> = Vec::with_capacity(files.len());
-        for f in files {
+        for f in &files {
             let species =
                 analysis_store::get_analysis(&conn, f.file.id)?.and_then(|a| a.species_name);
             items.push(ExportItem {
-                src: f.absolute_path,
+                src: f.absolute_path.clone(),
                 species,
             });
         }
@@ -983,6 +1169,18 @@ fn cmd_export(args: &[String]) -> ExitCode {
             }
         }
         let report = export_items(&items, Path::new(dest), mode, &opts)?;
+        // A move removes the originals: soft-delete the rows so the library
+        // stops listing files that are no longer on disk.
+        if mode == ExportMode::Move {
+            let moved: Vec<i64> = files
+                .iter()
+                .filter(|f| !f.absolute_path.exists())
+                .map(|f| f.file.id)
+                .collect();
+            if !moved.is_empty() {
+                library::set_trashed(&conn, &moved, true)?;
+            }
+        }
         println!(
             "exported {} file(s) to {}",
             report.exported,
@@ -1487,10 +1685,12 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         untouched,
         seen,
         restored,
+        relinked,
+        missing,
     } = library::scan_folder(&conn, folder_id)?;
     println!(
         "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
-         {restored} restored)"
+         {restored} restored, {relinked} moved, {missing} gone)"
     );
 
     // `--force` recomputes files that already have results.

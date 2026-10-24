@@ -103,6 +103,10 @@ pub struct ScanReport {
     pub seen: usize,
     /// Trashed rows whose file is back on disk (restored from the OS trash).
     pub restored: usize,
+    /// Rows matched to a renamed/moved file by content hash (analysis kept).
+    pub relinked: usize,
+    /// Rows soft-deleted because the file is no longer on disk.
+    pub missing: usize,
 }
 
 fn detect_format(path: &Path) -> String {
@@ -232,6 +236,7 @@ enum Pending {
     Update {
         id: i64,
         rel: String,
+        name: String,
         hash: String,
         size: i64,
         mtime: f64,
@@ -284,16 +289,21 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                 Pending::Update {
                     id,
                     rel,
+                    name,
                     hash,
                     size,
                     mtime,
                     captured_at,
                 } => {
+                    // `rel`/`name` are the same for a content change and new for
+                    // a rename matched by hash (the row keeps its analysis).
                     conn.execute(
                         "UPDATE files
-                            SET content_hash = ?1, filesize = ?2, mtime = ?3, captured_at = ?4
-                          WHERE id = ?5",
-                        rusqlite::params![hash, size, mtime, captured_at, id],
+                            SET relative_path = ?1, filename = ?2, content_hash = ?3,
+                                filesize = ?4, mtime = ?5, captured_at = ?6,
+                                trashed_at = NULL
+                          WHERE id = ?7",
+                        rusqlite::params![rel, name, hash, size, mtime, captured_at, id],
                     )?;
                     if let Some(rating) =
                         crate::io::xmp::read_rating(&PathBuf::from(&base).join(rel))
@@ -347,6 +357,12 @@ pub fn scan_folder_streaming(
         .optional()?
         .ok_or_else(|| CoreError::not_found(format!("unknown folder_id {folder_id}")))?;
     let base = PathBuf::from(base);
+    // An unplugged drive or unmounted share is not "every photo was deleted":
+    // leave the rows alone until the folder is available again.
+    if !base.is_dir() {
+        tracing::warn!(path = %base.display(), "scan skipped: the folder is not available");
+        return Ok(ScanReport::default());
+    }
 
     // Files the user restored from the OS trash are back on disk: clear their
     // marker before the walk so they show up in the grid again.
@@ -422,9 +438,23 @@ pub fn scan_folder_streaming(
     };
     let mut pending: Vec<Pending> = Vec::new();
     const FLUSH_EVERY: usize = 10;
+    let mut cancelled = false;
+
+    // Rows the walk did not see at their stored path: the file was renamed or
+    // moved inside the folder (same content hash -> relink the row, keeping its
+    // analysis, labels and edits) or it is gone (soft-delete after the walk).
+    let walked: std::collections::HashSet<&str> =
+        candidates.iter().map(|c| c.rel.as_str()).collect();
+    let mut orphans: HashMap<String, i64> = HashMap::new();
+    for (rel, (id, hash, _, _, _)) in &existing {
+        if !walked.contains(rel.as_str()) {
+            orphans.entry(hash.clone()).or_insert(*id);
+        }
+    }
 
     for (done, cand) in candidates.iter().enumerate() {
         if cancel() {
+            cancelled = true;
             break;
         }
         let Candidate {
@@ -439,19 +469,19 @@ pub fn scan_folder_streaming(
             // Untouched only when the capture time has already been computed
             // (an empty string means "computed, but no EXIF timestamp"), so a
             // rescan backfills capture times for older libraries.
-            Some((id, _hash, prev_size, prev_mtime, prev_captured))
+            Some((_, _, prev_size, prev_mtime, prev_captured))
                 if *prev_size == size
                     && (*prev_mtime - mtime).abs() < 1e-3
                     && prev_captured.is_some() =>
             {
                 report.untouched += 1;
-                let _ = id;
             }
-            Some((id, _hash, _, _, _)) => {
+            Some((id, _, _, _, _)) => {
                 let hash = hash_file(path)?;
                 pending.push(Pending::Update {
                     id: *id,
                     rel: rel.clone(),
+                    name: file_name_of(path),
                     hash,
                     size,
                     mtime,
@@ -461,19 +491,34 @@ pub fn scan_folder_streaming(
             }
             None => {
                 let hash = hash_file(path)?;
-                pending.push(Pending::Insert {
-                    rel: rel.clone(),
-                    name: path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    hash,
-                    size,
-                    mtime,
-                    format: detect_format(path),
-                    captured_at: Some(crate::io::exif::capture_time(path).unwrap_or_default()),
-                });
-                report.added += 1;
+                let captured_at = Some(crate::io::exif::capture_time(path).unwrap_or_default());
+                match orphans.remove(&hash) {
+                    // Renamed/moved within the folder: same content, new path.
+                    Some(id) => {
+                        pending.push(Pending::Update {
+                            id,
+                            rel: rel.clone(),
+                            name: file_name_of(path),
+                            hash,
+                            size,
+                            mtime,
+                            captured_at,
+                        });
+                        report.relinked += 1;
+                    }
+                    None => {
+                        pending.push(Pending::Insert {
+                            rel: rel.clone(),
+                            name: file_name_of(path),
+                            hash,
+                            size,
+                            mtime,
+                            format: detect_format(path),
+                            captured_at,
+                        });
+                        report.added += 1;
+                    }
+                }
             }
         }
 
@@ -484,6 +529,19 @@ pub fn scan_folder_streaming(
     }
     flush_pending(conn, folder_id, &mut pending)?;
 
+    if cancelled {
+        // A partial walk cannot tell "gone" from "not reached yet", so leave the
+        // folder unstamped and every row alone; the next scan finishes the job.
+        return Ok(report);
+    }
+
+    // Anything still orphaned is no longer on disk: hide it instead of listing a
+    // row that every render and export will fail on.
+    if !orphans.is_empty() {
+        let ids: Vec<i64> = orphans.into_values().collect();
+        report.missing = set_trashed(conn, &ids, true)?;
+    }
+
     with_tx(conn, || {
         conn.execute(
             "UPDATE folders SET last_scanned_at = ?1 WHERE id = ?2",
@@ -492,6 +550,13 @@ pub fn scan_folder_streaming(
         Ok(())
     })?;
     Ok(report)
+}
+
+/// The file's own name, for the `files.filename` column.
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +647,7 @@ pub fn files_with_predicted_label(
            JOIN analysis a ON a.file_id = f.id
           WHERE f.folder_id = ?1
             AND f.trashed_at IS NULL
+            AND COALESCE(a.model_stale, 0) = 0
             AND a.predicted_label = ?2
           ORDER BY f.filename ASC"
     );
@@ -1374,6 +1440,90 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_row_and_analysis() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"raw-a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let before = list_files(&conn, fid, false, false).unwrap()[0]
+            .file
+            .clone();
+
+        // Rename inside the tracked folder: the content hash still identifies it.
+        std::fs::rename(dir.path().join("a.cr3"), dir.path().join("b.cr3")).unwrap();
+        let report = scan_folder(&conn, fid).unwrap();
+
+        let after = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(after.len(), 1, "no duplicate row for the renamed file");
+        assert_eq!(
+            after[0].file.id, before.id,
+            "the row (and its analysis) is kept"
+        );
+        assert_eq!(after[0].file.filename, "b.cr3");
+        assert_eq!(after[0].file.relative_path, "b.cr3");
+        assert_eq!(report.relinked, 1);
+        assert_eq!(report.added, 0);
+        assert_eq!(report.missing, 0);
+    }
+
+    #[test]
+    fn a_deleted_file_is_soft_deleted_on_rescan() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+
+        std::fs::remove_file(dir.path().join("b.cr3")).unwrap();
+        let report = scan_folder(&conn, fid).unwrap();
+
+        assert_eq!(report.missing, 1);
+        let visible = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].file.filename, "a.cr3");
+        // Soft delete only: the row is still there for a restore.
+        assert_eq!(list_files(&conn, fid, true, false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_cancelled_scan_does_not_stamp_or_trash_the_folder() {
+        let (dir, conn) = setup();
+        for i in 0..4 {
+            write(dir.path(), &format!("f{i}.cr3"), b"x");
+        }
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let cancel = std::cell::Cell::new(false);
+        scan_folder_streaming(&conn, fid, &|| cancel.get(), &mut |done, _| {
+            if done >= 1 {
+                cancel.set(true);
+            }
+        })
+        .unwrap();
+
+        assert!(list_folders(&conn).unwrap()[0].last_scanned_at.is_none());
+        assert!(list_files(&conn, fid, true, false).unwrap().len() < 4);
+    }
+
+    #[test]
+    fn an_unavailable_folder_is_not_treated_as_deleted() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+
+        // Simulate an unplugged external drive: the tracked folder is gone.
+        drop(dir);
+
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.missing, 0);
+        assert_eq!(
+            list_files(&conn, fid, false, false).unwrap().len(),
+            1,
+            "the rows must survive an offline volume"
+        );
     }
 
     #[test]

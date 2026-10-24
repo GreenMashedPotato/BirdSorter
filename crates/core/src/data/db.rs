@@ -134,7 +134,10 @@ fn configure(conn: &Connection) -> Result<()> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;
-         PRAGMA temp_store = MEMORY;",
+         PRAGMA temp_store = MEMORY;
+         -- Writers are separate connections (analysis thread, commands), so a
+         -- rating set while ingest is running must wait instead of failing.
+         PRAGMA busy_timeout = 5000;",
     )?;
     Ok(())
 }
@@ -188,6 +191,17 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 }
 
 fn migrate(conn: &Connection, from: i64) -> Result<()> {
+    // One transaction for the whole migration *including* the version stamp:
+    // a crash halfway would otherwise re-run an unguarded `ALTER TABLE ADD
+    // COLUMN` on the next start and leave the library impossible to open.
+    with_tx(conn, || {
+        migrate_steps(conn, from)?;
+        conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
+        Ok(())
+    })
+}
+
+fn migrate_steps(conn: &Connection, from: i64) -> Result<()> {
     if from < 2 {
         conn.execute(
             "UPDATE analysis
@@ -359,7 +373,6 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
             }
         }
     }
-    conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
     Ok(())
 }
 
@@ -643,6 +656,59 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+        // Analysis writes on a second connection must wait, not fail.
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
+    }
+
+    #[test]
+    fn a_failed_migration_rolls_back_and_keeps_the_version() {
+        let conn = connect_in_memory().unwrap();
+        // An analysis table that already has a later column, so the v5 step
+        // fails after the v3/v4 steps succeeded.
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (3);
+             CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                filesize INTEGER NOT NULL,
+                mtime REAL NOT NULL,
+                format TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                trashed_at TEXT,
+                UNIQUE(folder_id, relative_path)
+             );
+             CREATE TABLE analysis (
+                file_id INTEGER PRIMARY KEY,
+                features_json TEXT NOT NULL,
+                sharpness_score REAL NOT NULL,
+                subject_bbox_json TEXT,
+                subject_class TEXT,
+                has_bokeh INTEGER NOT NULL DEFAULT 0,
+                predicted_label TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                subject_species_json TEXT
+             );",
+        )
+        .unwrap();
+
+        assert!(init_schema(&conn).is_err());
+        assert_eq!(schema_version(&conn).unwrap(), Some(3), "version unchanged");
+        let species_name: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('analysis') WHERE name = 'species_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(species_name, 0, "the earlier ALTER must be rolled back");
     }
 
     #[test]

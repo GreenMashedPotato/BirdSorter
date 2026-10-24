@@ -22,3 +22,8 @@ tracing-subscriber.workspace = true
 # Optional HEIC/HEIF input; off by default (HEVC patents). Build with
 # `--features heic` to enable it.
 heic = ["birdsorter-core/heic"]
+# Optional GPU execution providers (the desktop build enables DirectML on
+# Windows). The runtime falls back to CPU when a provider cannot run a model.
+gpu-directml = ["birdsorter-core/gpu-directml"]
+gpu-coreml = ["birdsorter-core/gpu-coreml"]
+gpu-cuda = ["birdsorter-core/gpu-cuda"]

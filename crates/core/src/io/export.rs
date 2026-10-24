@@ -104,7 +104,7 @@ pub struct ExportReport {
 
 /// Pick a destination path that does not exist yet, adding ` (n)` before the
 /// extension when needed.
-fn unique_target(dir: &Path, name: &str) -> PathBuf {
+pub fn unique_target(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if !first.exists() {
         return first;
@@ -137,7 +137,7 @@ fn day_of(captured: Option<&str>) -> Option<String> {
 }
 
 /// Capture day read from the file's EXIF, if any.
-fn capture_day(src: &Path) -> Option<String> {
+pub(crate) fn capture_day(src: &Path) -> Option<String> {
     let captured = crate::io::exif::capture_time(src);
     day_of(captured.as_deref())
 }
@@ -261,6 +261,27 @@ pub fn space_warning_for(needed: u64, dest: &Path) -> Option<String> {
     })
 }
 
+/// Copy `src` to `target` through a temp file in the destination directory.
+///
+/// `fs::copy` writes straight to the final name, so a crash or a full disk
+/// leaves a truncated file that looks like a finished export (and a later card
+/// import would then treat it as already present). The rename also refuses to
+/// replace an existing target on Windows.
+fn copy_atomic(src: &Path, target: &Path) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = target.with_extension(format!("part.{}.{}", std::process::id(), seq));
+    std::fs::copy(src, &tmp)?;
+    match std::fs::rename(&tmp, target) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Copy or move `items` into `dest`, arranging them per `opts`.
 ///
 /// Missing sources are reported per-file rather than aborting the run.
@@ -301,19 +322,37 @@ pub fn export_items(
             continue;
         }
         let target = unique_target(&dir, &name);
+        let mut delete_failed: Option<std::io::Error> = None;
         let result = match mode {
-            ExportMode::Copy => std::fs::copy(src, &target).map(|_| ()),
+            ExportMode::Copy => copy_atomic(src, &target),
             // `rename` is atomic but fails across filesystems; fall back to
             // copy-then-delete so a move to another drive still works.
             ExportMode::Move => match std::fs::rename(src, &target) {
                 Ok(()) => Ok(()),
-                Err(_) => std::fs::copy(src, &target)
-                    .and_then(|_| std::fs::remove_file(src))
-                    .map(|_| ()),
+                Err(_) => match copy_atomic(src, &target) {
+                    Ok(()) => match std::fs::remove_file(src) {
+                        Ok(()) => Ok(()),
+                        Err(e) => {
+                            // The photo is safe in both places; do not report the
+                            // move as failed (a retry would copy it again).
+                            delete_failed = Some(e);
+                            Ok(())
+                        }
+                    },
+                    Err(e) => Err(e),
+                },
             },
         };
         match result {
-            Ok(()) => report.exported += 1,
+            Ok(()) => {
+                report.exported += 1;
+                if let Some(e) = delete_failed {
+                    report.failed.push((
+                        src.clone(),
+                        format!("copied, but the original could not be removed: {e}"),
+                    ));
+                }
+            }
             Err(e) => report.failed.push((src.clone(), e.to_string())),
         }
     }
@@ -393,6 +432,21 @@ mod tests {
             std::fs::read_to_string(dst.path().join("a (1).cr3")).unwrap(),
             "new"
         );
+    }
+
+    #[test]
+    fn a_copy_leaves_no_partial_file_behind() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "a.cr3", "aaa");
+        export_files(&[a], dst.path(), ExportMode::Copy).unwrap();
+
+        let leftovers: Vec<String> = std::fs::read_dir(dst.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".part."))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files: {leftovers:?}");
     }
 
     #[test]

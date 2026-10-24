@@ -11,6 +11,37 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::yolo::{SliceMode, YoloConfig};
 use crate::{CoreError, Result};
 
+/// Write pretty JSON through a temp file and rename, so a crash mid-write keeps
+/// the previous settings instead of leaving truncated JSON behind.
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+    }
+    let text = serde_json::to_string_pretty(value)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| CoreError::io(&tmp, e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        CoreError::io(path, e)
+    })
+}
+
+/// Parse a settings file, falling back to defaults but saying so in the log
+/// (silently discarding a user's saved settings is forbidden by `rule.md`).
+fn parse_or_default<T: serde::de::DeserializeOwned + Default>(path: &Path, text: &str) -> T {
+    match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "settings file is unreadable; using defaults"
+            );
+            T::default()
+        }
+    }
+}
+
 /// Every knob the rule-based scorer reads. Kept as `f32` (including the
 /// `*_enabled` flags, which the UI renders as toggles) to mirror the prototype.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,7 +119,7 @@ impl ScoreSettings {
     pub fn load(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         let mut settings: Self = match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => parse_or_default(path, &text),
             Err(_) => Self::default(),
         };
         settings.repair_ineffective_checks();
@@ -126,12 +157,7 @@ impl ScoreSettings {
 
     /// Persist as pretty JSON, creating parent directories.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, text).map_err(|e| CoreError::io(path, e))
+        write_json_atomic(path.as_ref(), self)
     }
 }
 
@@ -213,18 +239,13 @@ impl DetectionSettings {
     pub fn load(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => parse_or_default(path, &text),
             Err(_) => Self::default(),
         }
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, text).map_err(|e| CoreError::io(path, e))
+        write_json_atomic(path.as_ref(), self)
     }
 }
 
@@ -281,18 +302,13 @@ impl PreviewSettings {
     pub fn load(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => parse_or_default(path, &text),
             Err(_) => Self::default(),
         }
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, text).map_err(|e| CoreError::io(path, e))
+        write_json_atomic(path.as_ref(), self)
     }
 }
 
@@ -323,6 +339,23 @@ mod tests {
         s.save(&path).unwrap();
         let back = ScoreSettings::load(&path);
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn save_leaves_no_partial_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("score_settings.json");
+        ScoreSettings::default().save(&path).unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp file must be renamed away: {leftovers:?}"
+        );
     }
 
     #[test]

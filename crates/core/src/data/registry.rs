@@ -133,6 +133,23 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             tags: vec!["eye".into(), "birds".into()],
         },
         ModelSpec {
+            key: "denoise_srgb".into(),
+            display_name: "AI denoise (NAFNet, SIDD)".into(),
+            description: "Optional noise reduction for previews and exports. NAFNet-SIDD \
+                          width-32 (MIT), exported to ONNX by the FerrumPix Models project \
+                          (~114 MB fp32). Render-only: it never feeds the verdict path."
+                .into(),
+            artifact: "denoise_srgb.onnx".into(),
+            unpack: false,
+            files: vec!["denoise_srgb.onnx".into()],
+            url: "https://github.com/Bitpainter75/FerrumPix-Models/releases/download/modelle-v1/nafnet-v1.onnx"
+                .into(),
+            sha256: "052c9238b420e8f232c4030e583426a9ce2bff36d2305fb2484509361cbe395d".into(),
+            size_bytes: 118_995_025,
+            tier: Tier::T2,
+            tags: vec!["denoise".into(), "nafnet".into()],
+        },
+        ModelSpec {
             key: "bird_detector_v2".into(),
             display_name: "Bird detector v2 (fine-tuned) [not trained yet]".into(),
             description: "Planned single-class bird detector fine-tuned for small/distant \
@@ -162,10 +179,21 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Hex SHA-256 of a file.
+/// Hex SHA-256 of a file, streamed so a large artifact never lands in memory.
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).map_err(|e| CoreError::io(path, e))?;
-    Ok(sha256_hex(&bytes))
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| CoreError::io(path, e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf).map_err(|e| CoreError::io(path, e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub fn model_path(dir: &Path, spec: &ModelSpec) -> PathBuf {
@@ -480,6 +508,17 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn file_hash_streams_across_chunk_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact.bin");
+        // Larger than the 64 KiB read buffer, so several updates are hashed.
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &payload).unwrap();
+        assert_eq!(sha256_file(&path).unwrap(), sha256_hex(&payload));
+        assert!(sha256_file(&dir.path().join("missing.bin")).is_err());
     }
 
     #[test]

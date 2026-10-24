@@ -5,11 +5,13 @@
 //! `ort` execution providers). The default build is CPU-only: small, portable,
 //! and functional on every machine, which is the whole point of the project.
 
+pub mod denoise;
 pub mod detector;
 pub mod eye;
 pub(crate) mod session;
 pub mod species;
 
+pub use denoise::{OnnxDenoiser, DENOISE_ONNX};
 pub use detector::{DevicePreference, OnnxDetector, DETECTOR_ONNX};
 pub use eye::{OnnxEyeDetector, EYE_ONNX};
 pub use species::OnnxSpeciesClassifier;

@@ -4,6 +4,7 @@ pub mod adjust;
 pub mod cache;
 pub mod contact_sheet;
 pub mod decoder;
+pub mod denoise;
 pub mod develop;
 pub mod disk;
 pub mod exif;
@@ -12,6 +13,7 @@ pub mod focus;
 pub mod hash;
 #[cfg(feature = "heic")]
 pub mod heic;
+pub mod import;
 pub mod raw;
 pub mod thumb;
 pub mod trash;

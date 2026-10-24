@@ -153,9 +153,12 @@ pub fn ingest_folder(
     // pending query picks them up on this run.
     let detector_id = ctx.detector.identity();
     let species_id = ctx.species.and_then(|classifier| classifier.identity());
-    if let Err(error) =
-        analysis_store::mark_model_stale(conn, detector_id.as_deref(), species_id.as_deref())
-    {
+    if let Err(error) = analysis_store::mark_model_stale(
+        conn,
+        folder_id,
+        detector_id.as_deref(),
+        species_id.as_deref(),
+    ) {
         tracing::warn!(%error, "could not mark stale model analyses");
     }
 

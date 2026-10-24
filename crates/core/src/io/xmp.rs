@@ -50,8 +50,24 @@ fn full_sidecar_path(raw: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// True for the RAW types that use a sidecar file. JPEG/TIFF keep their
+/// metadata in the image itself, and `shot.xmp` next to `shot.JPG` is the
+/// sidecar of `shot.CR3` in Lightroom — writing it would edit the RAW's rating.
+fn uses_sidecar(raw: &Path) -> bool {
+    raw.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| {
+            let lower = ext.to_ascii_lowercase();
+            crate::data::library::RAW_EXTENSIONS.contains(&lower.as_str())
+        })
+        .unwrap_or(false)
+}
+
 /// An existing sidecar for `raw`, preferring the stem form when both exist.
 pub fn existing_sidecar(raw: &Path) -> Option<PathBuf> {
+    if !uses_sidecar(raw) {
+        return None;
+    }
     let stem = sidecar_path(raw);
     if stem.is_file() {
         return Some(stem);
@@ -60,9 +76,13 @@ pub fn existing_sidecar(raw: &Path) -> Option<PathBuf> {
     full.is_file().then_some(full)
 }
 
-/// Where to write: an existing sidecar, else the canonical stem path.
-fn sidecar_target(raw: &Path) -> PathBuf {
-    existing_sidecar(raw).unwrap_or_else(|| sidecar_path(raw))
+/// Where to write: an existing sidecar, else the canonical stem path. `None`
+/// when this file type has no sidecar convention (see [`uses_sidecar`]).
+fn sidecar_target(raw: &Path) -> Option<PathBuf> {
+    if !uses_sidecar(raw) {
+        return None;
+    }
+    Some(existing_sidecar(raw).unwrap_or_else(|| sidecar_path(raw)))
 }
 
 fn read_sidecar(path: &Path) -> Option<String> {
@@ -341,7 +361,10 @@ fn write_attribute(
     prefix: &str,
     namespace: &str,
 ) -> Result<()> {
-    let sidecar = sidecar_target(raw);
+    let sidecar = match sidecar_target(raw) {
+        Some(sidecar) => sidecar,
+        None => return Ok(()),
+    };
     if sidecar.is_file() {
         let text = read_sidecar(&sidecar).ok_or_else(|| unreadable_error(&sidecar))?;
         let updated = match value {
@@ -459,7 +482,9 @@ fn set_keywords(text: &str, keywords: &[String]) -> Option<String> {
 
 /// Merge keywords: remove `remove`, add `add`, preserving every other keyword.
 pub fn write_keywords(raw: &Path, remove: &[String], add: &[String]) -> Result<()> {
-    let sidecar = sidecar_target(raw);
+    let Some(sidecar) = sidecar_target(raw) else {
+        return Ok(());
+    };
     let has_sidecar = sidecar.is_file();
     let existing = if has_sidecar {
         Some(read_sidecar(&sidecar).ok_or_else(|| unreadable_error(&sidecar))?)
@@ -703,6 +728,34 @@ mod tests {
         write_rating(&raw, 9).unwrap();
         let text = std::fs::read_to_string(sidecar_path(&raw)).unwrap();
         assert!(text.contains("xmp:Rating=\"5\""), "{text}");
+    }
+
+    #[test]
+    fn a_jpeg_never_gets_the_raw_sidecar() {
+        // `shot.xmp` sits next to `shot.CR3`; a rating set on `shot.JPG` must not
+        // rewrite it (Lightroom would show the JPEG's rating on the RAW).
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        let jpeg = dir.path().join("shot.JPG");
+        std::fs::write(&raw, b"raw").unwrap();
+        std::fs::write(&jpeg, b"jpeg").unwrap();
+        write_rating(&raw, 5).unwrap();
+
+        write_rating(&jpeg, 1).unwrap();
+        assert_eq!(read_rating(&raw), Some(5), "the RAW rating is untouched");
+        assert_eq!(read_rating(&jpeg), None, "no sidecar is read for a JPEG");
+        let sidecars = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".xmp")
+            })
+            .count();
+        assert_eq!(sidecars, 1);
     }
 
     #[test]
