@@ -471,7 +471,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             }
         };
     }
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(max)));
+    let embedded = DetectionSettings::load_default().use_embedded_preview();
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(max),
+        embedded,
+    ));
     match decoder.decode(Path::new(src)) {
         Ok(img) => {
             let rgb = birdsorter_core::io::adjust::apply(&img.rgb, &adjustments);
@@ -585,7 +589,11 @@ fn run_probe(
     imgsz: u32,
     region_batch: usize,
 ) -> birdsorter_core::Result<()> {
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
+    let embedded = DetectionSettings::load_default().use_embedded_preview();
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(2400),
+        embedded,
+    ));
     let img = decoder.decode(Path::new(file))?;
     let (w, h) = img.dimensions();
     println!("decoded: {w}x{h}");
@@ -1777,7 +1785,10 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         ),
     }
 
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(2400),
+        DetectionSettings::load_default().use_embedded_preview(),
+    ));
     let settings = ScoreSettings::load_default();
     let scorer: Box<dyn VerdictScorer> = match models::latest_model(&conn)? {
         Some(m) => match TrainedScorer::load(Path::new(&m.path)) {

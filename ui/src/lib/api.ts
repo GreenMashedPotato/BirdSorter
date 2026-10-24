@@ -159,6 +159,11 @@ export async function addFolder(path: string): Promise<number> {
   return invoke("add_folder", { path });
 }
 
+/** Remove a folder from the library; the files stay on disk. */
+export async function removeFolder(folder: number): Promise<void> {
+  return invoke("remove_folder", { folder });
+}
+
 /** What one card-import run did. */
 export interface ImportReport {
   copied: number;
@@ -411,10 +416,12 @@ export interface DetectionSettings {
   slice_grid: number;
   /** `"cpu"` (default), `"auto"` or `"gpu"`. */
   device: string;
-  /** Decode workers; `0` = all cores. Lower bounds peak memory. */
+  /** Decode workers; `0` = auto (a bounded count). Lower bounds peak memory. */
   threads: number;
   /** Run species identification when a model is installed (~800 MB of RSS). */
   species: boolean;
+  /** `"full"` (best recall) or `"embedded"` (fast, lower resolution). */
+  analysis_preview: string;
 }
 
 export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
@@ -423,6 +430,7 @@ export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
   device: "cpu",
   threads: 0,
   species: true,
+  analysis_preview: "full",
 };
 
 export function sliceGridLabel(grid: number): string {

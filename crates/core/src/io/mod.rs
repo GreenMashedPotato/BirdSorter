@@ -22,9 +22,20 @@ pub mod xmp;
 /// The standard decoder stack: RAW, then ordinary images (JPEG/PNG/TIFF), and —
 /// when the optional `heic` feature is compiled in — HEIC/HEIF.
 pub fn default_decoders(max_long_side: Option<u32>) -> Vec<Box<dyn decoder::ImageDecoder>> {
+    default_decoders_with(max_long_side, false)
+}
+
+/// [`default_decoders`] with the RAW backend choosing its preview source.
+///
+/// `embedded_preview_first` makes the RAW decoder use the camera's small
+/// preview (fast, lower resolution); the default is the full-size track.
+pub fn default_decoders_with(
+    max_long_side: Option<u32>,
+    embedded_preview_first: bool,
+) -> Vec<Box<dyn decoder::ImageDecoder>> {
     #[cfg_attr(not(feature = "heic"), allow(unused_mut))]
     let mut decoders: Vec<Box<dyn decoder::ImageDecoder>> = vec![
-        Box::new(raw::RawDecoder::new(max_long_side)),
+        Box::new(raw::RawDecoder::new(max_long_side).with_embedded_preview(embedded_preview_first)),
         Box::new(decoder::ImageCrateDecoder::new(max_long_side)),
     ];
     #[cfg(feature = "heic")]
