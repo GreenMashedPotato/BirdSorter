@@ -82,11 +82,14 @@ describe("Settings diagnostics", () => {
     await fireEvent.change(getByLabelText("Species identification"), {
       target: { value: "off" },
     });
+    await fireEvent.change(getByLabelText("Analysis preview"), {
+      target: { value: "embedded" },
+    });
     await fireEvent.click(getByText("Save & re-score"));
 
     expect(onSave).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ threads: 2, species: false }),
+      expect.objectContaining({ threads: 2, species: false, analysis_preview: "embedded" }),
     );
   });
 

@@ -471,7 +471,11 @@ fn cmd_preview(args: &[String]) -> ExitCode {
             }
         };
     }
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(max)));
+    let embedded = DetectionSettings::load_default().use_embedded_preview();
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(max),
+        embedded,
+    ));
     match decoder.decode(Path::new(src)) {
         Ok(img) => {
             let rgb = birdsorter_core::io::adjust::apply(&img.rgb, &adjustments);
@@ -585,7 +589,11 @@ fn run_probe(
     imgsz: u32,
     region_batch: usize,
 ) -> birdsorter_core::Result<()> {
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
+    let embedded = DetectionSettings::load_default().use_embedded_preview();
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(2400),
+        embedded,
+    ));
     let img = decoder.decode(Path::new(file))?;
     let (w, h) = img.dimensions();
     println!("decoded: {w}x{h}");
@@ -1777,7 +1785,10 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         ),
     }
 
-    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders(Some(2400)));
+    let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
+        Some(2400),
+        DetectionSettings::load_default().use_embedded_preview(),
+    ));
     let settings = ScoreSettings::load_default();
     let scorer: Box<dyn VerdictScorer> = match models::latest_model(&conn)? {
         Some(m) => match TrainedScorer::load(Path::new(&m.path)) {
@@ -1806,7 +1817,13 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let decode_threads = args.threads.unwrap_or(available).clamp(1, available);
+    // Auto stays at a bounded worker count: decoding overlaps with analysis, so
+    // more workers only raise peak RSS (measured: 4 and 8 workers sustain the
+    // same throughput on a 20-core machine, 2.5 GB vs 4.0 GB peak).
+    let decode_threads = args
+        .threads
+        .map(|t| t.clamp(1, available))
+        .unwrap_or(available.min(4));
     let ctx = IngestContext {
         // Bound peak memory by the worker count: a batch never holds more
         // decoded images than there are workers (capped at 8).

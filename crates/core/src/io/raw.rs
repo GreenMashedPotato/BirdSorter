@@ -963,16 +963,40 @@ pub fn load_developed(path: &Path) -> Result<DynamicImage> {
 pub struct RawDecoder {
     /// Downscale the decode so the long side is at most this.
     pub max_long_side: Option<u32>,
+    /// Use the camera's small embedded preview instead of the full-size track.
+    pub prefer_embedded: bool,
 }
 
 impl RawDecoder {
     pub fn new(max_long_side: Option<u32>) -> Self {
-        Self { max_long_side }
+        Self {
+            max_long_side,
+            prefer_embedded: false,
+        }
+    }
+
+    /// Decode the camera's small preview first (fast, lower resolution).
+    pub fn with_embedded_preview(mut self, prefer: bool) -> Self {
+        self.prefer_embedded = prefer;
+        self
     }
 }
 
 impl ImageDecoder for RawDecoder {
     fn decode(&self, path: &Path) -> Result<DecodedImage> {
+        // Opt-in fast path: the processed preview near the file start. On a CR3
+        // this is ~1620x1080 and decodes in ~45 ms, against ~700 ms for the
+        // full-size track. Only when a target size is requested, so the
+        // thumbnail/"full preview" paths keep their existing behaviour.
+        if self.prefer_embedded {
+            if let Some(max) = self.max_long_side.filter(|m| *m > 0) {
+                if let Some(img) = embedded_preview(path, max) {
+                    return Ok(DecodedImage {
+                        rgb: dynamic_to_rgb(img, self.max_long_side),
+                    });
+                }
+            }
+        }
         let img = load_preview(path)
             .or_else(|_| load_full(path))
             .or_else(|_| {

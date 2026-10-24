@@ -11,10 +11,11 @@ use ndarray::{s, Array3};
 use tauri::State;
 
 use birdsorter_core::data::library;
+use birdsorter_core::data::settings::DetectionSettings;
 use birdsorter_core::io::adjust;
 use birdsorter_core::io::cache::{ThumbCache, RENDER_CACHE_VERSION};
 use birdsorter_core::io::decoder::{dynamic_to_rgb, CompositeDecoder, ImageDecoder};
-use birdsorter_core::io::default_decoders;
+use birdsorter_core::io::default_decoders_with;
 use birdsorter_core::io::denoise::{blend_strength, MIN_STRENGTH};
 use birdsorter_core::io::develop::{develop_preview, resize_max};
 use birdsorter_core::io::export::{unique_target, ImageFormat};
@@ -133,7 +134,7 @@ fn base_preview(
         "full" => (
             render_key(&hash, 0),
             Box::new(move || {
-                let decoder = CompositeDecoder::new(default_decoders(None));
+                let decoder = CompositeDecoder::new(default_decoders_with(None, false));
                 let img = decoder.decode(&path)?;
                 encode_rgb_jpeg(&img.rgb, 92)
             }),
@@ -141,7 +142,13 @@ fn base_preview(
         _ => (
             render_key(&hash, ANALYSIS_LONG_SIDE),
             Box::new(move || {
-                let decoder = CompositeDecoder::new(default_decoders(Some(ANALYSIS_LONG_SIDE)));
+                // Match the analysis decode source, so boxes line up with the
+                // pixels the verdict was computed from.
+                let embedded = DetectionSettings::load_default().use_embedded_preview();
+                let decoder = CompositeDecoder::new(default_decoders_with(
+                    Some(ANALYSIS_LONG_SIDE),
+                    embedded,
+                ));
                 let img = decoder.decode(&path)?;
                 encode_rgb_jpeg(&img.rgb, 85)
             }),

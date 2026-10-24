@@ -234,8 +234,11 @@
             <span class="val">{localDetection.slice_grid} × {localDetection.slice_grid}</span>
           </div>
           <p class="status">
-            Higher finds smaller/distant birds. {localDetection.slice_grid}×{localDetection.slice_grid}
+            Higher finds smaller/distant birds. {localDetection.slice_grid}×{localDetection
+              .slice_grid}
             = {localDetection.slice_grid * localDetection.slice_grid} tiles + 1 full-frame pass.
+            <strong>4×4 is the fast preset</strong> (~1.3× faster on a burst folder, but it loses
+            secondary birds); 6×6 is balanced; 8×8 is thorough.
           </p>
         {/if}
 
@@ -273,7 +276,7 @@
             onchange={(e) =>
               (localDetection = { ...localDetection, threads: Number(e.currentTarget.value) })}
           >
-            <option value="0">Auto — all cores</option>
+            <option value="0">Auto — up to 4 workers</option>
             <option value="1">1 — least memory</option>
             <option value="2">2</option>
             <option value="3">3</option>
@@ -282,6 +285,26 @@
             <option value="8">8</option>
           </select>
         </div>
+        <div class="row">
+          <label for="analysis-preview">Analysis preview</label>
+          <select
+            id="analysis-preview"
+            value={localDetection.analysis_preview}
+            onchange={(e) =>
+              (localDetection = {
+                ...localDetection,
+                analysis_preview: e.currentTarget.value,
+              })}
+          >
+            <option value="full">Full — best for distant birds (slower decode)</option>
+            <option value="embedded">Camera preview — ~15× faster, lower resolution</option>
+          </select>
+        </div>
+        <p class="status">
+          The camera preview decodes ~15× faster and uses far less memory, but distant birds
+          get fewer pixels (and small birds may no longer be identified). Re-analyze the
+          folder after changing this.
+        </p>
         <div class="row">
           <label for="species-enabled">Species identification</label>
           <select

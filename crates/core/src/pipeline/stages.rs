@@ -8,7 +8,9 @@ use ndarray::Array3;
 
 use crate::analysis::detector::{BBox, Detection};
 use crate::analysis::eye::{eye_sharpness_from_model, EyeDetector};
-use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
+use crate::analysis::sharpness::{
+    compute_features_with, full_image_metrics, subject_sharpness, SharpnessFeatures, Subject,
+};
 use crate::analysis::species::{crop_rgb, SpeciesClassifier};
 use crate::data::analysis_store::SubjectSpecies;
 use crate::{CoreError, Result};
@@ -37,34 +39,38 @@ pub(crate) fn select_subject(
     dets: &[Detection],
     eye: Option<&dyn EyeDetector>,
 ) -> SubjectPick {
+    let full = full_image_metrics(rgb);
+    let subject_of = |det: &Detection| Subject {
+        bbox: det.bbox,
+        area_px: det.area_px,
+    };
+
     let (mut features, bbox, class) = if dets.is_empty() {
-        (compute_features(rgb, None), None, None)
+        (compute_features_with(rgb, None, &full), None, None)
     } else if let Some(det) = dets.iter().find(|d| d.class_name == "manual") {
-        let subject = Subject {
-            bbox: det.bbox,
-            area_px: det.area_px,
-        };
         (
-            compute_features(rgb, Some(subject)),
+            compute_features_with(rgb, Some(subject_of(det)), &full),
             Some(det.bbox),
             Some(det.class_name.clone()),
         )
     } else {
-        let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
+        // Rank on the two subject metrics only, then compute the full vector for
+        // the winner. `subject_sharpness` reports the same values the previous
+        // per-box `compute_features` call ranked by.
+        let mut best: Option<(&Detection, f32)> = None;
         for det in dets {
-            let subject = Subject {
-                bbox: det.bbox,
-                area_px: det.area_px,
-            };
-            let f = compute_features(rgb, Some(subject));
-            let sharp = f.tenengrad_subject.max(f.laplacian_subject);
-            if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
-                best = Some((f, det.bbox, det.class_name.clone(), sharp));
+            let sharp = subject_sharpness(rgb, det.bbox).unwrap_or_else(|| full.ten.max(full.lap));
+            if best.as_ref().map(|(_, s)| sharp > *s).unwrap_or(true) {
+                best = Some((det, sharp));
             }
         }
         match best {
-            Some((f, b, c, _)) => (f, Some(b), Some(c)),
-            None => (compute_features(rgb, None), None, None),
+            Some((det, _)) => (
+                compute_features_with(rgb, Some(subject_of(det)), &full),
+                Some(det.bbox),
+                Some(det.class_name.clone()),
+            ),
+            None => (compute_features_with(rgb, None, &full), None, None),
         }
     };
 
@@ -98,13 +104,16 @@ pub(crate) struct SpeciesOutcome {
     pub per_box: Vec<SubjectSpecies>,
 }
 
-/// Classify every eligible subject and summarise the first identified one.
+/// Classify the chosen subject and summarise it.
 ///
-/// Box provenance is always recorded, even when no classifier is installed.
+/// Only the subject is identified during ingest: classifying every bird in a
+/// flock tripled the species cost without changing the file-level verdict. Other
+/// boxes keep their provenance and are named on demand in review.
 pub(crate) fn classify_species(
     rgb: &Array3<u8>,
     dets: &[Detection],
     species: Option<&dyn SpeciesClassifier>,
+    subject: Option<BBox>,
 ) -> Result<SpeciesOutcome> {
     let mut per_box: Vec<SubjectSpecies> = dets
         .iter()
@@ -121,25 +130,20 @@ pub(crate) fn classify_species(
     let mut confidence: Option<f32> = None;
     let mut top5: Vec<(String, f32)> = Vec::new();
 
-    if let Some(classifier) = species {
-        if classifier.available() && !dets.is_empty() {
-            let crops: Vec<(usize, Array3<u8>)> = dets
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| {
-                    matches!(d.class_name.as_str(), "bird" | "manual")
-                        && d.bbox.w >= MIN_SPECIES_CROP
-                        && d.bbox.h >= MIN_SPECIES_CROP
-                })
-                .filter_map(|(i, d)| crop_rgb(rgb, d.bbox).map(|c| (i, c)))
-                .collect();
+    if let (Some(classifier), Some(subject)) = (species, subject) {
+        let eligible = dets.iter().position(|d| d.bbox == subject).filter(|&i| {
+            let d = &dets[i];
+            matches!(d.class_name.as_str(), "bird" | "manual")
+                && d.bbox.w >= MIN_SPECIES_CROP
+                && d.bbox.h >= MIN_SPECIES_CROP
+        });
 
-            if !crops.is_empty() {
-                let refs: Vec<&Array3<u8>> = crops.iter().map(|(_, c)| c).collect();
-                let results = classifier.identify_batch(&refs)?;
-                for ((i, _), res) in crops.iter().zip(results) {
-                    if let Some(id) = res {
-                        if let Some(entry) = per_box.get_mut(*i) {
+        if classifier.available() {
+            if let Some(i) = eligible {
+                if let Some(crop) = crop_rgb(rgb, dets[i].bbox) {
+                    let results = classifier.identify_batch(&[&crop])?;
+                    if let Some(Some(id)) = results.into_iter().next() {
+                        if let Some(entry) = per_box.get_mut(i) {
                             let best = id.best();
                             entry.species = best.map(|b| b.name.clone());
                             entry.confidence = best.map(|b| b.confidence);
@@ -261,6 +265,7 @@ fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::species::{SpeciesId, SpeciesPrediction};
 
     fn checker(w: usize, h: usize) -> Array3<u8> {
         Array3::from_shape_fn((h, w, 3), |(y, x, _)| {
@@ -299,10 +304,60 @@ mod tests {
             Detection::new(BBox::new(0, 0, 150, 150), "manual", 1.0),
             Detection::new(BBox::new(10, 10, 40, 40), "bird", 0.5),
         ];
-        let out = classify_species(&img, &dets, None).unwrap();
+        let out = classify_species(&img, &dets, None, None).unwrap();
         assert!(out.name.is_none());
         assert_eq!(out.per_box.len(), 2);
         assert_eq!(out.per_box[0].class.as_deref(), Some("manual"));
+    }
+
+    /// A classifier that names every crop "Swallow".
+    struct AlwaysSwallow;
+
+    impl SpeciesClassifier for AlwaysSwallow {
+        fn available(&self) -> bool {
+            true
+        }
+        fn identity(&self) -> Option<String> {
+            Some("fake-species".into())
+        }
+        fn identify_batch(&self, crops: &[&Array3<u8>]) -> Result<Vec<Option<SpeciesId>>> {
+            Ok(crops
+                .iter()
+                .map(|_| {
+                    Some(SpeciesId {
+                        top: vec![SpeciesPrediction {
+                            name: "Swallow".into(),
+                            confidence: 0.9,
+                        }],
+                    })
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn only_the_subject_is_identified() {
+        let img = checker(400, 400);
+        let first = BBox::new(10, 10, 150, 150);
+        let second = BBox::new(200, 200, 150, 150);
+        let dets = vec![
+            Detection::new(first, "bird", 0.9),
+            Detection::new(second, "bird", 0.8),
+        ];
+        let out = classify_species(&img, &dets, Some(&AlwaysSwallow), Some(second)).unwrap();
+        assert_eq!(out.name.as_deref(), Some("Swallow"));
+        assert!(out.per_box[0].species.is_none());
+        assert_eq!(out.per_box[1].species.as_deref(), Some("Swallow"));
+    }
+
+    #[test]
+    fn a_tiny_subject_is_not_identified() {
+        let img = checker(200, 200);
+        let tiny = BBox::new(10, 10, 40, 40);
+        let dets = vec![Detection::new(tiny, "bird", 0.9)];
+        let out = classify_species(&img, &dets, Some(&AlwaysSwallow), Some(tiny)).unwrap();
+        assert!(out.name.is_none());
+        assert!(out.per_box[0].species.is_none());
     }
 
     #[test]

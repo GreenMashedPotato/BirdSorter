@@ -178,14 +178,18 @@ pub struct DetectionSettings {
     /// `"gpu"`. CPU wins for these small models; GPU providers pay off for
     /// larger networks.
     pub device: String,
-    /// Parallel decode workers. `0` = auto (all available cores). Lower values
-    /// bound peak memory (each worker holds a decoded analysis image) and reduce
-    /// CPU contention on low-end machines.
+    /// Parallel decode workers. `0` = auto (a bounded count chosen by the
+    /// caller); lower values bound peak memory (each worker holds a decoded
+    /// analysis image) and reduce CPU contention on low-end machines.
     pub threads: u32,
     /// Run species identification when a model is installed. The iNat21 model is
     /// ~818 MB of RSS and ~350 ms per crop, so disabling it is the single biggest
     /// saving on memory-constrained machines.
     pub species: bool,
+    /// Analysis image source: `"full"` (the largest embedded preview, best
+    /// recall) or `"embedded"` (the camera's small preview near the file start,
+    /// ~15x faster to decode but fewer pixels for distant birds).
+    pub analysis_preview: String,
 }
 
 impl Default for DetectionSettings {
@@ -196,6 +200,7 @@ impl Default for DetectionSettings {
             device: "cpu".to_string(),
             threads: 0,
             species: true,
+            analysis_preview: "full".to_string(),
         }
     }
 }
@@ -218,6 +223,12 @@ impl DetectionSettings {
         } else {
             (self.threads as usize).clamp(1, available)
         }
+    }
+
+    /// Decode the camera's small embedded preview first when analysing, instead
+    /// of the full-size preview track. Faster, but lower resolution.
+    pub fn use_embedded_preview(&self) -> bool {
+        self.analysis_preview.eq_ignore_ascii_case("embedded")
     }
 
     /// `detection_settings.json` under the config dir (platform, or portable root).
@@ -388,13 +399,17 @@ mod tests {
         assert_eq!(d.slice_mode, "fallback");
         assert_eq!(d.slice_grid, 6);
         assert_eq!(d.device, "cpu");
+        assert_eq!(d.analysis_preview, "full");
+        assert!(!d.use_embedded_preview());
         let s = DetectionSettings {
             slice_mode: "always".into(),
             slice_grid: 4,
             device: "auto".into(),
             threads: 2,
             species: false,
+            analysis_preview: "embedded".into(),
         };
+        assert!(s.use_embedded_preview());
         s.save(&p).unwrap();
         assert_eq!(DetectionSettings::load(&p), s);
         // A missing file falls back to defaults rather than failing.
@@ -409,6 +424,8 @@ mod tests {
         assert_eq!(partial.device, "cpu");
         assert_eq!(partial.slice_mode, "fallback");
         assert_eq!(partial.threads, 0);
+        assert_eq!(partial.analysis_preview, "full");
+        assert!(!partial.use_embedded_preview());
         assert!(partial.species);
     }
 

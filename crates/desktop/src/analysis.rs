@@ -16,7 +16,7 @@ use birdsorter_core::data::registry;
 use birdsorter_core::data::settings::{DetectionSettings, ScoreSettings};
 use birdsorter_core::data::{analysis_store, labels, library};
 use birdsorter_core::io::decoder::CompositeDecoder;
-use birdsorter_core::io::default_decoders;
+use birdsorter_core::io::default_decoders_with;
 use birdsorter_core::io::exif;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
@@ -274,8 +274,11 @@ fn pipeline_cached(
 
 /// Build the decoder/detector/scorer/species stack from the current settings.
 fn build_pipeline(conn: &Connection, model: Option<&str>) -> Result<Pipeline, String> {
-    let decoder = CompositeDecoder::new(default_decoders(Some(ANALYSIS_LONG_SIDE)));
     let det = DetectionSettings::load_default();
+    let decoder = CompositeDecoder::new(default_decoders_with(
+        Some(ANALYSIS_LONG_SIDE),
+        det.use_embedded_preview(),
+    ));
     let device = DevicePreference::from_setting(&det.device);
     let detector: Box<dyn SubjectDetector> = match model.map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) => {

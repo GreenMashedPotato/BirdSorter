@@ -622,9 +622,13 @@ fn eye_region_sharpness(subj: &Array2<f32>) -> f32 {
 // ---------------------------------------------------------------------------
 
 /// Whole-image metric bundle.
-struct FullMetrics {
-    lap: f32,
-    ten: f32,
+///
+/// Computed once per image and reused for every subject candidate: a frame with
+/// several birds would otherwise pay these six whole-frame metrics once per box.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FullMetrics {
+    pub(crate) lap: f32,
+    pub(crate) ten: f32,
     fft: f32,
     lc: f32,
     bren: f32,
@@ -640,6 +644,14 @@ fn full_metrics(gray: &Array2<f32>) -> FullMetrics {
         bren: brenner_gradient(gray),
         dir: gradient_directionality(gray),
     }
+}
+
+/// Whole-image metrics for `rgb`: grey conversion, resize to the feature
+/// resolution, then the six full-frame metrics.
+pub(crate) fn full_image_metrics(rgb: &Array3<u8>) -> FullMetrics {
+    let gray = to_gray(rgb);
+    let gray_norm = normalise_size(&gray, TARGET_LONG_SIDE);
+    full_metrics(&gray_norm)
 }
 
 /// Subject-region metric bundle.
@@ -726,42 +738,30 @@ fn background_metrics(rgb: &Array3<u8>, bbox: BBox, w: usize, h: usize) -> (f32,
 /// `subject` is the bbox chosen by the detector. When `None`, only full-image
 /// metrics are populated and subject metrics equal the full-image values.
 ///
-/// The full-image, subject and background metric groups are independent, so
-/// they run in parallel on larger images (`rayon::join`).
+/// The subject and background metric groups are independent, so they run in
+/// parallel on larger images (`rayon::join`).
 pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> SharpnessFeatures {
-    let (h, w, _) = rgb.dim();
-    let gray = to_gray(rgb);
-    let gray_norm = normalise_size(&gray, TARGET_LONG_SIDE);
+    let full = full_image_metrics(rgb);
+    compute_features_with(rgb, subject, &full)
+}
 
+/// [`compute_features`] with the whole-image metrics already computed.
+///
+/// `select_subject` ranks several candidate boxes on the same frame; hoisting
+/// the full-frame work here keeps a flock frame from paying it per detection.
+pub(crate) fn compute_features_with(
+    rgb: &Array3<u8>,
+    subject: Option<Subject>,
+    full: &FullMetrics,
+) -> SharpnessFeatures {
+    let (h, w, _) = rgb.dim();
     let Some(subject) = subject else {
-        let m = full_metrics(&gray_norm);
-        return SharpnessFeatures {
-            laplacian_full: m.lap,
-            tenengrad_full: m.ten,
-            fft_high_freq_full: m.fft,
-            local_contrast_full: m.lc,
-            laplacian_subject: m.lap,
-            tenengrad_subject: m.ten,
-            fft_high_freq_subject: m.fft,
-            local_contrast_subject: m.lc,
-            laplacian_bg: m.lap,
-            tenengrad_bg: m.ten,
-            subject_to_bg_ratio: 1.0,
-            has_subject: false,
-            subject_area_fraction: 0.0,
-            edge_sharpness_grid: [[0.0; 3]; 3],
-            eye_sharpness_worst: 0.0,
-            center_edge_ratio: 1.0,
-            brenner_full: m.bren,
-            brenner_subject: m.bren,
-            motion_directionality: m.dir,
-            subject_edge_distance: 1.0,
-        };
+        return no_subject_features(full);
     };
 
     let Some(bbox) = subject.bbox.clamp_to(w as i32, h as i32) else {
         // Degenerate/off-image subject: treat as a subject-less image.
-        return compute_features(rgb, None);
+        return no_subject_features(full);
     };
     let (x0, y0, x1, y1) = (
         bbox.x as usize,
@@ -773,24 +773,16 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
     let subj_gray = to_gray(&rgb.slice(s![y0..y1, x0..x1, ..]));
 
     // Small images are cheap enough that the join overhead is not worth it.
-    let parallel = gray_norm.len() >= 256 * 256;
-    let (full, (subj, bg)) = if parallel {
+    let parallel = h * w >= 256 * 256;
+    let (subj, bg) = if parallel {
         rayon::join(
-            || full_metrics(&gray_norm),
-            || {
-                rayon::join(
-                    || subject_metrics(&subj_gray),
-                    || background_metrics(rgb, bbox, w, h),
-                )
-            },
+            || subject_metrics(&subj_gray),
+            || background_metrics(rgb, bbox, w, h),
         )
     } else {
         (
-            full_metrics(&gray_norm),
-            (
-                subject_metrics(&subj_gray),
-                background_metrics(rgb, bbox, w, h),
-            ),
+            subject_metrics(&subj_gray),
+            background_metrics(rgb, bbox, w, h),
         )
     };
 
@@ -838,6 +830,47 @@ pub fn compute_features(rgb: &Array3<u8>, subject: Option<Subject>) -> Sharpness
         motion_directionality: subj.dir,
         subject_edge_distance: edge_dist,
     }
+}
+
+/// The subject-less feature vector for an image whose full metrics are known.
+fn no_subject_features(m: &FullMetrics) -> SharpnessFeatures {
+    SharpnessFeatures {
+        laplacian_full: m.lap,
+        tenengrad_full: m.ten,
+        fft_high_freq_full: m.fft,
+        local_contrast_full: m.lc,
+        laplacian_subject: m.lap,
+        tenengrad_subject: m.ten,
+        fft_high_freq_subject: m.fft,
+        local_contrast_subject: m.lc,
+        laplacian_bg: m.lap,
+        tenengrad_bg: m.ten,
+        subject_to_bg_ratio: 1.0,
+        has_subject: false,
+        subject_area_fraction: 0.0,
+        edge_sharpness_grid: [[0.0; 3]; 3],
+        eye_sharpness_worst: 0.0,
+        center_edge_ratio: 1.0,
+        brenner_full: m.bren,
+        brenner_subject: m.bren,
+        motion_directionality: m.dir,
+        subject_edge_distance: 1.0,
+    }
+}
+
+/// The value `select_subject` ranks candidate boxes by, without the
+/// full-image/background work: the same two subject metrics `compute_features`
+/// reports, on the same normalised crop.
+pub(crate) fn subject_sharpness(rgb: &Array3<u8>, bbox: BBox) -> Option<f32> {
+    let (h, w, _) = rgb.dim();
+    let bbox = bbox.clamp_to(w as i32, h as i32)?;
+    let subj_gray = to_gray(&rgb.slice(s![
+        bbox.y as usize..bbox.y1() as usize,
+        bbox.x as usize..bbox.x1() as usize,
+        ..
+    ]));
+    let norm = normalise_size(&subj_gray, TARGET_LONG_SIDE);
+    Some(tenengrad(&norm).max(variance_of_laplacian(&norm)))
 }
 
 #[cfg(test)]
@@ -1133,5 +1166,48 @@ mod tests {
     fn to_json_round_trips() {
         let json = SharpnessFeatures::default().to_json();
         assert_eq!(SharpnessFeatures::from_json(&json).unwrap().to_json(), json);
+    }
+
+    #[test]
+    fn hoisted_full_metrics_do_not_change_the_feature_vector() {
+        let img = rgb_from_gray(&checkerboard(200, 160, 4));
+        let full = full_image_metrics(&img);
+        for subject in [
+            None,
+            Some(Subject::from_bbox(BBox::new(20, 20, 80, 60))),
+            Some(Subject::from_bbox(BBox::new(0, 0, 200, 160))),
+        ] {
+            assert_eq!(
+                compute_features(&img, subject),
+                compute_features_with(&img, subject, &full),
+                "subject {subject:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subject_sharpness_matches_the_ranking_metric() {
+        let img = rgb_from_gray(&checkerboard(240, 200, 4));
+        for bbox in [BBox::new(10, 10, 80, 60), BBox::new(100, 50, 120, 120)] {
+            let f = compute_features(&img, Some(Subject::from_bbox(bbox)));
+            let expected = f.tenengrad_subject.max(f.laplacian_subject);
+            let got = subject_sharpness(&img, bbox).unwrap();
+            assert!(
+                (got - expected).abs() <= expected.abs() * 1e-6 + 1e-9,
+                "{got} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_subject_still_reports_the_full_image() {
+        let img = rgb_from_gray(&checkerboard(120, 90, 4));
+        let full = full_image_metrics(&img);
+        let off = BBox::new(-500, -500, 10, 10);
+        assert_eq!(
+            compute_features_with(&img, Some(Subject::from_bbox(off)), &full),
+            compute_features(&img, None)
+        );
+        assert_eq!(subject_sharpness(&img, off), None);
     }
 }

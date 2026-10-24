@@ -270,6 +270,17 @@ pub(crate) async fn add_folder(state: State<'_, AppState>, path: String) -> Resu
     blocking(move || add_folder_impl(&db_path, &path)).await
 }
 
+/// Remove a folder from the library. The directory and its files stay on disk.
+#[tauri::command]
+pub(crate) async fn remove_folder(state: State<'_, AppState>, folder: i64) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    blocking(move || {
+        let conn = open(&db_path)?;
+        library::remove_folder(&conn, folder).map_err(err)
+    })
+    .await
+}
+
 /// Kick off a scan on a background thread, streaming progress as events.
 ///
 /// A first scan hashes every photo, which for a large shoot is minutes of work,

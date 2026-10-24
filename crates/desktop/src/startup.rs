@@ -203,6 +203,7 @@ pub(crate) fn run() {
         .invoke_handler(tauri::generate_handler![
             library::list_folders,
             library::add_folder,
+            library::remove_folder,
             library::import_folder,
             library::scan_folder,
             library::cancel_scan,
