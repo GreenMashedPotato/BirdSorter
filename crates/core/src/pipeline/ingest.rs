@@ -354,6 +354,7 @@ fn flush_batch(
     let images: Vec<&Array3<u8>> = batch.iter().map(|b| &b.rgb).collect();
     let detector_id = ctx.detector.identity();
     let species_id = ctx.species.and_then(|classifier| classifier.identity());
+    let detect_started = std::time::Instant::now();
     let detections = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.detector.detect_batch(&images)
     })) {
@@ -362,6 +363,11 @@ fn flush_batch(
         // "no subject" for this batch rather than failing the run.
         _ => vec![Vec::new(); batch.len()],
     };
+    tracing::debug!(
+        images = batch.len(),
+        ms = detect_started.elapsed().as_millis() as u64,
+        "detect batch"
+    );
 
     for (item, dets) in batch.iter().zip(detections) {
         // Stop promptly on cancel: a long batch must not keep working after the
@@ -369,6 +375,7 @@ fn flush_batch(
         if ctx.cancelled() {
             break;
         }
+        let analyze_started = std::time::Instant::now();
         let record = match catch_analyze(|| {
             let mut record = analyze_one(
                 item.file_id,
@@ -390,6 +397,8 @@ fn flush_batch(
                 continue;
             }
         };
+        let analyze_ms = analyze_started.elapsed().as_millis() as u64;
+        let store_started = std::time::Instant::now();
         match upsert_analysis(conn, &record) {
             Ok(()) => progress.analyzed += 1,
             Err(e) => {
@@ -399,6 +408,12 @@ fn flush_batch(
                     .push((item.name.clone(), format!("store: {e}")));
             }
         }
+        tracing::debug!(
+            file = %item.name,
+            analyze_ms,
+            store_ms = store_started.elapsed().as_millis() as u64,
+            "analysis stage"
+        );
     }
     batch.clear();
     Ok(())

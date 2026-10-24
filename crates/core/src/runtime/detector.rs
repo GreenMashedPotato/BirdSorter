@@ -287,20 +287,26 @@ impl OnnxDetector {
         cfg: &YoloConfig,
     ) -> Result<Vec<Detection>> {
         let (h, w, _) = rgb.dim();
-        let mut inputs: Vec<RegionInput> = Vec::with_capacity(regions.len());
-        for &(x0, y0, rw, rh) in regions {
-            if rw < 8 || rh < 8 {
-                continue;
-            }
-            let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
-            let (buf, letterbox) = yolo::preprocess(&crop, cfg);
-            inputs.push(RegionInput {
-                x0,
-                y0,
-                buf,
-                letterbox,
-            });
-        }
+        let started = std::time::Instant::now();
+        // Regions are independent: letterboxing them in parallel removes the
+        // serial ~3 ms/region cost on sliced (look-harder) frames.
+        use rayon::prelude::*;
+        let inputs: Vec<RegionInput> = regions
+            .par_iter()
+            .filter_map(|&(x0, y0, rw, rh)| {
+                if rw < 8 || rh < 8 {
+                    return None;
+                }
+                let crop = rgb.slice(ndarray::s![y0..y0 + rh, x0..x0 + rw, ..]);
+                let (buf, letterbox) = yolo::preprocess(&crop, cfg);
+                Some(RegionInput {
+                    x0,
+                    y0,
+                    buf,
+                    letterbox,
+                })
+            })
+            .collect();
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -338,7 +344,14 @@ impl OnnxDetector {
         // A bird visible in several tiles appears multiple times: suppress the
         // duplicates across regions.
         let merged = nms(all, cfg.iou_threshold);
-        Ok(dedupe_detections(merged, 0.5, 0.7))
+        let out = dedupe_detections(merged, 0.5, 0.7);
+        tracing::debug!(
+            regions = regions.len(),
+            prepared = inputs.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "detect regions"
+        );
+        Ok(out)
     }
 
     fn run_one(&self, rgb: &Array3<u8>) -> Result<Vec<Detection>> {

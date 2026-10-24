@@ -8,7 +8,9 @@ use ndarray::Array3;
 
 use crate::analysis::detector::{BBox, Detection};
 use crate::analysis::eye::{eye_sharpness_from_model, EyeDetector};
-use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
+use crate::analysis::sharpness::{
+    compute_features_with, full_image_metrics, subject_sharpness, SharpnessFeatures, Subject,
+};
 use crate::analysis::species::{crop_rgb, SpeciesClassifier};
 use crate::data::analysis_store::SubjectSpecies;
 use crate::{CoreError, Result};
@@ -37,34 +39,38 @@ pub(crate) fn select_subject(
     dets: &[Detection],
     eye: Option<&dyn EyeDetector>,
 ) -> SubjectPick {
+    let full = full_image_metrics(rgb);
+    let subject_of = |det: &Detection| Subject {
+        bbox: det.bbox,
+        area_px: det.area_px,
+    };
+
     let (mut features, bbox, class) = if dets.is_empty() {
-        (compute_features(rgb, None), None, None)
+        (compute_features_with(rgb, None, &full), None, None)
     } else if let Some(det) = dets.iter().find(|d| d.class_name == "manual") {
-        let subject = Subject {
-            bbox: det.bbox,
-            area_px: det.area_px,
-        };
         (
-            compute_features(rgb, Some(subject)),
+            compute_features_with(rgb, Some(subject_of(det)), &full),
             Some(det.bbox),
             Some(det.class_name.clone()),
         )
     } else {
-        let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
+        // Rank on the two subject metrics only, then compute the full vector for
+        // the winner. `subject_sharpness` reports the same values the previous
+        // per-box `compute_features` call ranked by.
+        let mut best: Option<(&Detection, f32)> = None;
         for det in dets {
-            let subject = Subject {
-                bbox: det.bbox,
-                area_px: det.area_px,
-            };
-            let f = compute_features(rgb, Some(subject));
-            let sharp = f.tenengrad_subject.max(f.laplacian_subject);
-            if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
-                best = Some((f, det.bbox, det.class_name.clone(), sharp));
+            let sharp = subject_sharpness(rgb, det.bbox).unwrap_or_else(|| full.ten.max(full.lap));
+            if best.as_ref().map(|(_, s)| sharp > *s).unwrap_or(true) {
+                best = Some((det, sharp));
             }
         }
         match best {
-            Some((f, b, c, _)) => (f, Some(b), Some(c)),
-            None => (compute_features(rgb, None), None, None),
+            Some((det, _)) => (
+                compute_features_with(rgb, Some(subject_of(det)), &full),
+                Some(det.bbox),
+                Some(det.class_name.clone()),
+            ),
+            None => (compute_features_with(rgb, None, &full), None, None),
         }
     };
 
