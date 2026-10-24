@@ -1,0 +1,730 @@
+//! Library storage: folders ("shoots") and the files inside them.
+//!
+//! Ported from the prototype's `data/library.py`. Key properties kept:
+//! - The library is scoped per folder; the grid shows one folder at a time.
+//! - Files are tracked by content hash so renames/moves don't orphan analysis.
+//! - Deletion is soft: the DB row keeps `trashed_at`; a rescan re-links a file
+//!   the user restored from the OS recycle bin.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use rusqlite::{Connection, OptionalExtension, Row};
+use walkdir::WalkDir;
+
+use super::{db::with_tx, now_iso};
+use crate::io::hash::hash_file;
+use crate::{CoreError, Result};
+
+/// Extensions we treat as RAW photographs.
+pub const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"];
+
+/// Extensions the scanner picks up: RAW plus common JPEG. (Birders sometimes
+/// shoot JPEG, and it makes the pipeline easy to exercise in tests.)
+pub const PHOTO_EXTENSIONS: &[&str] = &[
+    "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng", "jpg", "jpeg",
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderRow {
+    pub id: i64,
+    pub path: PathBuf,
+    pub added_at: String,
+    pub last_scanned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileRow {
+    pub id: i64,
+    pub folder_id: i64,
+    pub relative_path: String,
+    pub filename: String,
+    pub content_hash: String,
+    pub filesize: i64,
+    pub mtime: f64,
+    pub format: String,
+    pub imported_at: String,
+    pub trashed_at: Option<String>,
+}
+
+/// A file row paired with its absolute path on disk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LibraryFile {
+    pub file: FileRow,
+    pub absolute_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanReport {
+    pub added: usize,
+    pub updated: usize,
+    pub untouched: usize,
+    pub seen: usize,
+}
+
+fn detect_format(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_uppercase()
+}
+
+/// Strip Windows' `\\?\` verbatim prefix so stored paths look like the ones
+/// users see and compare predictably across platforms.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest.to_string());
+        }
+    }
+    path
+}
+
+/// mtime as seconds since the Unix epoch (fractional).
+fn mtime_secs(meta: &std::fs::Metadata) -> f64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn row_to_file(r: &Row<'_>) -> rusqlite::Result<FileRow> {
+    Ok(FileRow {
+        id: r.get("id")?,
+        folder_id: r.get("folder_id")?,
+        relative_path: r.get("relative_path")?,
+        filename: r.get("filename")?,
+        content_hash: r.get("content_hash")?,
+        filesize: r.get("filesize")?,
+        mtime: r.get("mtime")?,
+        format: r.get("format")?,
+        imported_at: r.get("imported_at")?,
+        trashed_at: r.get("trashed_at")?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Folder operations
+// ---------------------------------------------------------------------------
+
+/// Register a folder, returning its id. Idempotent, and requires the path to be
+/// an existing directory.
+pub fn add_folder(conn: &Connection, path: impl AsRef<Path>) -> Result<i64> {
+    let path = path.as_ref();
+    if !path.is_dir() {
+        return Err(CoreError::Other(format!(
+            "not a directory: {}",
+            path.display()
+        )));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|e| CoreError::io(path, e))?;
+    let canonical = strip_verbatim(canonical).to_string_lossy().to_string();
+    with_tx(conn, || {
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM folders WHERE path = ?1",
+                [&canonical],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT INTO folders (path, added_at) VALUES (?1, ?2)",
+            rusqlite::params![canonical, now_iso()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
+pub fn list_folders(conn: &Connection) -> Result<Vec<FolderRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, added_at, last_scanned_at FROM folders ORDER BY added_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(FolderRow {
+            id: r.get(0)?,
+            path: PathBuf::from(r.get::<_, String>(1)?),
+            added_at: r.get(2)?,
+            last_scanned_at: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Remove a folder and (via cascade) its files, analysis and labels. Files on
+/// disk are untouched.
+pub fn remove_folder(conn: &Connection, folder_id: i64) -> Result<()> {
+    with_tx(conn, || {
+        conn.execute("DELETE FROM folders WHERE id = ?1", [folder_id])?;
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// File scanning
+// ---------------------------------------------------------------------------
+
+enum Pending {
+    Insert {
+        rel: String,
+        name: String,
+        hash: String,
+        size: i64,
+        mtime: f64,
+        format: String,
+    },
+    Update {
+        id: i64,
+        hash: String,
+        size: i64,
+        mtime: f64,
+    },
+}
+
+fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    with_tx(conn, || {
+        for op in pending.iter() {
+            match op {
+                Pending::Insert {
+                    rel,
+                    name,
+                    hash,
+                    size,
+                    mtime,
+                    format,
+                } => {
+                    conn.execute(
+                        "INSERT INTO files
+                           (folder_id, relative_path, filename, content_hash,
+                            filesize, mtime, format, imported_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            folder_id,
+                            rel,
+                            name,
+                            hash,
+                            size,
+                            mtime,
+                            format,
+                            now_iso()
+                        ],
+                    )?;
+                }
+                Pending::Update {
+                    id,
+                    hash,
+                    size,
+                    mtime,
+                } => {
+                    conn.execute(
+                        "UPDATE files SET content_hash = ?1, filesize = ?2, mtime = ?3
+                          WHERE id = ?4",
+                        rusqlite::params![hash, size, mtime, id],
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    pending.clear();
+    Ok(())
+}
+
+/// Walk `folder_id`'s directory and insert/update file rows.
+pub fn scan_folder(conn: &Connection, folder_id: i64) -> Result<ScanReport> {
+    scan_folder_with(conn, folder_id, &mut |_seen, _total| {})
+}
+
+/// [`scan_folder`] with a progress callback `(seen, total_estimate)` throttled
+/// by the caller. `total` is unknown until the walk completes, so `seen` is
+/// passed for both, matching the prototype's rolling counter.
+pub fn scan_folder_with(
+    conn: &Connection,
+    folder_id: i64,
+    on_progress: &mut dyn FnMut(usize, usize),
+) -> Result<ScanReport> {
+    let base: String = conn
+        .query_row("SELECT path FROM folders WHERE id = ?1", [folder_id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| CoreError::Other(format!("unknown folder_id {folder_id}")))?;
+    let base = PathBuf::from(base);
+
+    // (relative_path -> (id, content_hash, filesize, mtime))
+    let mut existing: HashMap<String, (i64, String, i64, f64)> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, relative_path, content_hash, filesize, mtime
+               FROM files WHERE folder_id = ?1",
+        )?;
+        let rows = stmt.query_map([folder_id], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                (
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, f64>(4)?,
+                ),
+            ))
+        })?;
+        for row in rows {
+            let (rel, info) = row?;
+            existing.insert(rel, info);
+        }
+    }
+
+    let mut report = ScanReport::default();
+    let mut pending: Vec<Pending> = Vec::new();
+    const FLUSH_EVERY: usize = 10;
+
+    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !PHOTO_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+
+        report.seen += 1;
+        let rel = path
+            .strip_prefix(&base)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(meta) = entry.metadata() else { continue };
+        let size = meta.len() as i64;
+        let mtime = mtime_secs(&meta);
+
+        match existing.get(&rel) {
+            Some((id, _hash, prev_size, prev_mtime))
+                if *prev_size == size && (*prev_mtime - mtime).abs() < 1e-3 =>
+            {
+                report.untouched += 1;
+            }
+            Some((id, _hash, _, _)) => {
+                let hash = hash_file(path)?;
+                pending.push(Pending::Update {
+                    id: *id,
+                    hash,
+                    size,
+                    mtime,
+                });
+                report.updated += 1;
+            }
+            None => {
+                let hash = hash_file(path)?;
+                pending.push(Pending::Insert {
+                    rel,
+                    name: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    hash,
+                    size,
+                    mtime,
+                    format: detect_format(path),
+                });
+                report.added += 1;
+            }
+        }
+
+        if pending.len() >= FLUSH_EVERY {
+            flush_pending(conn, folder_id, &mut pending)?;
+        }
+        on_progress(report.seen, report.seen);
+    }
+    flush_pending(conn, folder_id, &mut pending)?;
+
+    with_tx(conn, || {
+        conn.execute(
+            "UPDATE folders SET last_scanned_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_iso(), folder_id],
+        )?;
+        Ok(())
+    })?;
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// File queries
+// ---------------------------------------------------------------------------
+
+fn files_query(
+    conn: &Connection,
+    folder_id: i64,
+    where_extra: &str,
+    order_extra: &str,
+) -> Result<Vec<LibraryFile>> {
+    let sql = format!(
+        "SELECT f.*, fo.path AS folder_path
+           FROM files f
+           JOIN folders fo ON fo.id = f.folder_id
+           LEFT JOIN analysis a ON a.file_id = f.id
+          WHERE f.folder_id = ?1 {where_extra}
+          ORDER BY {order_extra}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([folder_id], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let file = row_to_file(r)?;
+        let absolute_path = PathBuf::from(folder_path).join(&file.relative_path);
+        Ok(LibraryFile {
+            file,
+            absolute_path,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Files in a folder, optionally including trashed ones and/or sorted
+/// worst-score-first (for culling).
+pub fn list_files(
+    conn: &Connection,
+    folder_id: i64,
+    include_trashed: bool,
+    order_by_score: bool,
+) -> Result<Vec<LibraryFile>> {
+    let where_extra = if include_trashed {
+        ""
+    } else {
+        "AND f.trashed_at IS NULL"
+    };
+    let order_extra = if order_by_score {
+        "a.sharpness_score ASC NULLS LAST, f.filename ASC"
+    } else {
+        "f.filename ASC"
+    };
+    files_query(conn, folder_id, where_extra, order_extra)
+}
+
+/// Files in this folder with no analysis row yet and not trashed.
+pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<LibraryFile>> {
+    files_query(
+        conn,
+        folder_id,
+        "AND f.trashed_at IS NULL AND a.file_id IS NULL",
+        "f.filename ASC",
+    )
+}
+
+pub fn get_file(conn: &Connection, file_id: i64) -> Result<Option<LibraryFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.*, fo.path AS folder_path
+           FROM files f JOIN folders fo ON fo.id = f.folder_id
+          WHERE f.id = ?1",
+    )?;
+    let mut rows = stmt.query_map([file_id], |r| {
+        let folder_path: String = r.get("folder_path")?;
+        let file = row_to_file(r)?;
+        Ok(LibraryFile {
+            absolute_path: PathBuf::from(folder_path).join(&file.relative_path),
+            file,
+        })
+    })?;
+    Ok(rows.next().transpose()?)
+}
+
+// ---------------------------------------------------------------------------
+// Soft delete / restore
+// ---------------------------------------------------------------------------
+
+/// Mark a set of files as trashed (or restore them). Returns how many rows
+/// changed. Sending files to the OS recycle bin is the caller's job (the
+/// desktop layer uses the `trash` crate); this only maintains bookkeeping.
+pub fn set_trashed(conn: &Connection, file_ids: &[i64], trashed: bool) -> Result<usize> {
+    let stamp = if trashed { Some(now_iso()) } else { None };
+    with_tx(conn, || {
+        let mut n = 0;
+        for id in file_ids {
+            n += conn.execute(
+                "UPDATE files SET trashed_at = ?1 WHERE id = ?2",
+                rusqlite::params![stamp, id],
+            )?;
+        }
+        Ok(n)
+    })
+}
+
+/// Clear `trashed_at` for files that are back on disk (restored from the OS
+/// recycle bin). Returns how many were restored.
+pub fn reconcile_trashed(conn: &Connection, folder_id: i64) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.relative_path, fo.path AS folder_path
+           FROM files f JOIN folders fo ON fo.id = f.folder_id
+          WHERE f.folder_id = ?1 AND f.trashed_at IS NOT NULL",
+    )?;
+    let rows: Vec<(i64, PathBuf)> = stmt
+        .query_map([folder_id], |r| {
+            let folder_path: String = r.get("folder_path")?;
+            let rel: String = r.get("relative_path")?;
+            Ok((r.get::<_, i64>("id")?, PathBuf::from(folder_path).join(rel)))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut restored = 0;
+    with_tx(conn, || {
+        for (id, path) in &rows {
+            if path.exists() {
+                conn.execute("UPDATE files SET trashed_at = NULL WHERE id = ?1", [id])?;
+                restored += 1;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(restored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::db::{connect_in_memory, init_schema};
+
+    fn setup() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        (dir, conn)
+    }
+
+    fn write(dir: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn add_folder_is_idempotent_and_requires_a_directory() {
+        let (dir, conn) = setup();
+        let id1 = add_folder(&conn, dir.path()).unwrap();
+        let id2 = add_folder(&conn, dir.path()).unwrap();
+        assert_eq!(id1, id2);
+        assert_eq!(list_folders(&conn).unwrap().len(), 1);
+
+        let missing = dir.path().join("nope");
+        assert!(add_folder(&conn, &missing).is_err());
+    }
+
+    #[test]
+    fn scan_discovers_raw_files_only() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"aaa");
+        write(dir.path(), "sub/b.nef", b"bbbb");
+        write(dir.path(), "notes.txt", b"ignore me");
+        write(dir.path(), "sub/c.dng", b"c");
+
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.seen, 3);
+        assert_eq!(report.added, 3);
+
+        let files = list_files(&conn, fid, false, false).unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.file.filename.as_str()).collect();
+        assert_eq!(names, vec!["a.cr3", "b.nef", "c.dng"]);
+        let cr3 = files.iter().find(|f| f.file.filename == "a.cr3").unwrap();
+        assert_eq!(cr3.file.format, "CR3");
+        assert_eq!(cr3.file.relative_path, "a.cr3");
+        assert_eq!(cr3.absolute_path, dir.path().join("a.cr3"));
+    }
+
+    #[test]
+    fn rescan_is_untouched_then_detects_changes() {
+        let (dir, conn) = setup();
+        let p = write(dir.path(), "a.cr3", b"original");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        assert_eq!(scan_folder(&conn, fid).unwrap().added, 1);
+
+        let again = scan_folder(&conn, fid).unwrap();
+        assert_eq!(again.untouched, 1);
+        assert_eq!((again.added, again.updated), (0, 0));
+
+        // Change content + size; rescan should mark it updated and re-hash.
+        std::fs::write(&p, b"changed content").unwrap();
+        let updated = scan_folder(&conn, fid).unwrap();
+        assert_eq!(updated.updated, 1);
+        let f = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(
+            f[0].file.content_hash,
+            crate::io::hash::hash_bytes(b"changed content")
+        );
+    }
+
+    #[test]
+    fn scan_reports_progress() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let mut seen_total = 0;
+        let mut calls = 0;
+        scan_folder_with(&conn, fid, &mut |seen, total| {
+            calls += 1;
+            seen_total = seen + total;
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(seen_total, 4); // 1+1 then 2+2
+    }
+
+    #[test]
+    fn files_needing_analysis_excludes_analyzed_and_trashed() {
+        use crate::analysis::scorer::{score_rules, ScoreResult};
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        write(dir.path(), "c.cr3", b"c");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let files = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(files_needing_analysis(&conn, fid).unwrap().len(), 3);
+
+        let features = SharpnessFeatures::default();
+        let score = score_rules(&features, &ScoreSettings::default());
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: files[0].file.id,
+                features,
+                score,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_trashed(&conn, &[files[1].file.id], true).unwrap();
+
+        let pending = files_needing_analysis(&conn, fid).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].file.filename, "c.cr3");
+        let _ = ScoreResult::default();
+    }
+
+    #[test]
+    fn list_files_worst_first_orders_by_score() {
+        use crate::analysis::scorer::{score_rules, ScoreResult};
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let files = list_files(&conn, fid, false, false).unwrap();
+
+        let mut sharp = SharpnessFeatures {
+            has_subject: true,
+            ..Default::default()
+        };
+        sharp.tenengrad_subject = 0.9;
+        sharp.laplacian_subject = 0.9;
+        sharp.fft_high_freq_subject = 0.9;
+        sharp.subject_edge_distance = 1.0;
+        sharp.center_edge_ratio = 1.0;
+        let s = ScoreSettings::default();
+        // file b -> sharp (score high), file a -> blurry (score low)
+        let sharp_score = score_rules(&sharp, &s);
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: files[1].file.id,
+                features: sharp,
+                score: sharp_score,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let dull = SharpnessFeatures {
+            has_subject: true,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let dull_score = score_rules(&dull, &s);
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: files[0].file.id,
+                features: dull,
+                score: dull_score,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let ordered = list_files(&conn, fid, false, true).unwrap();
+        assert_eq!(ordered[0].file.filename, "a.cr3"); // worst first
+        assert_eq!(ordered[1].file.filename, "b.cr3");
+        let _ = ScoreResult::default();
+    }
+
+    #[test]
+    fn mark_trashed_and_reconcile() {
+        let (dir, conn) = setup();
+        let p = write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+
+        assert_eq!(set_trashed(&conn, &[id], true).unwrap(), 1);
+        assert!(list_files(&conn, fid, false, false).unwrap().is_empty());
+        assert_eq!(list_files(&conn, fid, true, false).unwrap().len(), 1);
+
+        // File is back on disk -> reconcile clears the marker.
+        assert!(p.exists());
+        assert_eq!(reconcile_trashed(&conn, fid).unwrap(), 1);
+        assert_eq!(list_files(&conn, fid, false, false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_folder_cascades_files() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        remove_folder(&conn, fid).unwrap();
+        assert!(list_folders(&conn).unwrap().is_empty());
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn get_file_resolves_absolute_path() {
+        let (dir, conn) = setup();
+        write(dir.path(), "sub/a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+        let lf = get_file(&conn, id).unwrap().unwrap();
+        assert_eq!(lf.absolute_path, dir.path().join("sub").join("a.cr3"));
+        assert!(get_file(&conn, 9999).unwrap().is_none());
+    }
+}

@@ -1,0 +1,563 @@
+//! Subject-aware ingest of one folder.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use ndarray::Array3;
+use rusqlite::Connection;
+
+use crate::analysis::detector::{BBox, Detection};
+use crate::analysis::scorer::{score_rules, ScoreResult};
+use crate::analysis::sharpness::{compute_features, SharpnessFeatures, Subject};
+use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+use crate::data::library;
+use crate::data::settings::ScoreSettings;
+use crate::{CoreError, Result};
+
+/// Decoded RGB image and its decoder trait live in `io::decoder` so that IO
+/// backends can implement them without depending on the pipeline.
+pub use crate::io::decoder::{DecodedImage, ImageDecoder};
+
+/// The subject-detector trait lives in `analysis::detector` alongside
+/// `Detection` so both detectors and the pipeline can depend on it.
+pub use crate::analysis::detector::SubjectDetector;
+
+/// Turns a feature vector into a verdict. Implemented by the rule scorer and,
+/// later, the trained model.
+pub trait VerdictScorer: Send + Sync {
+    fn score(&self, features: &SharpnessFeatures) -> Result<ScoreResult>;
+}
+
+/// Rule-based scorer adapter.
+pub struct RulesScorer(pub ScoreSettings);
+
+impl VerdictScorer for RulesScorer {
+    fn score(&self, features: &SharpnessFeatures) -> Result<ScoreResult> {
+        Ok(score_rules(features, &self.0))
+    }
+}
+
+/// Cooperative cancellation shared with the UI thread.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Live progress for a run. `total` is known up front (pending files).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IngestProgress {
+    pub total: usize,
+    pub decoded: usize,
+    pub analyzed: usize,
+    pub failed: usize,
+    pub current_file: String,
+    pub failures: Vec<(String, String)>,
+}
+
+impl IngestProgress {
+    /// True once every pending file has been decoded (the batch tail may still
+    /// be in flight).
+    pub fn is_finished(&self) -> bool {
+        self.total > 0 && self.decoded + self.failed >= self.total
+    }
+}
+
+/// Everything the pipeline needs from its environment.
+pub struct IngestContext<'a> {
+    pub decoder: &'a dyn ImageDecoder,
+    pub detector: &'a dyn SubjectDetector,
+    pub scorer: &'a dyn VerdictScorer,
+    pub cancel: Option<&'a CancelToken>,
+    /// Images per detector call.
+    pub batch_size: usize,
+}
+
+impl<'a> IngestContext<'a> {
+    pub fn new(
+        decoder: &'a dyn ImageDecoder,
+        detector: &'a dyn SubjectDetector,
+        scorer: &'a dyn VerdictScorer,
+    ) -> Self {
+        Self {
+            decoder,
+            detector,
+            scorer,
+            cancel: None,
+            batch_size: 8,
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.map(|c| c.is_cancelled()).unwrap_or(false)
+    }
+}
+
+struct PendingItem {
+    file_id: i64,
+    name: String,
+    rgb: Array3<u8>,
+}
+
+/// Analyse every pending file in a folder. Returns the final progress.
+///
+/// `on_progress` is called after each file is decoded, so a UI can stream
+/// updates without waiting for the whole run.
+pub fn ingest_folder(
+    conn: &Connection,
+    folder_id: i64,
+    ctx: &IngestContext<'_>,
+    mut on_progress: impl FnMut(&IngestProgress),
+) -> Result<IngestProgress> {
+    let pending = library::files_needing_analysis(conn, folder_id)?;
+    let mut progress = IngestProgress {
+        total: pending.len(),
+        ..Default::default()
+    };
+    if pending.is_empty() {
+        on_progress(&progress);
+        return Ok(progress);
+    }
+
+    let batch_size = ctx.batch_size.max(1);
+    let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
+
+    for lf in pending {
+        if ctx.cancelled() {
+            break;
+        }
+        progress.current_file = lf.file.filename.clone();
+
+        match ctx.decoder.decode(&lf.absolute_path) {
+            Ok(img) => {
+                progress.decoded += 1;
+                batch.push(PendingItem {
+                    file_id: lf.file.id,
+                    name: lf.file.filename.clone(),
+                    rgb: img.rgb,
+                });
+            }
+            Err(e) => {
+                progress.failed += 1;
+                progress
+                    .failures
+                    .push((lf.file.filename.clone(), format!("decode: {e}")));
+            }
+        }
+
+        if batch.len() >= batch_size {
+            flush_batch(conn, ctx, &mut batch, &mut progress)?;
+        }
+        on_progress(&progress);
+    }
+
+    if !ctx.cancelled() {
+        flush_batch(conn, ctx, &mut batch, &mut progress)?;
+    } else {
+        batch.clear();
+    }
+    on_progress(&progress);
+    Ok(progress)
+}
+
+fn flush_batch(
+    conn: &Connection,
+    ctx: &IngestContext<'_>,
+    batch: &mut Vec<PendingItem>,
+    progress: &mut IngestProgress,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let images: Vec<&Array3<u8>> = batch.iter().map(|b| &b.rgb).collect();
+    let detections = match ctx.detector.detect_batch(&images) {
+        Ok(d) if d.len() == batch.len() => d,
+        // A detector failure (or a shape mismatch) degrades to "no subject"
+        // for this batch rather than failing the run.
+        _ => vec![Vec::new(); batch.len()],
+    };
+
+    for (item, dets) in batch.iter().zip(detections) {
+        let record = match analyze_one(item, dets, ctx.scorer) {
+            Ok(record) => record,
+            Err(e) => {
+                progress.failed += 1;
+                progress.failures.push((item.name.clone(), e.to_string()));
+                continue;
+            }
+        };
+        match upsert_analysis(conn, &record) {
+            Ok(()) => progress.analyzed += 1,
+            Err(e) => {
+                progress.failed += 1;
+                progress
+                    .failures
+                    .push((item.name.clone(), format!("store: {e}")));
+            }
+        }
+    }
+    batch.clear();
+    Ok(())
+}
+
+/// Build the analysis record for one image: evaluate every detected subject and
+/// keep the sharpest (mirrors the prototype's "best of N subjects").
+fn analyze_one(
+    item: &PendingItem,
+    dets: Vec<Detection>,
+    scorer: &dyn VerdictScorer,
+) -> Result<AnalysisRecord> {
+    let all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
+
+    let (features, best_bbox, subject_class) = if dets.is_empty() {
+        (compute_features(&item.rgb, None), None, None)
+    } else {
+        let mut best: Option<(SharpnessFeatures, BBox, String, f32)> = None;
+        for det in &dets {
+            let subject = Subject {
+                bbox: det.bbox,
+                area_px: det.area_px,
+            };
+            let f = compute_features(&item.rgb, Some(subject));
+            let sharp = f.tenengrad_subject.max(f.laplacian_subject);
+            if best.as_ref().map(|(_, _, _, s)| sharp > *s).unwrap_or(true) {
+                best = Some((f, det.bbox, det.class_name.clone(), sharp));
+            }
+        }
+        match best {
+            Some((f, bbox, class, _)) => (f, Some(bbox), Some(class)),
+            None => (compute_features(&item.rgb, None), None, None),
+        }
+    };
+
+    let score = scorer.score(&features)?;
+    Ok(AnalysisRecord {
+        file_id: item.file_id,
+        features,
+        score,
+        subject_bbox: best_bbox,
+        subject_class,
+        all_bboxes,
+        ..Default::default()
+    })
+}
+
+/// Convenience helper for callers that only have settings, not a scorer object.
+pub fn rules_scorer(settings: ScoreSettings) -> RulesScorer {
+    RulesScorer(settings)
+}
+
+/// Map a decode error into a [`CoreError`] (used by real decoders).
+pub fn decode_error(path: &Path, message: impl Into<String>) -> CoreError {
+    CoreError::raw_decode(path, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::scorer::score_rules;
+    use crate::data::db::{connect_in_memory, init_schema};
+    use crate::data::library::{add_folder, list_files, scan_folder};
+    use crate::data::settings::ScoreSettings;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Deterministic checkerboard used as a sharp "photo".
+    fn checkerboard(w: usize, h: usize, cell: usize, value: u8, alt: u8) -> Array3<u8> {
+        Array3::from_shape_fn((h, w, 3), |(y, x, _)| {
+            if ((x / cell) + (y / cell)) % 2 == 0 {
+                value
+            } else {
+                alt
+            }
+        })
+    }
+
+    struct FakeDecoder {
+        sharp: Array3<u8>,
+        fail_on: Vec<String>,
+    }
+
+    impl FakeDecoder {
+        fn new() -> Self {
+            Self {
+                sharp: checkerboard(128, 128, 4, 230, 20),
+                fail_on: Vec::new(),
+            }
+        }
+    }
+
+    impl ImageDecoder for FakeDecoder {
+        fn decode(&self, path: &Path) -> Result<DecodedImage> {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if self.fail_on.contains(&name) {
+                return Err(decode_error(path, "synthetic decode failure"));
+            }
+            Ok(DecodedImage {
+                rgb: self.sharp.clone(),
+            })
+        }
+    }
+
+    struct FakeDetector {
+        per_image: Vec<Detection>,
+        fail: bool,
+        calls: AtomicUsize,
+    }
+
+    impl FakeDetector {
+        fn new(per_image: Vec<Detection>) -> Self {
+            Self {
+                per_image,
+                fail: false,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl SubjectDetector for FakeDetector {
+        fn detect_batch(&self, images: &[&Array3<u8>]) -> Result<Vec<Vec<Detection>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(CoreError::Other("synthetic detector failure".into()));
+            }
+            Ok(vec![self.per_image.clone(); images.len()])
+        }
+    }
+
+    struct PanicFreeScorer(ScoreSettings);
+
+    impl VerdictScorer for PanicFreeScorer {
+        fn score(&self, f: &SharpnessFeatures) -> Result<ScoreResult> {
+            Ok(score_rules(f, &self.0))
+        }
+    }
+
+    fn setup(count: usize) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..count {
+            std::fs::write(dir.path().join(format!("img{i}.cr3")), format!("raw{i}")).unwrap();
+        }
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        (dir, conn)
+    }
+
+    fn folder_id(conn: &Connection) -> i64 {
+        crate::data::library::list_folders(conn).unwrap()[0].id
+    }
+
+    fn subject_at(x: i32, y: i32, w: i32, h: i32) -> Detection {
+        Detection::new(BBox::new(x, y, w, h), "bird", 0.9)
+    }
+
+    #[test]
+    fn happy_path_analyzes_every_pending_file() {
+        let (_dir, conn) = setup(5);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext {
+            batch_size: 2,
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        let mut updates = 0;
+        let progress = ingest_folder(&conn, fid, &ctx, |_p| updates += 1).unwrap();
+
+        assert_eq!(progress.total, 5);
+        assert_eq!(progress.decoded, 5);
+        assert_eq!(progress.analyzed, 5);
+        assert_eq!(progress.failed, 0);
+        assert!(progress.failures.is_empty());
+        assert!(progress.is_finished());
+        // 5 files / batch 2 -> 3 detector calls.
+        assert_eq!(detector.calls.load(Ordering::SeqCst), 3);
+        assert!(updates >= 6, "expected a stream of progress updates");
+
+        assert!(library::files_needing_analysis(&conn, fid)
+            .unwrap()
+            .is_empty());
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.subject_class.as_deref(), Some("bird"));
+        assert_eq!(row.predicted_label, "sharp");
+    }
+
+    #[test]
+    fn decode_failure_is_isolated_to_one_file() {
+        let (_dir, conn) = setup(3);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.fail_on.push("img1.cr3".to_string());
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!(
+            (progress.decoded, progress.analyzed, progress.failed),
+            (2, 2, 1)
+        );
+        assert_eq!(progress.failures[0].0, "img1.cr3");
+        assert!(progress.failures[0].1.contains("decode"));
+    }
+
+    #[test]
+    fn detector_failure_degrades_to_no_subject() {
+        let (_dir, conn) = setup(2);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector {
+            fail: true,
+            ..FakeDetector::new(vec![])
+        };
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!(progress.analyzed, 2);
+        assert_eq!(progress.failed, 0);
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.predicted_label, "no_subject");
+    }
+
+    #[test]
+    fn no_detections_scores_whole_image() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!(progress.analyzed, 1);
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.predicted_label, "no_subject");
+        assert!(row.bboxes.is_empty());
+    }
+
+    #[test]
+    fn cancel_stops_after_the_current_batch() {
+        let (_dir, conn) = setup(5);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let cancel = CancelToken::new();
+        let ctx = IngestContext {
+            batch_size: 1,
+            cancel: Some(&cancel),
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        let progress = ingest_folder(&conn, fid, &ctx, |p| {
+            if p.analyzed >= 1 {
+                cancel.cancel();
+            }
+        })
+        .unwrap();
+
+        assert_eq!(progress.analyzed, 1, "should stop promptly once cancelled");
+        assert!(progress.decoded < 5);
+    }
+
+    #[test]
+    fn picks_the_sharpest_of_several_subjects() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        // Sharp checkerboard top-left, flat grey bottom-right.
+        let mut rgb = checkerboard(200, 200, 4, 235, 20);
+        for y in 100..180 {
+            for x in 100..180 {
+                for c in 0..3 {
+                    rgb[[y, x, c]] = 120;
+                }
+            }
+        }
+        let decoder = FakeDecoder {
+            sharp: rgb,
+            fail_on: vec![],
+        };
+        let sharp_box = BBox::new(16, 16, 64, 64);
+        let flat_box = BBox::new(110, 110, 64, 64);
+        let detector = FakeDetector::new(vec![
+            Detection::new(flat_box, "bird", 0.9),
+            Detection::new(sharp_box, "bird", 0.8),
+        ]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        let row = crate::data::analysis_store::get_analysis(
+            &conn,
+            list_files(&conn, fid, false, false).unwrap()[0].file.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.bboxes.len(), 2, "both subjects recorded");
+        // The subject the verdict was based on is the sharp one.
+        assert_eq!(row.bboxes[0], sharp_box);
+    }
+
+    #[test]
+    fn empty_folder_reports_zero_and_finishes() {
+        let (_dir, conn) = setup(0);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!((progress.total, progress.analyzed), (0, 0));
+        assert!(!progress.is_finished());
+    }
+
+    #[test]
+    fn cancel_token_is_shared_across_clones() {
+        let a = CancelToken::new();
+        let b = a.clone();
+        assert!(!b.is_cancelled());
+        a.cancel();
+        assert!(b.is_cancelled());
+    }
+
+    #[test]
+    fn decode_error_helper_builds_raw_decode_error() {
+        let e = decode_error(&PathBuf::from("x.cr3"), "boom");
+        assert!(matches!(e, CoreError::RawDecode { .. }));
+    }
+}
