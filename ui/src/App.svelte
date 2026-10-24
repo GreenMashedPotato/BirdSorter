@@ -4,6 +4,7 @@
     inTauri,
     listFolders,
     addFolder,
+    removeFolder,
     importFolder,
     startScan,
     cancelScan,
@@ -524,6 +525,29 @@
       await refreshFiles();
       // Keep an open review's labels/colours/flags in sync.
       if (reviewFile !== null) reviewRefresh++;
+    } catch (e) {
+      status = `error: ${e}`;
+    }
+  }
+
+  /// Remove a folder from the library. The directory and its files stay on
+  /// disk; only BirdSorter's rows for it go away.
+  async function removeFolderFromLibrary(folder: FolderInfo) {
+    if (busy) return;
+    if (
+      !confirm(
+        `Remove "${folder.path}" from the library?\n\n` +
+          "The files stay on disk. Analysis, labels and ratings for this folder " +
+          "are removed from BirdSorter.",
+      )
+    )
+      return;
+    try {
+      await removeFolder(folder.id);
+      if (reviewFile !== null) reviewFile = null;
+      await refreshFolders();
+      await refreshFiles();
+      status = `removed ${folderLabel(folder.path)} from the library (files kept on disk)`;
     } catch (e) {
       status = `error: ${e}`;
     }
@@ -1458,6 +1482,17 @@
         {#if folder.id === activeFolder}
           <span class="badge picked" title="Folder-scoped actions target this folder">primary</span>
         {/if}
+        <button
+          class="remove"
+          title="Remove this folder from the library (files stay on disk)"
+          aria-label={`Remove ${folder.path} from the library`}
+          disabled={busy}
+          onclick={(e) => {
+            e.stopPropagation();
+            void removeFolderFromLibrary(folder);
+          }}
+          onkeydown={(e) => e.stopPropagation()}
+        >×</button>
       </div>
     {/each}
     {#if folders.length > 1}

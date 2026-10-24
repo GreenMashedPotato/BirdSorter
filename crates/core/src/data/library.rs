@@ -1436,6 +1436,10 @@ mod tests {
         scan_folder(&conn, fid).unwrap();
         remove_folder(&conn, fid).unwrap();
         assert!(list_folders(&conn).unwrap().is_empty());
+        assert!(
+            dir.path().exists(),
+            "removing a folder from the library must not touch the disk"
+        );
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
             .unwrap();

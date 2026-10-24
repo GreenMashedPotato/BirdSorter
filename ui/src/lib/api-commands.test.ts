@@ -7,6 +7,7 @@ import {
   exportEdited,
   getEdits,
   getPreviewSettings,
+  removeFolder,
   saveEdits,
   setPreviewSettings,
 } from "./api";
@@ -111,5 +112,10 @@ describe("preview and edit commands", () => {
       maxEdge: null,
       denoise: 0.6,
     });
+  });
+
+  it("removes a folder from the library (files stay on disk)", async () => {
+    await removeFolder(3);
+    expect(invokeMock).toHaveBeenCalledWith("remove_folder", { folder: 3 });
   });
 });
