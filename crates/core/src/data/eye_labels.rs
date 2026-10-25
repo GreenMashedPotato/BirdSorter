@@ -243,10 +243,13 @@ mod tests {
 
         let rows = all_eye_labels(&conn).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].file_id, a);
-        assert_eq!(rows[0].points.len(), 2);
-        assert_eq!(rows[1].points.len(), 1);
-        assert!(rows[0].path.ends_with("img0.cr3"));
+        // Grouping is per file; row order follows file id, which is assigned by
+        // the scan and must not be assumed here.
+        let row_a = rows.iter().find(|r| r.file_id == a).unwrap();
+        let row_b = rows.iter().find(|r| r.file_id == b).unwrap();
+        assert_eq!(row_a.points.len(), 2);
+        assert_eq!(row_b.points.len(), 1);
+        assert!(row_a.path.ends_with("img0.cr3"));
     }
 
     #[test]

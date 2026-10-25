@@ -1,0 +1,22 @@
+name: Dependency review
+
+# Blocks a pull request that adds a known-vulnerable dependency. Runs on PRs
+# only; Dependabot keeps the existing tree patched.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          # Keep the job read-only; the summary lives in the job log/checks tab.
+          comment-summary-in-pr: never
