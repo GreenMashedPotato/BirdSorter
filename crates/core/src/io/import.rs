@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::data::library::is_photo_extension;
-use crate::io::export::{capture_day, unique_target};
+use crate::io::export::{capture_day, copy_atomic, unique_target};
 use crate::io::hash::hash_file;
 use crate::{CoreError, Result};
 
@@ -60,19 +60,32 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
     }
     std::fs::create_dir_all(dest).map_err(|e| CoreError::io(dest, e))?;
 
-    let mut sources: Vec<PathBuf> = WalkDir::new(src)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| is_photo_extension(&ext.to_ascii_lowercase()))
-                .unwrap_or(false)
-        })
-        .collect();
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| {
+            let message = e.to_string();
+            let path = e
+                .path()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| src.to_path_buf());
+            match e.into_io_error() {
+                Some(source) => CoreError::io(path, source),
+                None => CoreError::Other(format!("could not scan {}: {message}", path.display())),
+            }
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| is_photo_extension(&ext.to_ascii_lowercase()))
+            .unwrap_or(false)
+        {
+            sources.push(path);
+        }
+    }
     sources.sort();
 
     let mut report = ImportReport::default();
@@ -116,11 +129,17 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
             }
         }
 
-        let target = unique_target(&dir, &name);
-        match std::fs::copy(&path, &target) {
-            Ok(bytes) => {
+        let target = match unique_target(&dir, &name) {
+            Ok(target) => target,
+            Err(e) => {
+                report.failed.push((path, e.to_string()));
+                continue;
+            }
+        };
+        match copy_atomic(&path, &target) {
+            Ok(()) => {
                 report.copied += 1;
-                report.bytes += bytes;
+                report.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
             }
             Err(e) => report.failed.push((path, e.to_string())),
         }

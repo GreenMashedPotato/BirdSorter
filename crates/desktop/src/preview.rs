@@ -18,7 +18,7 @@ use birdsorter_core::io::decoder::{dynamic_to_rgb, CompositeDecoder, ImageDecode
 use birdsorter_core::io::default_decoders_with;
 use birdsorter_core::io::denoise::{blend_strength, MIN_STRENGTH};
 use birdsorter_core::io::develop::{develop_preview, resize_max};
-use birdsorter_core::io::export::{unique_target, ImageFormat};
+use birdsorter_core::io::export::{unique_target, write_new_atomic, ImageFormat};
 use birdsorter_core::io::thumb::{
     cached_coalesced, encode_rgb_jpeg, encode_rgb_tiff, render_key, thumbnail_cached_with,
     RenderGates,
@@ -75,7 +75,7 @@ fn export_target(dest: &str) -> Result<std::path::PathBuf, String> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "export destination has an invalid file name".to_string())?;
-    Ok(unique_target(parent, name))
+    unique_target(parent, name).map_err(err)
 }
 
 /// URL-safe id for a cached thumbnail.
@@ -435,8 +435,25 @@ pub(crate) async fn export_edited(
             ImageFormat::Tiff => encode_rgb_tiff(&rgb).map_err(err)?,
             ImageFormat::Jpeg => encode_rgb_jpeg(&rgb, 92).map_err(err)?,
         };
-        write_atomic(&target, &bytes)?;
-        Ok(target.to_string_lossy().into_owned())
+        let parent = target
+            .parent()
+            .ok_or_else(|| "export destination needs a folder".to_string())?
+            .to_path_buf();
+        let name = Path::new(&dest)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "export destination has an invalid file name".to_string())?;
+        let mut target = target;
+        for _ in 0..8 {
+            match write_new_atomic(&target, &bytes) {
+                Ok(()) => return Ok(target.to_string_lossy().into_owned()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    target = unique_target(&parent, name).map_err(err)?;
+                }
+                Err(e) => return Err(err(e)),
+            }
+        }
+        Err("could not find a free export name".to_string())
     })
     .await
 }
