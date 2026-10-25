@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** True when running inside the Tauri webview (false in a plain browser dev server). */
@@ -222,8 +222,10 @@ export async function queryFiles(folders: number[]): Promise<FileEntry[]> {
   return invoke("query_files", { folders });
 }
 
+/** Grid thumbnail as a `thumb://` URL (cached on disk, generated on demand). */
 export async function getThumbnail(file: number): Promise<string> {
-  return invoke("thumbnail", { file });
+  const id = await invoke<string>("thumbnail", { file });
+  return convertFileSrc(id, "thumb");
 }
 
 /** Preview for the review view. `mode`: "fast" (analysis res), "full"

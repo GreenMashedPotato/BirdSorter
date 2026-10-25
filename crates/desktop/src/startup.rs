@@ -146,7 +146,13 @@ pub(crate) fn run() {
         tracing::error!(%error, "the library database could not be opened");
     }
 
+    let thumb_cache = cache.clone();
     let builder = tauri::Builder::default()
+        // Serve cached grid thumbnails by URL: tile bytes stay out of the IPC
+        // bridge and the JS heap (the command returns a short id instead).
+        .register_uri_scheme_protocol("thumb", move |_ctx, request| {
+            preview::serve_thumbnail(&thumb_cache, request.uri().path())
+        })
         // Must be the first plugin: a second launch (e.g. double-clicking another
         // RAW) forwards its argv here so the running window opens that file.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {

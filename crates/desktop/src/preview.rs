@@ -78,6 +78,65 @@ fn export_target(dest: &str) -> Result<std::path::PathBuf, String> {
     Ok(unique_target(parent, name))
 }
 
+/// URL-safe id for a cached thumbnail.
+///
+/// `convertFileSrc` percent-encodes its argument, so the cache key's `@`
+/// separators cannot be used in the URL; `-` is left intact.
+fn thumbnail_id(hash: &str, dim: u32) -> String {
+    format!("{hash}-v{RENDER_CACHE_VERSION}-{dim}")
+}
+
+/// Map a thumbnail URL id back to its cache key. Strict on purpose: the id
+/// comes from the webview, and the cache key becomes a file path.
+fn thumb_cache_key(id: &str) -> Option<String> {
+    let (hash, rest) = id.split_once("-v")?;
+    let (version, dim) = rest.split_once('-')?;
+    let valid = hash.len() == 16
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+        && !version.is_empty()
+        && version.bytes().all(|b| b.is_ascii_digit())
+        && !dim.is_empty()
+        && dim.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return None;
+    }
+    Some(format!("{hash}@v{version}@{dim}"))
+}
+
+/// Serve one cached thumbnail over the `thumb://` protocol.
+///
+/// The grid used to receive a base64 data URL per tile; serving the cached
+/// JPEG by URL keeps the bytes out of the IPC bridge and the JS heap.
+pub(crate) fn serve_thumbnail(
+    cache: &ThumbCache,
+    uri_path: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let id = uri_path.trim_start_matches('/');
+    let not_found = || {
+        let mut response = tauri::http::Response::new(Vec::new());
+        *response.status_mut() = tauri::http::StatusCode::NOT_FOUND;
+        response
+    };
+    let Some(key) = thumb_cache_key(id) else {
+        return not_found();
+    };
+    let Some(bytes) = cache.get(&key) else {
+        return not_found();
+    };
+    let mut response = tauri::http::Response::new(bytes);
+    response.headers_mut().insert(
+        tauri::http::header::CONTENT_TYPE,
+        tauri::http::HeaderValue::from_static("image/jpeg"),
+    );
+    // The id carries the render version and content hash, so the bytes for a
+    // given URL never change.
+    response.headers_mut().insert(
+        tauri::http::header::CACHE_CONTROL,
+        tauri::http::HeaderValue::from_static("max-age=31536000, immutable"),
+    );
+    response
+}
+
 fn thumbnail_impl(
     cache_root: &Path,
     db_path: &Path,
@@ -89,7 +148,8 @@ fn thumbnail_impl(
         .map_err(err)?
         .ok_or_else(|| "file not found".to_string())?;
     let cache = ThumbCache::new(cache_root.to_path_buf());
-    let bytes = thumbnail_cached_with(
+    // Renders on a miss; the webview then fetches the cached JPEG by id.
+    thumbnail_cached_with(
         &cache,
         gates,
         &lf.absolute_path,
@@ -97,7 +157,7 @@ fn thumbnail_impl(
         THUMB_LONG_SIDE,
     )
     .map_err(err)?;
-    Ok(data_url(bytes))
+    Ok(thumbnail_id(&lf.file.content_hash, THUMB_LONG_SIDE))
 }
 
 /// The cached base render (JPEG bytes) for `file`/`mode`. Modes:
@@ -697,5 +757,48 @@ mod tests {
         let img = decode_data_url(&url);
         assert!(img.width() > 0 && img.height() > 0);
         assert!(img.width() <= 512 && img.height() <= 512);
+    }
+
+    #[test]
+    fn thumbnail_ids_map_to_cache_keys_and_reject_bad_paths() {
+        let id = thumbnail_id("deadbeefdeadbeef", 512);
+        let expected = format!("deadbeefdeadbeef@v{RENDER_CACHE_VERSION}@512");
+        assert_eq!(thumb_cache_key(&id).as_deref(), Some(expected.as_str()));
+
+        for bad in [
+            "",
+            "..",
+            "../../etc/passwd",
+            "deadbeefdeadbeef",
+            "zzzzzzzzzzzzzzzz-v2-512",
+            "deadbeefdeadbeef-vx-512",
+            "deadbeefdeadbeef-v2-512/../x",
+        ] {
+            assert!(thumb_cache_key(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn thumbnail_protocol_serves_cached_bytes_and_404s_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path());
+        let id = thumbnail_id("deadbeefdeadbeef", 512);
+        let key = thumb_cache_key(&id).unwrap();
+        cache.put(&key, b"jpeg-bytes").unwrap();
+
+        let response = serve_thumbnail(&cache, &format!("/{id}"));
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(response.body().as_slice(), b"jpeg-bytes");
+        assert_eq!(
+            response.headers()[tauri::http::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap(),
+            "image/jpeg"
+        );
+
+        assert_eq!(
+            serve_thumbnail(&cache, "/nope").status(),
+            tauri::http::StatusCode::NOT_FOUND
+        );
     }
 }

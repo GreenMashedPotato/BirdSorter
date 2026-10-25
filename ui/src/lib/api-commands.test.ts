@@ -7,12 +7,16 @@ import {
   exportEdited,
   getEdits,
   getPreviewSettings,
+  getThumbnail,
   removeFolder,
   saveEdits,
   setPreviewSettings,
 } from "./api";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  convertFileSrc: (id: string, protocol: string) => `${protocol}://localhost/${id}`,
+}));
 
 const invokeMock = vi.mocked(invoke);
 
@@ -117,5 +121,13 @@ describe("preview and edit commands", () => {
   it("removes a folder from the library (files stay on disk)", async () => {
     await removeFolder(3);
     expect(invokeMock).toHaveBeenCalledWith("remove_folder", { folder: 3 });
+  });
+
+  it("serves thumbnails over the thumb protocol", async () => {
+    invokeMock.mockResolvedValueOnce("deadbeefdeadbeef-v2-512");
+    await expect(getThumbnail(9)).resolves.toBe(
+      "thumb://localhost/deadbeefdeadbeef-v2-512",
+    );
+    expect(invokeMock).toHaveBeenCalledWith("thumbnail", { file: 9 });
   });
 });
