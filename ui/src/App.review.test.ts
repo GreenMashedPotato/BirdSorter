@@ -145,6 +145,7 @@ import {
   saveEdits,
   setColor,
   setFlag,
+  type FileEntry,
 } from "./lib/api";
 
 /** Render App with mock data and open the first tile's review. */
@@ -495,8 +496,7 @@ describe("review view", () => {
     await waitFor(() => expect(labelFiles).toHaveBeenCalledWith([1], "sharp"));
   });
 
-  it("ignores a stale frame when navigating quickly", async () => {
-    gates.hold(2); // the frame we navigate to first will not resolve yet
+  it("ignores a stale frame when navigating quickly", async () => {    gates.hold(2); // the frame we navigate to first will not resolve yet
     const { container, getByText } = await openFirstReview();
 
     await fireEvent.click(getByText("J ›")); // → file 2 (held)
@@ -509,5 +509,37 @@ describe("review view", () => {
     gates.release(2);
     await new Promise((r) => setTimeout(r, 0));
     expect(container.querySelector(".review strong")?.textContent).toBe("img3.cr3");
+  });
+});
+
+describe("a big folder", () => {
+  const many: FileEntry[] = Array.from({ length: 5000 }, (_, i) => ({
+    id: i + 1,
+    filename: `img${i + 1}.cr3`,
+    format: "CR3",
+    trashed: false,
+    analyzed: true,
+    label: null,
+    predicted: "sharp",
+    score: 0.9,
+    hasBokeh: false,
+    species: null,
+    subjectClass: "bird",
+    rating: 0,
+    capturedAt: null,
+    flag: null,
+    color: null,
+    folderId: 1,
+  }));
+
+  it("renders a window of tiles instead of every file", async () => {
+    vi.mocked(queryFiles).mockResolvedValueOnce(many);
+    const { container } = render(App);
+
+    await waitFor(() => expect(container.querySelector(".tile")).toBeTruthy());
+    const rendered = container.querySelectorAll(".tile").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(100); // a viewport window, not 5,000 nodes
+    expect(container.querySelector('[data-idx="4999"]')).toBeNull();
   });
 });
