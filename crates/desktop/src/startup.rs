@@ -200,6 +200,7 @@ pub(crate) fn run() {
             render_gates: Arc::new(RenderGates::new()),
             cancel: Mutex::new(None),
             scan_cancel: Mutex::new(None),
+            scan_thread: Mutex::new(None),
             analysis_thread: Mutex::new(None),
             open_request: Mutex::new(open_request),
             region: Arc::new(Mutex::new(None)),

@@ -293,9 +293,24 @@ pub(crate) fn scan_folder(
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
     let cancel = CancelToken::new();
-    *state.scan_cancel.lock().map_err(err)? = Some(cancel.clone());
+    {
+        // A second scan supersedes the first; otherwise both hash the same
+        // folder and race on its file rows.
+        let mut slot = state.scan_cancel.lock().map_err(err)?;
+        if let Some(previous) = slot.take() {
+            previous.cancel();
+        }
+        *slot = Some(cancel.clone());
+    }
 
-    std::thread::spawn(move || {
+    // Hold the thread slot across take+spawn+store, so a second click sees the
+    // first run's handle and waits for it before writing.
+    let mut slot = state.scan_thread.lock().map_err(err)?;
+    let previous = slot.take();
+    let handle = std::thread::spawn(move || {
+        if let Some(previous) = previous {
+            let _ = previous.join();
+        }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_scan(&app, &db_path, folder, &cancel)
         }));
@@ -315,6 +330,7 @@ pub(crate) fn scan_folder(
             }
         }
     });
+    *slot = Some(handle);
     Ok(())
 }
 
