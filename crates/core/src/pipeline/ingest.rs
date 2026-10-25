@@ -153,14 +153,12 @@ pub fn ingest_folder(
     // pending query picks them up on this run.
     let detector_id = ctx.detector.identity();
     let species_id = ctx.species.and_then(|classifier| classifier.identity());
-    if let Err(error) = analysis_store::mark_model_stale(
+    analysis_store::mark_model_stale(
         conn,
         folder_id,
         detector_id.as_deref(),
         species_id.as_deref(),
-    ) {
-        tracing::warn!(%error, "could not mark stale model analyses");
-    }
+    )?;
 
     let pending = library::files_needing_analysis(conn, folder_id)?;
     let mut progress = IngestProgress {
@@ -199,7 +197,7 @@ fn run_sequential(
         }
         progress.current_file = lf.file.filename.clone();
 
-        match catch_decode(|| ctx.decoder.decode(&lf.absolute_path)) {
+        match catch_decode(|| decode_unchanged(ctx.decoder, &lf)) {
             Ok(img) => {
                 progress.decoded += 1;
                 batch.push(PendingItem {
@@ -270,7 +268,7 @@ fn run_parallel(
                     break;
                 }
                 let lf = &queue[i];
-                let res = catch_decode(|| decoder.decode(&lf.absolute_path));
+                let res = catch_decode(|| decode_unchanged(decoder, lf));
                 // Blocking send: backpressure keeps peak memory bounded.
                 if tx.send((i, res)).is_err() {
                     break;
@@ -331,6 +329,20 @@ fn catch_decode(f: impl FnOnce() -> Result<DecodedImage>) -> Result<DecodedImage
     }
 }
 
+/// Decode a file only if its bytes still match the content hash the scan
+/// stored. Without this, a replacement between scan and decode would be saved
+/// under the old hash and never re-analysed.
+fn decode_unchanged(decoder: &dyn ImageDecoder, lf: &LibraryFile) -> Result<DecodedImage> {
+    let image = decoder.decode(&lf.absolute_path)?;
+    let current = crate::io::hash::hash_file(&lf.absolute_path)?;
+    if current != lf.file.content_hash {
+        return Err(CoreError::Other(
+            "file changed since it was scanned; rescan the folder".into(),
+        ));
+    }
+    Ok(image)
+}
+
 /// Analyse one item through a panic boundary, for the same reason as
 /// [`catch_decode`] — feature extraction runs on untrusted image geometry.
 fn catch_analyze(f: impl FnOnce() -> Result<AnalysisRecord>) -> Result<AnalysisRecord> {
@@ -339,6 +351,15 @@ fn catch_analyze(f: impl FnOnce() -> Result<AnalysisRecord>) -> Result<AnalysisR
         Err(_) => Err(CoreError::Other(
             "analysis panicked on this file (skipped)".into(),
         )),
+    }
+}
+
+/// Report every item in a batch as failed without writing an analysis row, so
+/// a model failure leaves the files pending for a retry.
+fn fail_batch(batch: &[PendingItem], progress: &mut IngestProgress, message: String) {
+    for item in batch {
+        progress.failed += 1;
+        progress.failures.push((item.name.clone(), message.clone()));
     }
 }
 
@@ -359,9 +380,29 @@ fn flush_batch(
         ctx.detector.detect_batch(&images)
     })) {
         Ok(Ok(d)) if d.len() == batch.len() => d,
-        // A detector failure (or panic, or a shape mismatch) degrades to
-        // "no subject" for this batch rather than failing the run.
-        _ => vec![Vec::new(); batch.len()],
+        Ok(Ok(d)) => {
+            fail_batch(
+                batch,
+                progress,
+                format!(
+                    "detect: returned {} results for {} images",
+                    d.len(),
+                    batch.len()
+                ),
+            );
+            batch.clear();
+            return Ok(());
+        }
+        Ok(Err(e)) => {
+            fail_batch(batch, progress, format!("detect: {e}"));
+            batch.clear();
+            return Ok(());
+        }
+        Err(_) => {
+            fail_batch(batch, progress, "detect: detector panicked".to_string());
+            batch.clear();
+            return Ok(());
+        }
     };
     tracing::debug!(
         images = batch.len(),
@@ -479,37 +520,39 @@ pub fn analyze_file_with(
     manual_box: Option<BBox>,
     exclude: &[BBox],
 ) -> Result<AnalysisRecord> {
-    let img = decoder.decode(&file.absolute_path)?;
-    let (h, w, _) = img.rgb.dim();
-    let stored = stored_detections(conn, file.file.id)?;
-    // A manual box or an exclusion edits the stored set; a fresh detection pass
-    // only runs for a plain re-identify.
-    let detected = if manual_box.is_none() && exclude.is_empty() {
-        detector
-            .detect_batch(&[&img.rgb])?
-            .into_iter()
-            .next()
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let dets =
-        stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
-    let mut record = analyze_one(
-        file.file.id,
-        &img.rgb,
-        dets,
-        scorer,
-        species,
-        eye,
-        detector.identity().as_deref(),
-        species
-            .and_then(|classifier| classifier.identity())
-            .as_deref(),
-    )?;
-    record.analyzed_content_hash = Some(file.file.content_hash.clone());
-    upsert_analysis(conn, &record)?;
-    Ok(record)
+    catch_analyze(|| {
+        let img = decode_unchanged(decoder, file)?;
+        let (h, w, _) = img.rgb.dim();
+        let stored = stored_detections(conn, file.file.id)?;
+        // A manual box or an exclusion edits the stored set; a fresh detection
+        // pass only runs for a plain re-identify.
+        let detected = if manual_box.is_none() && exclude.is_empty() {
+            detector
+                .detect_batch(&[&img.rgb])?
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let dets =
+            stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
+        let mut record = analyze_one(
+            file.file.id,
+            &img.rgb,
+            dets,
+            scorer,
+            species,
+            eye,
+            detector.identity().as_deref(),
+            species
+                .and_then(|classifier| classifier.identity())
+                .as_deref(),
+        )?;
+        record.analyzed_content_hash = Some(file.file.content_hash.clone());
+        upsert_analysis(conn, &record)?;
+        Ok(record)
+    })
 }
 
 /// The boxes currently stored for a file, with their classes (detected `bird`
@@ -612,6 +655,14 @@ mod tests {
             Ok(DecodedImage {
                 rgb: self.sharp.clone(),
             })
+        }
+    }
+
+    struct PanicDecoder;
+
+    impl ImageDecoder for PanicDecoder {
+        fn decode(&self, _path: &Path) -> Result<DecodedImage> {
+            panic!("synthetic decoder panic");
         }
     }
 
@@ -773,7 +824,53 @@ mod tests {
     }
 
     #[test]
-    fn detector_failure_degrades_to_no_subject() {
+    fn changed_file_is_not_stored_under_its_stale_hash() {
+        let (dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        std::fs::write(dir.path().join("img0.cr3"), b"changed after scan").unwrap();
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+
+        let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+        assert_eq!(progress.analyzed, 0);
+        assert_eq!(progress.failed, 1);
+        assert_eq!(
+            library::files_needing_analysis(&conn, fid).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn single_file_reanalysis_catches_decoder_panics() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let lf = list_files(&conn, fid, false, false)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+
+        let err = analyze_file_with(
+            &conn,
+            &lf,
+            &PanicDecoder,
+            &detector,
+            &scorer,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("panicked"));
+    }
+
+    #[test]
+    fn detector_failure_leaves_files_pending() {
         let (_dir, conn) = setup(2);
         let fid = folder_id(&conn);
         let decoder = FakeDecoder::new();
@@ -785,15 +882,18 @@ mod tests {
         let ctx = IngestContext::new(&decoder, &detector, &scorer);
 
         let progress = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
-        assert_eq!(progress.analyzed, 2);
-        assert_eq!(progress.failed, 0);
-        let row = crate::data::analysis_store::get_analysis(
+        assert_eq!(progress.analyzed, 0);
+        assert_eq!(progress.failed, 2);
+        assert_eq!(
+            library::files_needing_analysis(&conn, fid).unwrap().len(),
+            2
+        );
+        assert!(crate::data::analysis_store::get_analysis(
             &conn,
             list_files(&conn, fid, false, false).unwrap()[0].file.id,
         )
         .unwrap()
-        .unwrap();
-        assert_eq!(row.predicted_label, "no_subject");
+        .is_none());
     }
 
     #[test]

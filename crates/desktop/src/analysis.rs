@@ -250,21 +250,20 @@ fn pipeline_cached(
     slot: &std::sync::Mutex<Option<PipelineCache>>,
     conn: &Connection,
 ) -> Result<std::sync::Arc<Pipeline>, String> {
-    let fingerprint = pipeline_fingerprint(conn);
-    {
-        let guard = slot
-            .lock()
-            .map_err(|_| "pipeline cache poisoned".to_string())?;
-        if let Some(cache) = guard.as_ref() {
-            if cache.fingerprint == fingerprint {
-                return Ok(cache.pipeline.clone());
-            }
-        }
-    }
-    let pipeline = std::sync::Arc::new(build_pipeline(conn, None)?);
+    // Hold the lock across the build: two first review actions must not both
+    // load the species model. Waiting is cheaper than doubling that memory.
     let mut guard = slot
         .lock()
         .map_err(|_| "pipeline cache poisoned".to_string())?;
+    // Read settings after taking the lock, so a build that finished while this
+    // caller waited is compared against the settings that are current now.
+    let fingerprint = pipeline_fingerprint(conn);
+    if let Some(cache) = guard.as_ref() {
+        if cache.fingerprint == fingerprint {
+            return Ok(cache.pipeline.clone());
+        }
+    }
+    let pipeline = std::sync::Arc::new(build_pipeline(conn, None)?);
     *guard = Some(PipelineCache {
         fingerprint,
         pipeline: pipeline.clone(),
