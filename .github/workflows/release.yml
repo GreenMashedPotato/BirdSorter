@@ -26,9 +26,9 @@ jobs:
             args: "--target x86_64-apple-darwin"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -83,7 +83,7 @@ jobs:
       # installer, build locally with `--config tauri.models.conf.json` (see
       # README ▸ Building installers).
       - name: Build bundles
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -97,7 +97,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Upload bundles
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.os }}
           path: |
