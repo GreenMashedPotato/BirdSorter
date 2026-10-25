@@ -57,9 +57,24 @@ dependencies = [
 
 [[package]]
 name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-no-stdlib"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
+dependencies = [
+ "alloc-no-stdlib 2.0.4",
+]
 
 [[package]]
 name = "alloc-stdlib"
@@ -67,7 +82,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
 dependencies = [
- "alloc-no-stdlib",
+ "alloc-no-stdlib 3.0.0",
 ]
 
 [[package]]
@@ -430,9 +445,12 @@ dependencies = [
 
 [[package]]
 name = "bitstream-io"
-version = "2.6.0"
+version = "4.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
+checksum = "7eff00be299a18769011411c9def0d827e8f2d7bf0c3dbf53633147a8867fd1f"
+dependencies = [
+ "no_std_io2",
+]
 
 [[package]]
 name = "block-buffer"
@@ -480,9 +498,19 @@ version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8b851b75c23ca7873623d612fe49bd1989aeb03d08fb9432187eb253d3d4c6b"
 dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
+ "alloc-no-stdlib 3.0.0",
+ "alloc-stdlib 0.3.0",
+ "brotli-decompressor 6.0.1",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
+dependencies = [
+ "alloc-no-stdlib 2.0.4",
+ "alloc-stdlib 0.2.4",
 ]
 
 [[package]]
@@ -491,8 +519,8 @@ version = "6.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "941cd9bd4ddab83cb46fa5a2d428f1c857b24ac78cb876cf7beb710840934bd7"
 dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
+ "alloc-no-stdlib 3.0.0",
+ "alloc-stdlib 0.3.0",
 ]
 
 [[package]]
@@ -1537,28 +1565,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
- "futures-sink",
 ]
 
 [[package]]
@@ -1626,7 +1638,6 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
- "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -2400,9 +2411,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -2584,6 +2595,184 @@ checksum = "a5a3cc660ba5d72bce0b3bb295bf20847ccbb40fd423f3f05b61273672e561fe"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "jxl-bitstream"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b480e752277e29eb4054f69546887a9b84656fe78c08f54ba5850ced98a378fe"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
+name = "jxl-coding"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd972bcd125e776f1eb241ac50e39f956095a1c2770c64736c968f8946bd9a3c"
+dependencies = [
+ "jxl-bitstream",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-color"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f316b1358c1711755b3ee8e8cb5c4a1dad12e796233088a7a513440782de80b2"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-frame"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d967c6fd669c7c01060b5022d8835fa82fd46b06ffc98b549f17600a097c2b3"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-modular",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "jxl-vardct",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-grid"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01671307879a033bfa52e6e8784b941aca770b3f3a7d33830b455b6844f793fb"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
+name = "jxl-image"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5f752d62577c702a94dbbce4045caf08cb58639e8a4d56464b40ecf33ffe565"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-grid",
+ "jxl-oxide-common",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-jbr"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35d032bcec660647828527ff42c6f5776d2fd44b8357f9f6d9ac6dc07218e46"
+dependencies = [
+ "brotli-decompressor 5.0.3",
+ "jxl-bitstream",
+ "jxl-frame",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-modular",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "jxl-vardct",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-modular"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a2f045b24c738dd91d482be385512b512721ae08a671bd4b27bf1c47f215235"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-grid",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-oxide"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d36c662923f47586880211f3bc7c0d83fb3a9b410d278c7bde93450748abeef3"
+dependencies = [
+ "brotli-decompressor 5.0.3",
+ "jxl-bitstream",
+ "jxl-color",
+ "jxl-frame",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-jbr",
+ "jxl-oxide-common",
+ "jxl-render",
+ "jxl-threadpool",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-oxide-common"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b62394c5021b3a9e7e0dbb2d639d555d019090c9946c39f6d3b09d390db4157b"
+dependencies = [
+ "jxl-bitstream",
+]
+
+[[package]]
+name = "jxl-render"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d34386bfdb6a19b5a30cc9beb4d475d537422c31ae8c39bb69640fcce3fcaf19"
+dependencies = [
+ "bytemuck",
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-color",
+ "jxl-frame",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-modular",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "jxl-vardct",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-threadpool"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25f15eb830aa77a7f21148d72e153562a26bfe570139bd4922eab1908dd499d3"
+dependencies = [
+ "rayon",
+ "rayon-core",
+ "tracing",
+]
+
+[[package]]
+name = "jxl-vardct"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce72a18c6d3a47172ab6c479be2bdb56f22066b5d7092663f03b4490820b4511"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-grid",
+ "jxl-modular",
+ "jxl-oxide-common",
+ "jxl-threadpool",
+ "tracing",
 ]
 
 [[package]]
@@ -2799,15 +2988,24 @@ dependencies = [
 
 [[package]]
 name = "md5"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memmap2"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memoffset"
@@ -2888,9 +3086,9 @@ dependencies = [
 
 [[package]]
 name = "multiversion"
-version = "0.7.4"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4851161a11d3ad0bf9402d90ffc3967bf231768bfd7aeb61755ad06dbf1a142"
+checksum = "eb8a68be21d0755f83bfe47e79b896cc732687cf1903f0e50585e8d6ecc53076"
 dependencies = [
  "multiversion-macros",
  "target-features",
@@ -2898,13 +3096,13 @@ dependencies = [
 
 [[package]]
 name = "multiversion-macros"
-version = "0.7.4"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79a74ddee9e0c27d2578323c13905793e91622148f138ba29738f9dddb835e90"
+checksum = "a05e0c3c3e4edaa21d87c645852ed0b0c3663752bcc6ec43353bd6189dce35e1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.119",
  "target-features",
 ]
 
@@ -3010,6 +3208,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-bigint",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "num-complex"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3031,6 +3253,27 @@ version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
 dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-iter"
+version = "0.1.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
+ "num-integer",
  "num-traits",
 ]
 
@@ -4091,37 +4334,36 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rawler"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6437d0e26c704a833caf4d1c85e652020edf4f9dc5a33af6929307a443e3d77e"
+checksum = "51cb9d46a5b34946878eb236d1180adec0806eee260738ce299517b083a232e8"
 dependencies = [
- "async-trait",
  "backtrace",
  "bitstream-io",
  "byteorder",
  "chrono",
  "enumn",
- "futures",
  "glob",
  "hex",
- "image 0.24.9",
- "itertools 0.12.1",
+ "image 0.25.10",
+ "itertools 0.14.0",
+ "jxl-oxide",
  "lazy_static",
- "libc",
  "libflate",
  "log",
  "md5",
+ "memmap2",
  "multiversion",
+ "num",
  "num_enum",
  "rayon",
  "rustc_version",
  "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
+ "thiserror 2.0.21",
  "toml 0.8.23",
  "uuid",
  "weezl",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4939,7 +5181,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
- "quote",
  "unicode-ident",
 ]
 

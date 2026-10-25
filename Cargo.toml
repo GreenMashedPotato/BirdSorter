@@ -24,7 +24,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 image = "0.24"
-rawler = "0.6.0"
+rawler = "0.8.0"
 demosaic = "0.3"
 sha2 = "0.10"
 ureq = "3"
