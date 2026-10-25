@@ -1,13 +1,16 @@
 version: 2
 updates:
-  # Rust workspace (core, desktop, cli).
+  # Rust workspace (core, desktop, cli). Minor/patch bumps share one PR; a
+  # major bump is its own PR because it usually needs a code migration
+  # (rawler/image/zip/sha2 have all broken APIs on a major).
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
     groups:
-      cargo:
+      cargo-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # Pinned exactly: ort-sys 2.0.0-rc.13 stopped publishing Intel macOS
       # binaries. Do not widen without a Mac to test on (see crates/core/Cargo.toml).
@@ -15,14 +18,20 @@ updates:
       - dependency-name: "ort-sys"
     open-pull-requests-limit: 5
 
-  # Svelte/Vite frontend.
+  # Svelte/Vite frontend. Same split: minor/patch together, majors separately.
   - package-ecosystem: npm
     directory: "/ui"
     schedule:
       interval: weekly
     groups:
-      npm:
+      npm-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # svelte-check 4.x peers typescript ^5 || ^6; keep TS majors out until it
+      # supports 7 (the grouped PR #8 failed npm ci on this exactly).
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
 
   # GitHub Actions used by the workflows; grouped so a SHA/tag bump is one PR.
