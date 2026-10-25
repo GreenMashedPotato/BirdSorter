@@ -8,6 +8,7 @@
 //! The destination can be organised: flat (default), one subfolder per capture
 //! day, or one per species. Names can be rebuilt from a template.
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use crate::{CoreError, Result};
@@ -104,10 +105,13 @@ pub struct ExportReport {
 
 /// Pick a destination path that does not exist yet, adding ` (n)` before the
 /// extension when needed.
-pub fn unique_target(dir: &Path, name: &str) -> PathBuf {
+///
+/// This is only a hint: another process can claim the name after the check.
+/// Writers must still publish with a no-clobber operation.
+pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
     let first = dir.join(name);
     if !first.exists() {
-        return first;
+        return Ok(first);
     }
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) => (stem, Some(ext)),
@@ -119,13 +123,13 @@ pub fn unique_target(dir: &Path, name: &str) -> PathBuf {
             None => dir.join(format!("{stem} ({n})")),
         };
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    dir.join(format!(
-        "{stem} (overflow){}",
-        ext.map(|e| format!(".{e}")).unwrap_or_default()
-    ))
+    Err(CoreError::invalid_input(format!(
+        "no free name for {name} in {}",
+        dir.display()
+    )))
 }
 
 /// `"2026-01-02T10:00:00"` → `Some("2026-01-02")`; anything unusable → `None`.
@@ -261,25 +265,122 @@ pub fn space_warning_for(needed: u64, dest: &Path) -> Option<String> {
     })
 }
 
-/// Copy `src` to `target` through a temp file in the destination directory.
-///
-/// `fs::copy` writes straight to the final name, so a crash or a full disk
-/// leaves a truncated file that looks like a finished export (and a later card
-/// import would then treat it as already present). The rename also refuses to
-/// replace an existing target on Windows.
-fn copy_atomic(src: &Path, target: &Path) -> std::io::Result<()> {
+fn temp_path(target: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let tmp = target.with_extension(format!("part.{}.{}", std::process::id(), seq));
-    std::fs::copy(src, &tmp)?;
-    match std::fs::rename(&tmp, target) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+    target.with_extension(format!("part.{}.{}", std::process::id(), seq))
+}
+
+/// Fallback for filesystems without hard links: exclusive-create the target
+/// and copy into it. If the target exists, leave it alone.
+fn copy_new(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    let mut out = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    let result = (|| {
+        let mut input = std::fs::File::open(tmp)?;
+        std::io::copy(&mut input, &mut out)?;
+        out.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    result
+}
+
+/// Publish a completed temp file without replacing anything already there.
+///
+/// A hard link is atomic and refuses an existing target. Filesystems without
+/// hard links (some exFAT/network shares) fall back to an exclusive create and
+/// copy; that path can leave a partial file if the process dies, but it can
+/// never replace user data.
+fn publish_new(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(tmp, target) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(tmp);
             Err(e)
         }
+        Err(_) => {
+            let result = copy_new(tmp, target);
+            let _ = std::fs::remove_file(tmp);
+            result
+        }
     }
+}
+
+/// Copy `src` to `target` through a temp file, then publish it without
+/// replacing an existing target.
+pub(crate) fn copy_atomic(src: &Path, target: &Path) -> std::io::Result<()> {
+    let tmp = temp_path(target);
+    if let Err(e) = std::fs::copy(src, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    publish_new(&tmp, target)
+}
+
+/// Write bytes to `target` through a temp file, refusing to replace a file that
+/// appeared after the destination was chosen.
+pub fn write_new_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = temp_path(target);
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    publish_new(&tmp, target)
+}
+
+/// Move `src` to `target` without replacing an existing file.
+///
+/// A same-volume hard link is atomic; other volumes fall back to copy-then-
+/// delete. A source that cannot be removed is reported separately.
+fn move_atomic(src: &Path, target: &Path) -> (std::io::Result<()>, Option<std::io::Error>) {
+    match std::fs::hard_link(src, target) {
+        Ok(()) => (Ok(()), std::fs::remove_file(src).err()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (Err(e), None),
+        Err(_) => match copy_atomic(src, target) {
+            Ok(()) => (Ok(()), std::fs::remove_file(src).err()),
+            Err(e) => (Err(e), None),
+        },
+    }
+}
+
+/// Choose a free destination name and publish the file there. Retries when
+/// another process claims the chosen name between the check and the write.
+fn place_file(
+    src: &Path,
+    dir: &Path,
+    name: &str,
+    mode: ExportMode,
+) -> (Result<PathBuf>, Option<std::io::Error>) {
+    for _ in 0..8 {
+        let target = match unique_target(dir, name) {
+            Ok(target) => target,
+            Err(e) => return (Err(e), None),
+        };
+        let (result, delete_failed) = match mode {
+            ExportMode::Copy => (copy_atomic(src, &target), None),
+            ExportMode::Move => move_atomic(src, &target),
+        };
+        match result {
+            Ok(()) => return (Ok(target), delete_failed),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return (Err(CoreError::io(&target, e)), None),
+        }
+    }
+    (
+        Err(CoreError::Other(format!(
+            "could not place {}: too many name collisions",
+            src.display()
+        ))),
+        None,
+    )
 }
 
 /// Copy or move `items` into `dest`, arranging them per `opts`.
@@ -321,32 +422,13 @@ pub fn export_items(
             report.failed.push((src.clone(), e.to_string()));
             continue;
         }
-        let target = unique_target(&dir, &name);
-        let mut delete_failed: Option<std::io::Error> = None;
-        let result = match mode {
-            ExportMode::Copy => copy_atomic(src, &target),
-            // `rename` is atomic but fails across filesystems; fall back to
-            // copy-then-delete so a move to another drive still works.
-            ExportMode::Move => match std::fs::rename(src, &target) {
-                Ok(()) => Ok(()),
-                Err(_) => match copy_atomic(src, &target) {
-                    Ok(()) => match std::fs::remove_file(src) {
-                        Ok(()) => Ok(()),
-                        Err(e) => {
-                            // The photo is safe in both places; do not report the
-                            // move as failed (a retry would copy it again).
-                            delete_failed = Some(e);
-                            Ok(())
-                        }
-                    },
-                    Err(e) => Err(e),
-                },
-            },
-        };
+        let (result, delete_failed) = place_file(src, &dir, &name, mode);
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 report.exported += 1;
                 if let Some(e) = delete_failed {
+                    // The photo is safe in both places; do not report the move
+                    // as failed (a retry would copy it again).
                     report.failed.push((
                         src.clone(),
                         format!("copied, but the original could not be removed: {e}"),
@@ -450,6 +532,35 @@ mod tests {
     }
 
     #[test]
+    fn publishing_never_replaces_a_file_that_appeared_late() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "a.cr3", "new");
+        let target = write(dst.path(), "a.cr3", "keep");
+
+        let err = copy_atomic(&a, &target).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep");
+
+        let bytes_target = dst.path().join("edited.jpg");
+        std::fs::write(&bytes_target, b"keep").unwrap();
+        let err = write_new_atomic(&bytes_target, b"new").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&bytes_target).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn hard_link_fallback_never_removes_an_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = write(dir.path(), "incoming.part", "new");
+        let target = write(dir.path(), "a.cr3", "keep");
+
+        let err = copy_new(&tmp, &target).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep");
+    }
+
+    #[test]
     fn missing_sources_are_reported_not_fatal() {
         let src = tempfile::tempdir().unwrap();
         let dst = tempfile::tempdir().unwrap();
@@ -514,7 +625,7 @@ mod tests {
             };
             write(dir.path(), &name, "x");
         }
-        let t = unique_target(dir.path(), "a.cr3");
+        let t = unique_target(dir.path(), "a.cr3").unwrap();
         assert_eq!(t.file_name().unwrap().to_string_lossy(), "a (5).cr3");
     }
 

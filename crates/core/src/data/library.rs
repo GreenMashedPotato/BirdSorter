@@ -132,6 +132,20 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 
+/// A walk error is fatal for the scan: treating an unreadable subtree as empty
+/// would soft-delete every file still on disk below it.
+fn walk_error(err: walkdir::Error) -> CoreError {
+    let message = err.to_string();
+    let path = err
+        .path()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    match err.into_io_error() {
+        Some(source) => CoreError::io(path, source),
+        None => CoreError::Other(format!("scan failed at {}: {message}", path.display())),
+    }
+}
+
 /// mtime as seconds since the Unix epoch (fractional).
 fn mtime_secs(meta: &std::fs::Metadata) -> f64 {
     meta.modified()
@@ -377,7 +391,8 @@ pub fn scan_folder_streaming(
         mtime: f64,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
-    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&base) {
+        let entry = entry.map_err(walk_error)?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -390,7 +405,7 @@ pub fn scan_folder_streaming(
         if !is_photo_extension(&ext) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { continue };
+        let meta = std::fs::metadata(path).map_err(|e| CoreError::io(path, e))?;
         candidates.push(Candidate {
             rel: path
                 .strip_prefix(&base)
@@ -449,10 +464,10 @@ pub fn scan_folder_streaming(
     // analysis, labels and edits) or it is gone (soft-delete after the walk).
     let walked: std::collections::HashSet<&str> =
         candidates.iter().map(|c| c.rel.as_str()).collect();
-    let mut orphans: HashMap<String, i64> = HashMap::new();
+    let mut orphans: HashMap<String, Vec<i64>> = HashMap::new();
     for (rel, (id, hash, _, _, _)) in &existing {
         if !walked.contains(rel.as_str()) {
-            orphans.entry(hash.clone()).or_insert(*id);
+            orphans.entry(hash.clone()).or_default().push(*id);
         }
     }
 
@@ -473,12 +488,28 @@ pub fn scan_folder_streaming(
             // Untouched only when the capture time has already been computed
             // (an empty string means "computed, but no EXIF timestamp"), so a
             // rescan backfills capture times for older libraries.
-            Some((_, _, prev_size, prev_mtime, prev_captured))
+            Some((id, prev_hash, prev_size, prev_mtime, prev_captured))
                 if *prev_size == size
                     && (*prev_mtime - mtime).abs() < 1e-3
                     && prev_captured.is_some() =>
             {
-                report.untouched += 1;
+                // Metadata cannot prove content identity: a replacement can keep
+                // both size and mtime. Hash before trusting the fast path.
+                let hash = hash_file(path)?;
+                if hash == *prev_hash {
+                    report.untouched += 1;
+                } else {
+                    pending.push(Pending::Update {
+                        id: *id,
+                        rel: rel.clone(),
+                        name: file_name_of(path),
+                        hash,
+                        size,
+                        mtime,
+                        captured_at: Some(crate::io::exif::capture_time(path).unwrap_or_default()),
+                    });
+                    report.updated += 1;
+                }
             }
             Some((id, _, _, _, _)) => {
                 let hash = hash_file(path)?;
@@ -496,7 +527,7 @@ pub fn scan_folder_streaming(
             None => {
                 let hash = hash_file(path)?;
                 let captured_at = Some(crate::io::exif::capture_time(path).unwrap_or_default());
-                match orphans.remove(&hash) {
+                match orphans.get_mut(&hash).and_then(Vec::pop) {
                     // Renamed/moved within the folder: same content, new path.
                     Some(id) => {
                         pending.push(Pending::Update {
@@ -541,8 +572,8 @@ pub fn scan_folder_streaming(
 
     // Anything still orphaned is no longer on disk: hide it instead of listing a
     // row that every render and export will fail on.
-    if !orphans.is_empty() {
-        let ids: Vec<i64> = orphans.into_values().collect();
+    let ids: Vec<i64> = orphans.into_values().flatten().collect();
+    if !ids.is_empty() {
         report.missing = set_trashed(conn, &ids, true)?;
     }
 
@@ -1274,6 +1305,47 @@ mod tests {
         let report = scan_folder(&conn, fid).unwrap();
         assert_eq!(report.restored, 1);
         assert_eq!(list_files(&conn, fid, false, false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn replacing_content_with_the_same_size_and_mtime_is_detected() {
+        let (dir, conn) = setup();
+        let p = write(dir.path(), "a.cr3", b"original");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let modified = std::fs::metadata(&p).unwrap().modified().unwrap();
+
+        std::fs::write(&p, b"changed!").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+
+        let report = scan_folder(&conn, fid).unwrap();
+        assert_eq!(report.updated, 1);
+        let stored = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(
+            stored[0].file.content_hash,
+            crate::io::hash::hash_bytes(b"changed!")
+        );
+    }
+
+    #[test]
+    fn duplicate_content_files_are_all_soft_deleted() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"same");
+        write(dir.path(), "b.cr3", b"same");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+
+        std::fs::remove_file(dir.path().join("a.cr3")).unwrap();
+        std::fs::remove_file(dir.path().join("b.cr3")).unwrap();
+        let report = scan_folder(&conn, fid).unwrap();
+
+        assert_eq!(report.missing, 2);
+        assert!(list_files(&conn, fid, true, false)
+            .unwrap()
+            .iter()
+            .all(|f| f.file.trashed_at.is_some()));
     }
 
     #[test]
