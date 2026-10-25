@@ -12,7 +12,7 @@ authors = ["GreenMashedPotato"]
 
 [workspace.dependencies]
 # --- core runtime ---
-ndarray = "0.16"
+ndarray = "0.17"
 rayon = "1.10"
 rustfft = "6.2"
 thiserror = "2"
@@ -23,16 +23,16 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-image = "0.24"
-rawler = "0.6.0"
+image = "0.25"
+rawler = "0.8.0"
 demosaic = "0.3"
-sha2 = "0.10"
+sha2 = "0.11"
 ureq = "3"
 zip = "2"
 trash = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-fs4 = "0.12"
+fs4 = "1.1"
 
 # --- dev ---
 approx = "0.5"
