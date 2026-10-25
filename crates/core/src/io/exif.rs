@@ -13,8 +13,8 @@ use rawler::analyze::{analyze_metadata, AnalyzerData};
 use rawler::exif::Exif;
 use rawler::formats::jfif::Jfif;
 use rawler::formats::tiff::{Rational, Value, IFD};
+use rawler::rawsource::RawSource;
 use rawler::tags::TiffCommonTag;
-use rawler::RawFile;
 use serde::{Deserialize, Serialize};
 
 const JPEG_SOI: [u8; 2] = [0xFF, 0xD8];
@@ -37,9 +37,8 @@ fn jpeg_exif(path: &Path) -> Option<Exif> {
     if !starts_with(path, &JPEG_SOI) {
         return None;
     }
-    let file = std::fs::File::open(path).ok()?;
-    let mut raw = RawFile::new(path, file);
-    let jfif = Jfif::new(&mut raw).ok()?;
+    let source = RawSource::new(path).ok()?;
+    let jfif = Jfif::new(&source).ok()?;
     Exif::new(jfif.exif_ifd()?).ok()
 }
 

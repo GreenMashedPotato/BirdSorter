@@ -23,8 +23,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-image = "0.24"
-rawler = "0.6.0"
+image = "0.25"
+rawler = "0.8.0"
 demosaic = "0.3"
 sha2 = "0.11"
 ureq = "3"
