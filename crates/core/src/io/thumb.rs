@@ -85,6 +85,50 @@ pub fn cached(
     Ok(bytes)
 }
 
+/// Cache a render of an image that is already decoded.
+///
+/// Analysis has the pixels in memory, so the grid tile costs a resize plus a
+/// JPEG encode here instead of a second RAW decode when the user first scrolls
+/// to the file. Existing entries are left alone: the on-demand renderer may have
+/// produced them from a better source.
+///
+/// The resize uses a triangle filter rather than the on-demand path's Lanczos:
+/// the tile is shown at ~200 px, where the two are indistinguishable on a soft
+/// camera preview, and it halves the cost (measured 25 ms vs 49 ms per file).
+pub fn warm_render(
+    cache: &ThumbCache,
+    hash: &str,
+    rgb: &Array3<u8>,
+    max_dim: u32,
+    quality: u8,
+) -> Result<()> {
+    let key = render_key(hash, max_dim);
+    if cache.get(&key).is_some() {
+        return Ok(());
+    }
+    let (h, w, _) = rgb.dim();
+    let long = (w as u32).max(h as u32);
+    if long == 0 {
+        return Ok(());
+    }
+    let pixels: Vec<u8> = match rgb.as_slice() {
+        Some(slice) => slice.to_vec(),
+        None => rgb.iter().copied().collect(),
+    };
+    let src = image::RgbImage::from_raw(w as u32, h as u32, pixels)
+        .ok_or_else(|| CoreError::Other("rgb buffer size mismatch".into()))?;
+    let resized = if long > max_dim {
+        let scale = max_dim as f32 / long as f32;
+        let nw = ((w as f32 * scale).round() as u32).max(1);
+        let nh = ((h as f32 * scale).round() as u32).max(1);
+        image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Triangle)
+    } else {
+        src
+    };
+    let bytes = encode_jpeg_bytes(&image::DynamicImage::ImageRgb8(resized), quality)?;
+    cache.put(&key, &bytes)
+}
+
 /// Per-key gates that coalesce concurrent renders of the same cache entry.
 ///
 /// A caller holds the gate across the cache re-check and the render, so a
@@ -285,6 +329,38 @@ mod tests {
             render_key("abc", 512),
             format!("abc@v{RENDER_CACHE_VERSION}@512")
         );
+    }
+
+    #[test]
+    fn warm_render_fills_the_key_the_grid_asks_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let rgb = Array3::from_elem((40, 60, 3), 128u8);
+
+        warm_render(&cache, "hash", &rgb, 30, 82).unwrap();
+
+        let key = render_key("hash", 30);
+        let bytes = cache.get(&key).expect("the tile is cached");
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(decoded.width(), 30, "downscaled to the requested long side");
+
+        // A second warm pass must not rewrite what is already cached.
+        cache.put(&key, b"already-here").unwrap();
+        warm_render(&cache, "hash", &rgb, 30, 82).unwrap();
+        assert_eq!(cache.get(&key).unwrap(), b"already-here".to_vec());
+    }
+
+    #[test]
+    fn warm_render_upscales_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let rgb = Array3::from_elem((20, 30, 3), 200u8);
+
+        warm_render(&cache, "small", &rgb, 512, 82).unwrap();
+
+        let bytes = cache.get(&render_key("small", 512)).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (30, 20));
     }
 
     #[test]

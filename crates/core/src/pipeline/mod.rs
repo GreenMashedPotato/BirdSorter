@@ -15,5 +15,5 @@ pub mod stages;
 pub use ingest::{
     analyze_file_with, ingest_folder, rescore_folder, rules_scorer, scorer_for, CancelToken,
     DecodedImage, ImageDecoder, IngestContext, IngestProgress, RulesScorer, StageTimes,
-    SubjectDetector, VerdictScorer,
+    SubjectDetector, VerdictScorer, WarmRenders,
 };
