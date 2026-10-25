@@ -239,13 +239,59 @@ pub fn orientation(path: &Path) -> Option<u16> {
 }
 
 /// `"2026:01:01 10:00:00"` → `"2026-01-01T10:00:00"`.
+///
+/// Only the fixed EXIF shape is accepted: a malformed tag must not become a
+/// path component in a by-date export or card import.
 pub fn normalize_exif_datetime(raw: &str) -> Option<String> {
     let s = raw.trim();
     let (date, time) = s.split_once(' ')?;
-    if date.len() < 10 || time.len() < 8 {
+    if !valid_exif_date(date) || !valid_exif_time(time) {
         return None;
     }
     Some(format!("{}T{}", date.replace(':', "-"), &time[..8]))
+}
+
+fn valid_exif_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || !bytes.iter().all(|b| b.is_ascii()) {
+        return false;
+    }
+    if !matches!(bytes[4], b':' | b'-') || bytes[7] != bytes[4] {
+        return false;
+    }
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(i, b)| matches!(i, 4 | 7) || b.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(month), Ok(day)) = (value[5..7].parse::<u8>(), value[8..10].parse::<u8>()) else {
+        return false;
+    };
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+fn valid_exif_time(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 8
+        || bytes[2] != b':'
+        || bytes[5] != b':'
+        || !bytes[..8]
+            .iter()
+            .enumerate()
+            .all(|(i, b)| matches!(i, 2 | 5) || b.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(hour), Ok(minute), Ok(second)) = (
+        value[0..2].parse::<u8>(),
+        value[3..5].parse::<u8>(),
+        value[6..8].parse::<u8>(),
+    ) else {
+        return false;
+    };
+    hour <= 23 && minute <= 59 && second <= 59
 }
 
 /// Parse the stored form back to a timestamp (assumed UTC, for ordering only).
@@ -266,7 +312,14 @@ mod tests {
             normalize_exif_datetime("2026:01:01 10:00:00"),
             Some("2026-01-01T10:00:00".to_string())
         );
+        assert_eq!(
+            normalize_exif_datetime("2026-01-01 10:00:00"),
+            Some("2026-01-01T10:00:00".to_string())
+        );
         assert_eq!(normalize_exif_datetime("garbage"), None);
+        assert_eq!(normalize_exif_datetime("../../evil 10:00:00"), None);
+        assert_eq!(normalize_exif_datetime("2026:13:01 10:00:00"), None);
+        assert_eq!(normalize_exif_datetime("2026:01:01 99:00:00"), None);
     }
 
     #[test]
