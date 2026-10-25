@@ -26,13 +26,13 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 image = "0.25"
 rawler = "0.8.0"
 demosaic = "0.3"
-sha2 = "0.10"
+sha2 = "0.11"
 ureq = "3"
 zip = "2"
 trash = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-fs4 = "0.12"
+fs4 = "1.1"
 
 # --- dev ---
 approx = "0.5"
