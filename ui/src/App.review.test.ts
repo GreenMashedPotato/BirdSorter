@@ -117,6 +117,8 @@ vi.mock("./lib/api", async (importOriginal) => {
     clearEdits: vi.fn(async () => {}),
     getEdits: vi.fn(async () => null),
     rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
+    autoRate: vi.fn(async () => ({ changed: 3, xmpWritten: 3, xmpFailed: [] })),
+    resetRatings: vi.fn(async () => ({ changed: 3, xmpWritten: 3, xmpFailed: [] })),
     setFlag: vi.fn(async () => 1),
     setColor: vi.fn(async () => 1),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
@@ -135,6 +137,7 @@ vi.mock("./lib/api", async (importOriginal) => {
 import App from "./App.svelte";
 import {
   analysisDetail,
+  autoRate,
   clearEdits,
   DEFAULT_ADJUSTMENTS,
   getEdits,
@@ -206,6 +209,21 @@ describe("review view", () => {
     await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
     await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
     await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
+  });
+
+  it("undoes auto-star as one rating step", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(autoRate).mockClear();
+    vi.mocked(rateFiles).mockClear();
+    const { getByText } = render(App);
+    await waitFor(() => expect(document.querySelectorAll(".tile").length).toBe(3));
+
+    await fireEvent.click(getByText("Auto-star"));
+    await waitFor(() => expect(autoRate).toHaveBeenCalledWith(1));
+
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1, 2, 3], 0));
+    confirmSpy.mockRestore();
   });
 
   it("undoes a flag with Ctrl+Z", async () => {

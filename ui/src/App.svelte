@@ -426,6 +426,7 @@
   }
 
   function pushRatingUndo(ids: number[]) {
+    if (ids.length === 0) return;
     pushUndoEntry({
       kind: "rating",
       values: ids.map((id) => ({
@@ -652,11 +653,16 @@
       !confirm(
         "Set stars for every analysed file from its verdict?\n\n" +
           "sharp → 5 · uncertain → 3 · blurry → 1 · no subject → 0\n\n" +
-          "This also writes xmp:Rating into each file's XMP sidecar.",
+          "This overwrites existing ratings (Ctrl+Z undoes it) and writes " +
+          "xmp:Rating into each file's XMP sidecar.",
       )
     ) {
       return;
     }
+    // Snapshot first: this is a bulk change and must be one undo step.
+    pushRatingUndo(
+      files.filter((f) => f.folderId === activeFolder && f.analyzed).map((f) => f.id),
+    );
     busy = true;
     status = "auto-starring…";
     try {
@@ -675,6 +681,8 @@
   async function resetStars() {
     if (activeFolder === null) return;
     if (!confirm("Clear the star rating on every file in this folder?")) return;
+    // Snapshot first: this is a bulk change and must be one undo step.
+    pushRatingUndo(files.filter((f) => f.folderId === activeFolder).map((f) => f.id));
     busy = true;
     status = "resetting stars…";
     try {
