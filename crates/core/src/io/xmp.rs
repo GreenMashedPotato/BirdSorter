@@ -9,7 +9,7 @@
 //! Existing sidecars are **merged, never replaced**: only the targeted
 //! attribute/element is changed, everything else (creator, EXIF, develop
 //! settings, other keywords) is preserved verbatim. A sidecar we cannot parse
-//! safely is copied to `<name>.xmp.bak.<pid>.<seq>` and left untouched.
+//! safely is copied to `<name>.xmp.bak` and left untouched.
 //!
 //! Both common naming conventions are resolved: `shot.xmp` (stem) and
 //! `shot.CR3.xmp` (full name). An existing sidecar is edited in place; a new
@@ -94,10 +94,12 @@ fn read_sidecar(path: &Path) -> Option<String> {
 }
 
 /// Copy an unreadable sidecar aside before refusing to edit it.
+///
+/// One stable name: retrying the action (or rating a whole folder) must not
+/// grow an unbounded pile of `.bak` files for the same unreadable sidecar.
 fn backup_unreadable(sidecar: &Path) -> Option<PathBuf> {
-    let seq = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let name = sidecar.file_name()?.to_string_lossy();
-    let backup = sidecar.with_file_name(format!("{name}.bak.{}.{seq}", std::process::id()));
+    let backup = sidecar.with_file_name(format!("{name}.bak"));
     std::fs::copy(sidecar, &backup).ok()?;
     Some(backup)
 }
@@ -712,12 +714,18 @@ mod tests {
         assert!(err.to_string().contains("refusing to overwrite"), "{err}");
         // The user's file must survive verbatim.
         assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "not really xmp");
+        // Repeating the action must not pile up backups.
+        let _ = write_rating(&raw, 4).unwrap_err();
         let backups: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .filter(|name| name.contains(".bak."))
+            .filter(|name| name.ends_with(".bak"))
             .collect();
-        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(backups, vec!["shot.xmp.bak"], "{backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("shot.xmp.bak")).unwrap(),
+            "not really xmp"
+        );
     }
 
     #[test]
