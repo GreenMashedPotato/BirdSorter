@@ -405,10 +405,18 @@ fn run_analysis(
 fn reevaluate(
     db_path: &Path,
     pipeline: &std::sync::Mutex<Option<PipelineCache>>,
+    edit_lock: &std::sync::Mutex<()>,
     file: i64,
     manual: Option<BBox>,
     exclude: &[BBox],
 ) -> Result<AnalysisDetailDto, String> {
+    // The edit is a read-modify-write of the stored box set. Serialise it (a
+    // double-click would otherwise start two re-evaluations and the second
+    // write would silently drop the first box). Recover a poisoned lock so one
+    // panic cannot disable box editing until a restart.
+    let _editing = edit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let conn = open(db_path)?;
     let lf = library::get_file(&conn, file)
         .map_err(err)?
@@ -634,7 +642,18 @@ pub(crate) async fn set_subject_box(
     }
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, Some(BBox::new(x, y, w, h)), &[])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || {
+        reevaluate(
+            &db_path,
+            &pipeline,
+            &edit_lock,
+            file,
+            Some(BBox::new(x, y, w, h)),
+            &[],
+        )
+    })
+    .await
 }
 
 /// Drop one subject box (and re-score the rest); removing the last one leaves
@@ -650,7 +669,18 @@ pub(crate) async fn remove_subject(
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[BBox::new(x, y, w, h)])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || {
+        reevaluate(
+            &db_path,
+            &pipeline,
+            &edit_lock,
+            file,
+            None,
+            &[BBox::new(x, y, w, h)],
+        )
+    })
+    .await
 }
 
 /// Re-run detection + species ID for one file (the review view's "Identify").
@@ -661,7 +691,8 @@ pub(crate) async fn identify_subject(
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, &edit_lock, file, None, &[])).await
 }
 
 /// Recompute verdicts for a folder from stored features (no re-decode).
