@@ -292,6 +292,8 @@ pub fn folder_bursts(conn: &Connection, folder_id: i64, gap_seconds: i64) -> Res
                 f.burst_winner, a.signature
            FROM files f
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1 AND f.trashed_at IS NULL",
     )?;
     let rows = stmt.query_map([folder_id], |r| {
@@ -334,7 +336,11 @@ pub fn mark_soft_members(conn: &Connection, folder_id: i64, ratio: f32) -> Resul
     for burst in bursts.iter().filter(|b| b.size > 1) {
         let best: Option<f32> = conn
             .query_row(
-                "SELECT sharpness_score FROM analysis WHERE file_id = ?1",
+                "SELECT a.sharpness_score
+                   FROM analysis a JOIN files f ON f.id = a.file_id
+                  WHERE a.file_id = ?1
+                    AND (a.analyzed_content_hash IS NULL
+                         OR a.analyzed_content_hash = f.content_hash)",
                 [burst.best],
                 |r| r.get(0),
             )
@@ -345,7 +351,11 @@ pub fn mark_soft_members(conn: &Connection, folder_id: i64, ratio: f32) -> Resul
         for &id in burst.frames.iter().filter(|&&id| id != burst.best) {
             let row: Option<(f32, String)> = conn
                 .query_row(
-                    "SELECT sharpness_score, predicted_label FROM analysis WHERE file_id = ?1",
+                    "SELECT a.sharpness_score, a.predicted_label
+                       FROM analysis a JOIN files f ON f.id = a.file_id
+                      WHERE a.file_id = ?1
+                        AND (a.analyzed_content_hash IS NULL
+                             OR a.analyzed_content_hash = f.content_hash)",
                     [id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -356,7 +366,9 @@ pub fn mark_soft_members(conn: &Connection, folder_id: i64, ratio: f32) -> Resul
             if label == "sharp" && score < ratio * best {
                 conn.execute(
                     "UPDATE analysis SET predicted_label = 'uncertain', miss_focus_reason = ?2 \
-                      WHERE file_id = ?1",
+                      WHERE file_id = ?1
+                        AND (analyzed_content_hash IS NULL OR analyzed_content_hash =
+                             (SELECT content_hash FROM files WHERE id = ?1))",
                     rusqlite::params![id, MISS_FOCUS_SOFT_BURST],
                 )?;
                 updated += 1;
@@ -648,5 +660,48 @@ mod tests {
                 .unwrap();
             assert_eq!(label, expected, "{name}");
         }
+    }
+
+    #[test]
+    fn replaced_content_is_not_used_for_burst_scores() {
+        use crate::data::db::{connect_in_memory, init_schema};
+        use crate::data::library::{add_folder, scan_folder};
+
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.cr3", "b.cr3"] {
+            std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
+        }
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        conn.execute_batch(
+            "UPDATE files SET captured_at = '2026-01-01T10:00:00'
+                WHERE filename IN ('a.cr3', 'b.cr3');
+             INSERT INTO analysis (file_id, features_json, sharpness_score, predicted_label,
+                                   analyzed_at, model_version, analyzed_content_hash)
+                 SELECT id, '{}', 0.68, 'sharp', 'now', 'rules-v1', content_hash
+                   FROM files WHERE filename = 'a.cr3';
+             INSERT INTO analysis (file_id, features_json, sharpness_score, predicted_label,
+                                   analyzed_at, model_version, analyzed_content_hash)
+                 SELECT id, '{}', 0.50, 'sharp', 'now', 'rules-v1', content_hash
+                   FROM files WHERE filename = 'b.cr3';
+             UPDATE files SET content_hash = 'replacement-hash' WHERE filename = 'b.cr3';",
+        )
+        .unwrap();
+
+        assert_eq!(mark_soft_members(&conn, fid, SOFT_BURST_RATIO).unwrap(), 0);
+        let label: String = conn
+            .query_row(
+                "SELECT a.predicted_label FROM analysis a JOIN files f ON f.id = a.file_id
+                  WHERE f.filename = 'b.cr3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            label, "sharp",
+            "stale burst scores must not rewrite verdicts"
+        );
     }
 }
