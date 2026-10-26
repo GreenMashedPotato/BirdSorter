@@ -278,6 +278,10 @@ fn run_parallel(
     let queue = pending;
 
     std::thread::scope(|scope| -> Result<()> {
+        // Move the receiver into the scope so it drops before the workers are
+        // joined. If it outlived them, a worker blocked in `tx.send` after a
+        // cancel would never wake and `scope` would join forever.
+        let rx = rx;
         for _ in 0..ctx.decode_threads {
             let tx = tx.clone();
             let queue = &queue;
@@ -1010,6 +1014,45 @@ mod tests {
 
         assert_eq!(progress.analyzed, 1, "should stop promptly once cancelled");
         assert!(progress.decoded < 5);
+    }
+
+    /// The parallel path must not join workers that are blocked writing to a
+    /// full queue after the consumer stopped: the receiver has to drop first.
+    /// The watchdog keeps a regression a test failure instead of a hung suite.
+    #[test]
+    fn parallel_cancel_does_not_deadlock_a_full_decode_queue() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_dir, conn) = setup(128);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let cancel = CancelToken::new();
+        let (finished, wait) = mpsc::channel();
+
+        let worker_cancel = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            let ctx = IngestContext {
+                batch_size: 1,
+                cancel: Some(&worker_cancel),
+                ..IngestContext::new(&decoder, &detector, &scorer).with_decode_threads(4)
+            };
+            let progress = ingest_folder(&conn, fid, &ctx, |p| {
+                if p.analyzed >= 1 {
+                    cancel.cancel();
+                }
+            });
+            let _ = finished.send(progress.map(|p| p.analyzed));
+        });
+
+        let analyzed = wait
+            .recv_timeout(Duration::from_secs(20))
+            .expect("parallel ingest deadlocked after cancel")
+            .unwrap();
+        assert_eq!(analyzed, 1);
+        handle.join().unwrap();
     }
 
     #[test]

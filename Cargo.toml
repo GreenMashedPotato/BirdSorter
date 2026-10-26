@@ -18,7 +18,7 @@ rustfft = "6.2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-directories = "5"
+directories = "6"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
