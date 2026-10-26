@@ -98,10 +98,28 @@ fn read_sidecar(path: &Path) -> Option<String> {
 /// One stable name: retrying the action (or rating a whole folder) must not
 /// grow an unbounded pile of `.bak` files for the same unreadable sidecar.
 fn backup_unreadable(sidecar: &Path) -> Option<PathBuf> {
+    let size = std::fs::metadata(sidecar).ok()?.len();
+    if size > MAX_SIDECAR_BYTES {
+        return None;
+    }
+    let source_hash = crate::io::hash::hash_file(sidecar).ok()?;
     let name = sidecar.file_name()?.to_string_lossy();
     let backup = sidecar.with_file_name(format!("{name}.bak"));
-    std::fs::copy(sidecar, &backup).ok()?;
-    Some(backup)
+    match crate::io::export::copy_atomic(sidecar, &backup) {
+        Ok(()) => Some(backup),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // A previous backup may be the only saved version; never replace it.
+            if std::fs::symlink_metadata(&backup)
+                .ok()?
+                .file_type()
+                .is_symlink()
+            {
+                return None;
+            }
+            (crate::io::hash::hash_file(&backup).ok()? == source_hash).then_some(backup)
+        }
+        Err(_) => None,
+    }
 }
 
 fn unreadable_error(sidecar: &Path) -> CoreError {
@@ -725,6 +743,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("shot.xmp.bak")).unwrap(),
             "not really xmp"
+        );
+    }
+
+    #[test]
+    fn an_existing_backup_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("shot.CR3");
+        std::fs::write(&raw, b"raw").unwrap();
+        let sidecar = sidecar_path(&raw);
+        let backup = sidecar.with_file_name("shot.xmp.bak");
+        std::fs::write(&sidecar, "not really xmp").unwrap();
+        std::fs::write(&backup, "older user backup").unwrap();
+
+        let err = write_rating(&raw, 3).unwrap_err();
+
+        assert!(err.to_string().contains("refusing to overwrite"), "{err}");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "not really xmp");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "older user backup"
         );
     }
 
