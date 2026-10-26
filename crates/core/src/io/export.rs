@@ -134,10 +134,13 @@ pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// `"2026-01-02T10:00:00"` → `Some("2026-01-02")`; anything unusable → `None`.
 fn day_of(captured: Option<&str>) -> Option<String> {
-    captured
-        .and_then(|t| t.get(..10))
-        .filter(|d| d.len() == 10)
-        .map(str::to_string)
+    let day = captured?.get(..10)?;
+    time::Date::parse(
+        day,
+        time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .ok()?;
+    Some(day.to_string())
 }
 
 /// Capture day read from the file's EXIF, if any.
@@ -637,6 +640,8 @@ mod tests {
         );
         assert_eq!(day_of(None), None);
         assert_eq!(day_of(Some("bad")), None);
+        assert_eq!(day_of(Some("../../evilT10:00:00")), None);
+        assert_eq!(day_of(Some("2026-02-31T10:00:00")), None);
     }
 
     #[test]
