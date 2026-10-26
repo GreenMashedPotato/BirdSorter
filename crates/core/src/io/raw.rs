@@ -25,11 +25,11 @@
 //! different backend (e.g. libraw FFI) can be substituted without touching the
 //! pipeline.
 
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageOutputFormat};
+use image::DynamicImage;
 use rawler::analyze;
 use rawler::decoders::RawDecodeParams;
 
@@ -42,12 +42,12 @@ fn raw_err(path: &Path, e: impl std::fmt::Display) -> CoreError {
 
 /// The camera's embedded (processed) preview. Fast: no demosaic.
 pub fn load_preview(path: &Path) -> Result<DynamicImage> {
-    analyze::extract_preview_pixels(path, RawDecodeParams::default()).map_err(|e| raw_err(path, e))
+    analyze::extract_preview_pixels(path, &RawDecodeParams::default()).map_err(|e| raw_err(path, e))
 }
 
 /// The largest embedded image available.
 pub fn load_full(path: &Path) -> Result<DynamicImage> {
-    analyze::extract_full_pixels(path, RawDecodeParams::default()).map_err(|e| raw_err(path, e))
+    analyze::extract_full_pixels(path, &RawDecodeParams::default()).map_err(|e| raw_err(path, e))
 }
 
 /// CR3 keeps its processed previews near the start of the file; 2 MiB is well
@@ -955,7 +955,7 @@ pub fn embedded_preview(path: &Path, request_long: u32) -> Option<DynamicImage> 
 
 /// Develop the sensor mosaic into sRGB (slow; last resort).
 pub fn load_developed(path: &Path) -> Result<DynamicImage> {
-    analyze::raw_to_srgb(path, RawDecodeParams::default()).map_err(|e| raw_err(path, e))
+    analyze::raw_to_srgb(path, &RawDecodeParams::default()).map_err(|e| raw_err(path, e))
 }
 
 /// RAW decoder implementing the pipeline's [`ImageDecoder`].
@@ -1016,7 +1016,7 @@ pub fn encode_thumbnail(path: &Path, max_dim: u32) -> Result<Vec<u8>> {
     // CR3's `PRVW` is ~77 KB vs rawler's fallback to the ~24 MB full-size JPEG.
     let img = match embedded_preview(path, max_dim) {
         Some(img) => img,
-        None => analyze::extract_thumbnail_pixels(path, RawDecodeParams::default())
+        None => analyze::extract_thumbnail_pixels(path, &RawDecodeParams::default())
             .map_err(|e| raw_err(path, e))?,
     };
     let img = if img.width().max(img.height()) > max_dim {
@@ -1024,18 +1024,15 @@ pub fn encode_thumbnail(path: &Path, max_dim: u32) -> Result<Vec<u8>> {
     } else {
         img
     };
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut cursor = Cursor::new(&mut buf);
-        img.write_to(&mut cursor, ImageOutputFormat::Jpeg(82))
-            .map_err(|e| raw_err(path, e))?;
-    }
-    Ok(buf)
+    super::thumb::encode_jpeg_bytes(&img, 82)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
+    use image::ImageFormat;
 
     fn tiny_jpeg(width: u32, height: u32) -> Vec<u8> {
         let img = image::RgbImage::from_fn(width, height, |x, y| {
@@ -1043,7 +1040,7 @@ mod tests {
         });
         let mut out = Vec::new();
         image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut Cursor::new(&mut out), ImageOutputFormat::Jpeg(85))
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
             .unwrap();
         out
     }
@@ -1054,7 +1051,7 @@ mod tests {
         });
         let mut out = Vec::new();
         image::DynamicImage::ImageLuma8(img)
-            .write_to(&mut Cursor::new(&mut out), ImageOutputFormat::Jpeg(85))
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
             .unwrap();
         out
     }
