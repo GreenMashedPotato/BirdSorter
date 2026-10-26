@@ -404,7 +404,7 @@
     | { kind: "species"; id: number; prev: SpeciesUndo }
     | { kind: "burst"; id: number; wasManual: boolean };
   let undoStack = $state<UndoEntry[]>([]);
-  const canUndo = $derived(undoStack.length > 0);
+  const canUndo = $derived(!busy && undoStack.length > 0);
 
   function pushUndoEntry(entry: UndoEntry) {
     undoStack = [...undoStack.slice(-19), entry];
@@ -426,6 +426,7 @@
   }
 
   function pushRatingUndo(ids: number[]) {
+    if (ids.length === 0) return;
     pushUndoEntry({
       kind: "rating",
       values: ids.map((id) => ({
@@ -468,9 +469,13 @@
   /// Revert the last action. Labels use the server-side undo; the other fields
   /// are grouped by their previous value so one command restores each group.
   async function undoLast() {
+    if (busy) return;
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
     undoStack = undoStack.slice(0, -1);
+    // Non-reentrant: a second Ctrl+Z must not pop and undo another entry while
+    // this one is still writing.
+    busy = true;
     try {
       if (entry.kind === "labels") {
         const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
@@ -527,6 +532,8 @@
       if (reviewFile !== null) reviewRefresh++;
     } catch (e) {
       status = `error: ${e}`;
+    } finally {
+      busy = false;
     }
   }
 
@@ -652,11 +659,16 @@
       !confirm(
         "Set stars for every analysed file from its verdict?\n\n" +
           "sharp → 5 · uncertain → 3 · blurry → 1 · no subject → 0\n\n" +
-          "This also writes xmp:Rating into each file's XMP sidecar.",
+          "This overwrites existing ratings (Ctrl+Z undoes it) and writes " +
+          "xmp:Rating into each file's XMP sidecar.",
       )
     ) {
       return;
     }
+    // Snapshot first: this is a bulk change and must be one undo step.
+    pushRatingUndo(
+      files.filter((f) => f.folderId === activeFolder && f.analyzed).map((f) => f.id),
+    );
     busy = true;
     status = "auto-starring…";
     try {
@@ -675,6 +687,8 @@
   async function resetStars() {
     if (activeFolder === null) return;
     if (!confirm("Clear the star rating on every file in this folder?")) return;
+    // Snapshot first: this is a bulk change and must be one undo step.
+    pushRatingUndo(files.filter((f) => f.folderId === activeFolder).map((f) => f.id));
     busy = true;
     status = "resetting stars…";
     try {
@@ -1274,7 +1288,7 @@
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        if (canUndo) undoLast();
+        if (!busy && canUndo) undoLast();
       }
     };
     window.addEventListener("keydown", onKeydown);
