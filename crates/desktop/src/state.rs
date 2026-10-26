@@ -34,6 +34,9 @@ pub(crate) struct AppState {
     /// Detector/species/scorer stack reused by review actions, so drawing a box
     /// does not reload an 800 MB model.
     pub(crate) pipeline: Arc<Mutex<Option<crate::analysis::PipelineCache>>>,
+    /// Serialises a file's read-modify-write box edit. Two quick edits each
+    /// read the stored set and the second write would drop the first one.
+    pub(crate) edit_lock: Arc<Mutex<()>>,
     /// A failed `init_schema`/migration at startup, shown once the window exists.
     pub(crate) startup_error: Option<String>,
 }
