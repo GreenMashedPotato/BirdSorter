@@ -402,36 +402,52 @@ fn run_analysis(
 
 /// Re-evaluate one file with an optional forced subject box (drawn by the user)
 /// or a list of boxes to drop, then return the refreshed detail.
+fn with_edit_lock<T>(
+    edit_lock: &std::sync::Mutex<()>,
+    edit: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _editing = edit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    edit()
+}
+
 fn reevaluate(
     db_path: &Path,
     pipeline: &std::sync::Mutex<Option<PipelineCache>>,
+    edit_lock: &std::sync::Mutex<()>,
     file: i64,
     manual: Option<BBox>,
     exclude: &[BBox],
 ) -> Result<AnalysisDetailDto, String> {
-    let conn = open(db_path)?;
-    let lf = library::get_file(&conn, file)
-        .map_err(err)?
-        .ok_or_else(|| "file not found".to_string())?;
-    let pipe = pipeline_cached(pipeline, &conn)?;
-    analyze_file_with(
-        &conn,
-        &lf,
-        &pipe.decoder,
-        pipe.detector.as_ref(),
-        pipe.scorer.as_ref(),
-        pipe.species.as_deref(),
-        pipe.eye.as_deref(),
-        manual,
-        exclude,
-    )
-    .map_err(err)?;
-    // A manual box can change the frame's score (and the burst's keeper).
-    if let Err(e) = burst::mark_soft_members(&conn, lf.file.folder_id, burst::SOFT_BURST_RATIO) {
-        tracing::warn!(error = %e, "burst softness pass failed");
-    }
-    drop(conn);
-    analysis_detail_impl(db_path, file)
+    with_edit_lock(edit_lock, || {
+        // The edit is a read-modify-write of the stored box set. Serialise it
+        // so a second quick edit cannot silently drop the first box.
+        let conn = open(db_path)?;
+        let lf = library::get_file(&conn, file)
+            .map_err(err)?
+            .ok_or_else(|| "file not found".to_string())?;
+        let pipe = pipeline_cached(pipeline, &conn)?;
+        analyze_file_with(
+            &conn,
+            &lf,
+            &pipe.decoder,
+            pipe.detector.as_ref(),
+            pipe.scorer.as_ref(),
+            pipe.species.as_deref(),
+            pipe.eye.as_deref(),
+            manual,
+            exclude,
+        )
+        .map_err(err)?;
+        // A manual box can change the frame's score (and the burst's keeper).
+        if let Err(e) = burst::mark_soft_members(&conn, lf.file.folder_id, burst::SOFT_BURST_RATIO)
+        {
+            tracing::warn!(error = %e, "burst softness pass failed");
+        }
+        drop(conn);
+        analysis_detail_impl(db_path, file)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +650,18 @@ pub(crate) async fn set_subject_box(
     }
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, Some(BBox::new(x, y, w, h)), &[])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || {
+        reevaluate(
+            &db_path,
+            &pipeline,
+            &edit_lock,
+            file,
+            Some(BBox::new(x, y, w, h)),
+            &[],
+        )
+    })
+    .await
 }
 
 /// Drop one subject box (and re-score the rest); removing the last one leaves
@@ -650,7 +677,18 @@ pub(crate) async fn remove_subject(
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[BBox::new(x, y, w, h)])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || {
+        reevaluate(
+            &db_path,
+            &pipeline,
+            &edit_lock,
+            file,
+            None,
+            &[BBox::new(x, y, w, h)],
+        )
+    })
+    .await
 }
 
 /// Re-run detection + species ID for one file (the review view's "Identify").
@@ -661,7 +699,8 @@ pub(crate) async fn identify_subject(
 ) -> Result<AnalysisDetailDto, String> {
     let db_path = state.db_path.clone();
     let pipeline = state.pipeline.clone();
-    blocking(move || reevaluate(&db_path, &pipeline, file, None, &[])).await
+    let edit_lock = state.edit_lock.clone();
+    blocking(move || reevaluate(&db_path, &pipeline, &edit_lock, file, None, &[])).await
 }
 
 /// Recompute verdicts for a folder from stored features (no re-decode).
@@ -710,4 +749,57 @@ pub(crate) async fn train(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod edit_lock_tests {
+    use super::with_edit_lock;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn review_edits_wait_for_the_previous_read_modify_write() {
+        let lock = Arc::new(Mutex::new(()));
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_ready_tx, second_ready_rx) = mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+
+        let first_lock = Arc::clone(&lock);
+        let first = std::thread::spawn(move || {
+            with_edit_lock(&first_lock, || {
+                first_entered_tx.send(()).map_err(|e| e.to_string())?;
+                release_first_rx.recv().map_err(|e| e.to_string())?;
+                Ok(())
+            })
+        });
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first edit did not enter the critical section");
+
+        let second_lock = Arc::clone(&lock);
+        let second = std::thread::spawn(move || {
+            second_ready_tx.send(()).unwrap();
+            with_edit_lock(&second_lock, || {
+                second_entered_tx.send(()).map_err(|e| e.to_string())?;
+                Ok(())
+            })
+        });
+        second_ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second edit thread did not start");
+        let entered_early = second_entered_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_ok();
+
+        release_first_tx.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        if !entered_early {
+            second_entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("second edit did not resume after the first completed");
+        }
+        second.join().unwrap().unwrap();
+        assert!(!entered_early, "the read-modify-write edits overlapped");
+    }
 }

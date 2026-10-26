@@ -205,6 +205,7 @@ pub(crate) fn run() {
             open_request: Mutex::new(open_request),
             region: Arc::new(Mutex::new(None)),
             pipeline: Arc::new(Mutex::new(None)),
+            edit_lock: Arc::new(Mutex::new(())),
             startup_error,
         })
         .invoke_handler(tauri::generate_handler![
