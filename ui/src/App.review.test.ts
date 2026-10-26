@@ -20,6 +20,7 @@ const gates = vi.hoisted(() => {
     },
   };
 });
+const ratingState = vi.hoisted(() => new Map<number, number>());
 
 // jsdom has no ResizeObserver; App's grid effect needs one.
 beforeAll(() => {
@@ -44,6 +45,7 @@ beforeAll(() => {
 // it (the last folder is remembered).
 beforeEach(() => {
   localStorage.clear();
+  ratingState.clear();
   vi.mocked(getEdits).mockResolvedValue(null);
 });
 
@@ -61,12 +63,13 @@ vi.mock("./lib/api", async (importOriginal) => {
     hasBokeh: false,
     species: null,
     subjectClass: "bird",
-    rating: 0,
+    rating: ratingState.get(id) ?? 0,
     capturedAt: "2026-07-14T09:31:22",
     flag: null,
     color,
     folderId,
   });
+  const rows = () => [file(1), file(2, 1, "red"), file(3), file(4, 2), file(5, 2)];
   const detail = (id: number) => ({
     fileId: id,
     filename: `img${id}.cr3`,
@@ -100,9 +103,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       { id: 2, path: "D:\\shoot2", addedAt: "", lastScannedAt: null },
     ]),
     queryFiles: vi.fn(async (folders: number[]) =>
-      [file(1), file(2, 1, "red"), file(3), file(4, 2), file(5, 2)].filter((f) =>
-        folders.includes(f.folderId),
-      ),
+      rows().filter((f) => folders.includes(f.folderId)),
     ),
     bursts: vi.fn(async () => []),
     analysisDetail: vi.fn(async (id: number) => {
@@ -116,7 +117,20 @@ vi.mock("./lib/api", async (importOriginal) => {
     saveEdits: vi.fn(async () => {}),
     clearEdits: vi.fn(async () => {}),
     getEdits: vi.fn(async () => null),
-    rateFiles: vi.fn(async () => ({ changed: 1, xmpWritten: 1, xmpFailed: [] })),
+    rateFiles: vi.fn(async (ids: number[], rating: number) => {
+      for (const id of ids) ratingState.set(id, rating);
+      return { changed: ids.length, xmpWritten: ids.length, xmpFailed: [] };
+    }),
+    autoRate: vi.fn(async (folderId: number) => {
+      const targets = rows().filter((f) => f.folderId === folderId && f.analyzed);
+      for (const f of targets) ratingState.set(f.id, 5);
+      return { changed: targets.length, xmpWritten: targets.length, xmpFailed: [] };
+    }),
+    resetRatings: vi.fn(async (folderId: number) => {
+      const targets = rows().filter((f) => f.folderId === folderId);
+      for (const f of targets) ratingState.set(f.id, 0);
+      return { changed: targets.length, xmpWritten: targets.length, xmpFailed: [] };
+    }),
     setFlag: vi.fn(async () => 1),
     setColor: vi.fn(async () => 1),
     trashFiles: vi.fn(async () => ({ moved: 1, failures: [] })),
@@ -135,6 +149,7 @@ vi.mock("./lib/api", async (importOriginal) => {
 import App from "./App.svelte";
 import {
   analysisDetail,
+  autoRate,
   clearEdits,
   DEFAULT_ADJUSTMENTS,
   getEdits,
@@ -142,6 +157,7 @@ import {
   labelFiles,
   queryFiles,
   rateFiles,
+  resetRatings,
   saveEdits,
   setColor,
   setFlag,
@@ -206,6 +222,107 @@ describe("review view", () => {
     await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
     await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
     await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
+  });
+
+  it("ignores a second Ctrl+Z while an undo is still running", async () => {
+    localStorage.clear();
+    vi.mocked(rateFiles).mockClear();
+    const { container } = await openFirstReview();
+    // Two rating steps, so the undo stack holds two entries.
+    await fireEvent.keyDown(window, { key: "5", code: "Digit5" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
+    await fireEvent.keyDown(window, { key: "4", code: "Digit4" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 4));
+
+    // Park the undo on its first write, like a slow XMP sidecar.
+    let finishUndo!: () => void;
+    vi.mocked(rateFiles).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finishUndo = resolve;
+      });
+      return { changed: 1, xmpWritten: 1, xmpFailed: [] };
+    });
+
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledTimes(3));
+
+    // Presses while the first undo is parked must not pop its neighbour.
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    expect(rateFiles).toHaveBeenCalledTimes(3);
+    expect(rateFiles).not.toHaveBeenCalledWith([1], 0);
+    const undo = container.querySelector<HTMLButtonElement>(
+      'button[title^="Undo the last"]',
+    )!;
+    expect(undo.disabled).toBe(true);
+
+    finishUndo();
+    await waitFor(() => expect(undo.disabled).toBe(false));
+
+    // The earlier entry survived the ignored presses, so it undoes now.
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
+  });
+
+  it("blocks undo while auto-star is pending, then restores prior ratings", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const previous = [[1, 2], [2, 4], [3, 1]] as const;
+    for (const [id, rating] of previous) ratingState.set(id, rating);
+    vi.mocked(autoRate).mockClear();
+    vi.mocked(rateFiles).mockClear();
+    let finishAutoRate!: () => void;
+    vi.mocked(autoRate).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finishAutoRate = resolve;
+      });
+      for (const [id] of previous) ratingState.set(id, 5);
+      return { changed: 3, xmpWritten: 3, xmpFailed: [] };
+    });
+    const { getByText } = render(App);
+    await waitFor(() => expect(document.querySelectorAll(".tile").length).toBe(3));
+
+    await fireEvent.click(getByText("Auto-star"));
+    await waitFor(() => expect(autoRate).toHaveBeenCalledWith(1));
+
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    expect(rateFiles).not.toHaveBeenCalled();
+
+    finishAutoRate();
+    await waitFor(() =>
+      expect((getByText("Auto-star") as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect([...ratingState.entries()]).toEqual([[1, 5], [2, 5], [3, 5]]);
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledTimes(3));
+    expect(rateFiles).toHaveBeenCalledWith([1], 2);
+    expect(rateFiles).toHaveBeenCalledWith([2], 4);
+    expect(rateFiles).toHaveBeenCalledWith([3], 1);
+    expect([...ratingState.entries()]).toEqual(previous);
+    confirmSpy.mockRestore();
+  });
+
+  it("undoes reset-stars to each file's previous rating", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const previous = [[1, 2], [2, 4], [3, 1]] as const;
+    for (const [id, rating] of previous) ratingState.set(id, rating);
+    vi.mocked(resetRatings).mockClear();
+    vi.mocked(rateFiles).mockClear();
+    const { getByText } = render(App);
+    await waitFor(() => expect(document.querySelectorAll(".tile").length).toBe(3));
+
+    await fireEvent.click(getByText("Reset stars"));
+    await waitFor(() => expect(resetRatings).toHaveBeenCalledWith(1));
+    await waitFor(() =>
+      expect((getByText("Reset stars") as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect([...ratingState.entries()]).toEqual([[1, 0], [2, 0], [3, 0]]);
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledTimes(3));
+    expect(rateFiles).toHaveBeenCalledWith([1], 2);
+    expect(rateFiles).toHaveBeenCalledWith([2], 4);
+    expect(rateFiles).toHaveBeenCalledWith([3], 1);
+    expect([...ratingState.entries()]).toEqual(previous);
+    confirmSpy.mockRestore();
   });
 
   it("undoes a flag with Ctrl+Z", async () => {
