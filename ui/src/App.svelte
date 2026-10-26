@@ -404,7 +404,7 @@
     | { kind: "species"; id: number; prev: SpeciesUndo }
     | { kind: "burst"; id: number; wasManual: boolean };
   let undoStack = $state<UndoEntry[]>([]);
-  const canUndo = $derived(undoStack.length > 0);
+  const canUndo = $derived(!busy && undoStack.length > 0);
 
   function pushUndoEntry(entry: UndoEntry) {
     undoStack = [...undoStack.slice(-19), entry];
@@ -469,6 +469,7 @@
   /// Revert the last action. Labels use the server-side undo; the other fields
   /// are grouped by their previous value so one command restores each group.
   async function undoLast() {
+    if (busy) return;
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
     undoStack = undoStack.slice(0, -1);
@@ -1282,7 +1283,7 @@
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        if (canUndo) undoLast();
+        if (!busy && canUndo) undoLast();
       }
     };
     window.addEventListener("keydown", onKeydown);
