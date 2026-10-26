@@ -345,7 +345,15 @@ fn move_atomic(src: &Path, target: &Path) -> (std::io::Result<()>, Option<std::i
         Ok(()) => (Ok(()), std::fs::remove_file(src).err()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (Err(e), None),
         Err(_) => match copy_atomic(src, target) {
-            Ok(()) => (Ok(()), std::fs::remove_file(src).err()),
+            Ok(()) => {
+                // A cross-volume move copies, then deletes the source. Flush the
+                // copy before removing the only other one: a power loss after
+                // the delete but before writeback would otherwise lose the photo.
+                if let Ok(file) = std::fs::OpenOptions::new().write(true).open(target) {
+                    let _ = file.sync_all();
+                }
+                (Ok(()), std::fs::remove_file(src).err())
+            }
             Err(e) => (Err(e), None),
         },
     }
