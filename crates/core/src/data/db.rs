@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::{CoreError, Result};
 
@@ -452,8 +452,13 @@ pub fn schema_version(conn: &Connection) -> Result<Option<i64>> {
 /// Uses rusqlite's unchecked transaction so callers that only hold
 /// `&Connection` (the normal case — connections are shared across threads
 /// behind a lock) can still group writes atomically. Rolls back on error.
+///
+/// The transaction is IMMEDIATE: it takes the write lock up front. A deferred
+/// read-then-write transaction in WAL mode fails instantly with
+/// `SQLITE_BUSY_SNAPSHOT` when another writer commits in between (`busy_timeout`
+/// does not retry that), and any value read before the write could be stale.
 pub fn with_tx<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     match f() {
         Ok(v) => {
             tx.commit()?;
@@ -503,6 +508,54 @@ mod tests {
         init_schema(&conn).unwrap();
         init_schema(&conn).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn immediate_transaction_reserves_the_writer_before_the_callback() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let first = connect(&path).unwrap();
+        first
+            .execute_batch("CREATE TABLE writes (value INTEGER NOT NULL);")
+            .unwrap();
+        let second = connect(&path).unwrap();
+        second.busy_timeout(Duration::from_millis(25)).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let writer = std::thread::spawn(move || {
+            with_tx(&first, || {
+                started_tx
+                    .send(())
+                    .map_err(|e| CoreError::Other(e.to_string()))?;
+                release_rx
+                    .recv()
+                    .map_err(|e| CoreError::Other(e.to_string()))?;
+                first.execute("INSERT INTO writes (value) VALUES (1)", [])?;
+                Ok(())
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("transaction callback did not start");
+
+        let error = second
+            .execute("INSERT INTO writes (value) VALUES (2)", [])
+            .unwrap_err();
+        assert!(
+            matches!(error, rusqlite::Error::SqliteFailure(ref e, _) if e.code == rusqlite::ErrorCode::DatabaseBusy),
+            "the second writer should wait behind the immediate transaction: {error}"
+        );
+
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        let count: i64 = second
+            .query_row("SELECT COUNT(*) FROM writes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
