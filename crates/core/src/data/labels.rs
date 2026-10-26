@@ -146,6 +146,9 @@ pub fn all_labeled_features(conn: &Connection) -> Result<Vec<(String, UserLabel)
                   WHERE l.file_id = a.file_id
                   ORDER BY l.created_at DESC, l.id DESC LIMIT 1) AS user_label
            FROM analysis a
+           JOIN files f ON f.id = a.file_id
+            AND (a.analyzed_content_hash IS NULL
+                 OR a.analyzed_content_hash = f.content_hash)
           WHERE EXISTS (SELECT 1 FROM labels l WHERE l.file_id = a.file_id)",
     )?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
