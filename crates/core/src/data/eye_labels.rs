@@ -138,6 +138,8 @@ pub fn all_eye_labels(conn: &Connection) -> Result<Vec<EyeLabelRow>> {
            JOIN eye_labels e ON e.file_id = f.id
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           GROUP BY f.id
           ORDER BY f.id",
     )?;
