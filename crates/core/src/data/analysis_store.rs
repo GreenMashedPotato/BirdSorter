@@ -530,18 +530,20 @@ pub fn rescore_folder_with(
     folder_id: i64,
     score: impl Fn(&SharpnessFeatures) -> Result<ScoreResult>,
 ) -> Result<usize> {
-    let rows: Vec<(i64, String)> = conn
-        .prepare(
-            "SELECT a.file_id, a.features_json
-               FROM analysis a
-               JOIN files f ON f.id = a.file_id
-              WHERE f.folder_id = ?1",
-        )?
-        .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    let mut rescored = 0usize;
     with_tx(conn, || {
+        // Read inside the transaction: a concurrent single-file re-analysis
+        // must not slip a new features_json between the read and the write.
+        let rows: Vec<(i64, String)> = conn
+            .prepare(
+                "SELECT a.file_id, a.features_json
+                   FROM analysis a
+                   JOIN files f ON f.id = a.file_id
+                  WHERE f.folder_id = ?1",
+            )?
+            .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut rescored = 0usize;
         for (file_id, json) in &rows {
             let features = SharpnessFeatures::from_json(json)?;
             let score = score(&features)?;
@@ -561,9 +563,8 @@ pub fn rescore_folder_with(
             )?;
             rescored += 1;
         }
-        Ok(())
-    })?;
-    Ok(rescored)
+        Ok(rescored)
+    })
 }
 
 /// Recompute verdicts with the rule-based scorer and the given settings.
