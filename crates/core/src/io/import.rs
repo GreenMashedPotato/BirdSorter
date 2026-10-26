@@ -47,26 +47,36 @@ fn day_folder(path: &Path) -> String {
     capture_day(path).unwrap_or_else(|| "undated".to_string())
 }
 
-/// Existing collision candidates for `name` (`name`, `name (1)`, …), stopping at
-/// the first free one: the slot `unique_target` would fill next.
-fn existing_candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
+/// Existing collision candidates for `name` (the bare name and the ` (n)`
+/// suffixes `unique_target` produces). The directory is scanned once so a gap
+/// left by a deleted copy cannot hide a later copy of the same photo.
+fn existing_candidates(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) => (stem, Some(ext)),
         None => (name, None),
     };
+    let prefix = format!("{stem} (");
+    let suffix = ext
+        .map(|ext| format!(").{ext}"))
+        .unwrap_or_else(|| ")".into());
     let mut out = Vec::new();
-    for n in 0..10_000 {
-        let candidate = match (n, ext) {
-            (0, _) => dir.join(name),
-            (n, Some(ext)) => dir.join(format!("{stem} ({n}).{ext}")),
-            (n, None) => dir.join(format!("{stem} ({n})")),
+    for entry in std::fs::read_dir(dir).map_err(|e| CoreError::io(dir, e))? {
+        let entry = entry.map_err(|e| CoreError::io(dir, e))?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
         };
-        if !candidate.exists() {
-            break;
+        let matches = file_name == name
+            || file_name
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(suffix.as_str()))
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| (1..10_000).contains(&n));
+        if matches {
+            out.push(entry.path());
         }
-        out.push(candidate);
     }
-    out
+    Ok(out)
 }
 
 /// Copy every supported photo under `src` into `dest`.
@@ -137,9 +147,16 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
         // candidate — comparing only the bare name would import it again as
         // ` (2)`, ` (3)`, … every time the card is read.
         let source_size = std::fs::metadata(&path).ok().map(|m| m.len());
+        let candidates = match existing_candidates(&dir, &name) {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                report.failed.push((path, e.to_string()));
+                continue;
+            }
+        };
         let mut source_hash: Option<String> = None;
         let mut already_imported = false;
-        for candidate in existing_candidates(&dir, &name) {
+        for candidate in candidates {
             let Ok(meta) = std::fs::metadata(&candidate) else {
                 continue;
             };
@@ -284,6 +301,25 @@ mod tests {
             "a re-import must not add another copy"
         );
         assert_eq!(std::fs::read(&copy).unwrap(), b"new-and-longer");
+    }
+
+    #[test]
+    fn a_gap_between_collision_suffixes_does_not_hide_a_previous_copy() {
+        let src = source_with(&[("a.cr3", b"already-imported")]);
+        let dest = tempfile::tempdir().unwrap();
+        let day = dest.path().join("undated");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("a.cr3"), b"different").unwrap();
+        std::fs::write(day.join("a (2).cr3"), b"already-imported").unwrap();
+
+        let report = import_folder(src.path(), dest.path(), &ImportOptions::default()).unwrap();
+
+        assert_eq!(report.copied, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(
+            !day.join("a (1).cr3").exists(),
+            "a missing suffix must not turn an existing copy into a duplicate"
+        );
     }
 
     #[test]
