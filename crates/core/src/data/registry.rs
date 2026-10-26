@@ -172,11 +172,16 @@ pub fn spec_by_key(key: &str) -> Option<ModelSpec> {
     builtin_models().into_iter().find(|m| m.key == key)
 }
 
+/// Lowercase hex, as sha2's digest types no longer implement `LowerHex`.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Hex SHA-256 of a byte slice.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    hex(&hasher.finalize())
 }
 
 /// Hex SHA-256 of a file, streamed so a large artifact never lands in memory.
@@ -193,7 +198,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buf[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
 }
 
 pub fn model_path(dir: &Path, spec: &ModelSpec) -> PathBuf {
