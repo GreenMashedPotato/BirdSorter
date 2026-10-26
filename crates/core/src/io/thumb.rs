@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 
 use image::imageops::FilterType;
-use image::ImageOutputFormat;
+use image::ImageFormat;
 use ndarray::Array3;
 
 use super::cache::{ThumbCache, RENDER_CACHE_VERSION};
@@ -38,12 +38,16 @@ fn encode_jpeg(img: &image::DynamicImage, max_dim: u32) -> Result<Vec<u8>> {
     } else {
         img.clone()
     };
+    encode_jpeg_bytes(&img, 82)
+}
+
+/// JPEG-encode a decoded image at the given quality.
+pub(crate) fn encode_jpeg_bytes(img: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut cursor = Cursor::new(&mut buf);
-        img.write_to(&mut cursor, ImageOutputFormat::Jpeg(82))
-            .map_err(|e| CoreError::Other(format!("jpeg encode: {e}")))?;
-    }
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut buf, quality,
+    ))
+    .map_err(|e| CoreError::Other(format!("jpeg encode: {e}")))?;
     Ok(buf)
 }
 
@@ -162,7 +166,7 @@ pub fn encode_rgb_tiff(rgb: &Array3<u8>) -> Result<Vec<u8>> {
     {
         let mut cursor = Cursor::new(&mut buf);
         image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut cursor, ImageOutputFormat::Tiff)
+            .write_to(&mut cursor, ImageFormat::Tiff)
             .map_err(|e| CoreError::Other(format!("tiff encode: {e}")))?;
     }
     Ok(buf)
@@ -174,14 +178,7 @@ pub fn encode_rgb_jpeg(rgb: &Array3<u8>, quality: u8) -> Result<Vec<u8>> {
     let raw: Vec<u8> = rgb.iter().copied().collect();
     let img = image::RgbImage::from_raw(w as u32, h as u32, raw)
         .ok_or_else(|| CoreError::Other("rgb buffer size mismatch".into()))?;
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut cursor = Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
-            .map_err(|e| CoreError::Other(format!("jpeg encode: {e}")))?;
-    }
-    Ok(buf)
+    encode_jpeg_bytes(&image::DynamicImage::ImageRgb8(img), quality)
 }
 
 #[cfg(test)]
