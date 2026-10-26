@@ -264,7 +264,7 @@ fn intersection(a: &BBox, b: &BBox) -> i64 {
     if ix1 <= ix0 || iy1 <= iy0 {
         return 0;
     }
-    i64::from(ix1 - ix0) * i64::from(iy1 - iy0)
+    (i64::from(ix1) - i64::from(ix0)) * (i64::from(iy1) - i64::from(iy0))
 }
 
 /// True when two boxes describe the same subject: high IoU, or the second box
