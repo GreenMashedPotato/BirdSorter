@@ -95,7 +95,7 @@ pub struct LibraryFile {
     pub absolute_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanReport {
     pub added: usize,
     pub updated: usize,
@@ -107,6 +107,8 @@ pub struct ScanReport {
     pub relinked: usize,
     /// Rows soft-deleted because the file is no longer on disk.
     pub missing: usize,
+    /// Files or subtrees that could not be read, left exactly as they were.
+    pub failed: Vec<String>,
 }
 
 fn detect_format(path: &Path) -> String {
@@ -130,20 +132,6 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
         }
     }
     path
-}
-
-/// A walk error is fatal for the scan: treating an unreadable subtree as empty
-/// would soft-delete every file still on disk below it.
-fn walk_error(err: walkdir::Error) -> CoreError {
-    let message = err.to_string();
-    let path = err
-        .path()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    match err.into_io_error() {
-        Some(source) => CoreError::io(path, source),
-        None => CoreError::Other(format!("scan failed at {}: {message}", path.display())),
-    }
 }
 
 /// mtime as seconds since the Unix epoch (fractional).
@@ -391,8 +379,23 @@ pub fn scan_folder_streaming(
         mtime: f64,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    // An unreadable subtree makes the walk incomplete: its files must not be
+    // mistaken for deleted in the missing pass below.
+    let mut walk_incomplete = false;
+    let mut failed_rels: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in WalkDir::new(&base) {
-        let entry = entry.map_err(walk_error)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                walk_incomplete = true;
+                failed.push(match e.path() {
+                    Some(path) => format!("{}: {e}", path.display()),
+                    None => e.to_string(),
+                });
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -405,13 +408,22 @@ pub fn scan_folder_streaming(
         if !is_photo_extension(&ext) {
             continue;
         }
-        let meta = std::fs::metadata(path).map_err(|e| CoreError::io(path, e))?;
+        let rel = path
+            .strip_prefix(&base)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                // One locked/placeholder file must not abort the whole scan.
+                failed.push(format!("{}: {e}", path.display()));
+                failed_rels.insert(rel);
+                continue;
+            }
+        };
         candidates.push(Candidate {
-            rel: path
-                .strip_prefix(&base)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/"),
+            rel,
             path: path.to_path_buf(),
             size: meta.len() as i64,
             mtime: mtime_secs(&meta),
@@ -466,10 +478,20 @@ pub fn scan_folder_streaming(
         candidates.iter().map(|c| c.rel.as_str()).collect();
     let mut orphans: HashMap<String, Vec<i64>> = HashMap::new();
     for (rel, (id, hash, _, _, _)) in &existing {
-        if !walked.contains(rel.as_str()) {
+        if !walked.contains(rel.as_str()) && !failed_rels.contains(rel.as_str()) {
             orphans.entry(hash.clone()).or_default().push(*id);
         }
     }
+
+    let mut hash_or_record = |path: &Path| -> Option<String> {
+        match hash_file(path) {
+            Ok(hash) => Some(hash),
+            Err(e) => {
+                failed.push(format!("{}: {e}", path.display()));
+                None
+            }
+        }
+    };
 
     for (done, cand) in candidates.iter().enumerate() {
         if cancel() {
@@ -495,7 +517,9 @@ pub fn scan_folder_streaming(
             {
                 // Metadata cannot prove content identity: a replacement can keep
                 // both size and mtime. Hash before trusting the fast path.
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 if hash == *prev_hash {
                     report.untouched += 1;
                 } else {
@@ -512,7 +536,9 @@ pub fn scan_folder_streaming(
                 }
             }
             Some((id, _, _, _, _)) => {
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 pending.push(Pending::Update {
                     id: *id,
                     rel: rel.clone(),
@@ -525,7 +551,9 @@ pub fn scan_folder_streaming(
                 report.updated += 1;
             }
             None => {
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 let captured_at = Some(crate::io::exif::capture_time(path).unwrap_or_default());
                 match orphans.get_mut(&hash).and_then(Vec::pop) {
                     // Renamed/moved within the folder: same content, new path.
@@ -567,15 +595,20 @@ pub fn scan_folder_streaming(
     if cancelled {
         // A partial walk cannot tell "gone" from "not reached yet", so leave the
         // folder unstamped and every row alone; the next scan finishes the job.
+        report.failed = failed;
         return Ok(report);
     }
 
     // Anything still orphaned is no longer on disk: hide it instead of listing a
-    // row that every render and export will fail on.
-    let ids: Vec<i64> = orphans.into_values().flatten().collect();
-    if !ids.is_empty() {
-        report.missing = set_trashed(conn, &ids, true)?;
+    // row that every render and export will fail on. An incomplete walk cannot
+    // tell "gone" from "not reached", so it must not delete anything.
+    if !walk_incomplete {
+        let ids: Vec<i64> = orphans.into_values().flatten().collect();
+        if !ids.is_empty() {
+            report.missing = set_trashed(conn, &ids, true)?;
+        }
     }
+    report.failed = failed;
 
     with_tx(conn, || {
         conn.execute(
@@ -1287,6 +1320,31 @@ mod tests {
         })
         .unwrap();
         assert!(report.added < 6, "should have stopped early");
+    }
+
+    #[test]
+    fn a_file_that_vanishes_between_walk_and_hash_does_not_abort_the_scan() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let removed = std::cell::Cell::new(false);
+        let report = scan_folder_streaming(&conn, fid, &|| false, &mut |done, _total| {
+            // The walk is complete when (0, total) arrives; delete a file before
+            // the hashing phase reaches it.
+            if done == 0 && !removed.get() {
+                removed.set(true);
+                std::fs::remove_file(dir.path().join("a.cr3")).unwrap();
+            }
+        })
+        .unwrap();
+
+        assert_eq!(report.failed.len(), 1, "{:?}", report.failed);
+        assert!(report.failed[0].contains("a.cr3"));
+        // The rest of the folder was still indexed.
+        let files = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file.filename, "b.cr3");
     }
 
     #[test]
