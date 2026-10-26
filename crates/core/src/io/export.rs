@@ -339,6 +339,38 @@ pub fn write_new_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     publish_new(&tmp, target)
 }
 
+fn sync_destination(target: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(target)?
+        .sync_all()?;
+    #[cfg(unix)]
+    {
+        let parent = target
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    // shortcut: std has no portable directory fsync on Windows; add a native
+    // handle flush if Windows directory-entry durability becomes a hard requirement.
+    Ok(())
+}
+
+/// Delete the source only after the destination data (and Unix directory entry)
+/// has been flushed successfully.
+fn flush_then_delete(
+    src: &Path,
+    target: &Path,
+    flush: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> (std::io::Result<()>, Option<std::io::Error>) {
+    if let Err(e) = flush(target) {
+        let _ = std::fs::remove_file(target);
+        return (Err(e), None);
+    }
+    (Ok(()), std::fs::remove_file(src).err())
+}
+
 /// Move `src` to `target` without replacing an existing file.
 ///
 /// A same-volume hard link is atomic; other volumes fall back to copy-then-
@@ -348,15 +380,7 @@ fn move_atomic(src: &Path, target: &Path) -> (std::io::Result<()>, Option<std::i
         Ok(()) => (Ok(()), std::fs::remove_file(src).err()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (Err(e), None),
         Err(_) => match copy_atomic(src, target) {
-            Ok(()) => {
-                // A cross-volume move copies, then deletes the source. Flush the
-                // copy before removing the only other one: a power loss after
-                // the delete but before writeback would otherwise lose the photo.
-                if let Ok(file) = std::fs::OpenOptions::new().write(true).open(target) {
-                    let _ = file.sync_all();
-                }
-                (Ok(()), std::fs::remove_file(src).err())
-            }
+            Ok(()) => flush_then_delete(src, target, sync_destination),
             Err(e) => (Err(e), None),
         },
     }
@@ -477,6 +501,38 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn a_failed_move_flush_keeps_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write(dir.path(), "source.cr3", "raw bytes");
+        let target = dir.path().join("target.cr3");
+        copy_atomic(&src, &target).unwrap();
+
+        let (result, delete_failed) = flush_then_delete(&src, &target, |_| {
+            Err(std::io::Error::other("flush failed"))
+        });
+
+        assert_eq!(result.unwrap_err().to_string(), "flush failed");
+        assert!(src.is_file(), "the only trusted copy must remain");
+        assert!(!target.exists(), "an unflushed destination is removed");
+        assert!(delete_failed.is_none());
+    }
+
+    #[test]
+    fn a_successful_move_flush_removes_the_source_afterward() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write(dir.path(), "source.cr3", "raw bytes");
+        let target = dir.path().join("target.cr3");
+        copy_atomic(&src, &target).unwrap();
+
+        let (result, delete_failed) = flush_then_delete(&src, &target, sync_destination);
+
+        result.unwrap();
+        assert!(delete_failed.is_none());
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"raw bytes");
     }
 
     #[test]
