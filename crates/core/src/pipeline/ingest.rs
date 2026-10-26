@@ -294,6 +294,10 @@ fn run_parallel(
     let queue = pending;
 
     std::thread::scope(|scope| -> Result<()> {
+        // Move the receiver into the scope so it drops before the workers are
+        // joined. If it outlived them, a worker blocked in `tx.send` after a
+        // cancel would never wake and `scope` would join forever.
+        let rx = rx;
         for _ in 0..ctx.decode_threads {
             let tx = tx.clone();
             let queue = &queue;
@@ -488,6 +492,13 @@ fn flush_batch(
         }
         let mut times = StageTimes::default();
         let record = match catch_analyze(|| {
+            // Keep the user's own boxes: a re-run re-detects the birds, but a
+            // drawn box the detector did not re-find must survive the rewrite.
+            // `stored_detections` ignores a row from other content, so a
+            // replaced file starts clean.
+            let (h, w, _) = item.rgb.dim();
+            let stored = stored_detections(conn, item.file_id)?;
+            let dets = stages::resolve_detections(&stored, dets, None, &[], w as i32, h as i32)?;
             let mut record = analyze_one(
                 item.file_id,
                 &item.rgb,
@@ -1076,6 +1087,45 @@ mod tests {
         assert!(progress.decoded < 5);
     }
 
+    /// The parallel path must not join workers that are blocked writing to a
+    /// full queue after the consumer stopped: the receiver has to drop first.
+    /// The watchdog keeps a regression a test failure instead of a hung suite.
+    #[test]
+    fn parallel_cancel_does_not_deadlock_a_full_decode_queue() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_dir, conn) = setup(128);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let cancel = CancelToken::new();
+        let (finished, wait) = mpsc::channel();
+
+        let worker_cancel = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            let ctx = IngestContext {
+                batch_size: 1,
+                cancel: Some(&worker_cancel),
+                ..IngestContext::new(&decoder, &detector, &scorer).with_decode_threads(4)
+            };
+            let progress = ingest_folder(&conn, fid, &ctx, |p| {
+                if p.analyzed >= 1 {
+                    cancel.cancel();
+                }
+            });
+            let _ = finished.send(progress.map(|p| p.analyzed));
+        });
+
+        let analyzed = wait
+            .recv_timeout(Duration::from_secs(20))
+            .expect("parallel ingest deadlocked after cancel")
+            .unwrap();
+        assert_eq!(analyzed, 1);
+        handle.join().unwrap();
+    }
+
     #[test]
     fn picks_the_sharpest_of_several_subjects() {
         let (_dir, conn) = setup(1);
@@ -1177,6 +1227,87 @@ mod tests {
         assert_eq!(row.subject_species[0].top5.len(), 2);
         assert_eq!(row.subject_species[0].bbox, [32, 32, 160, 160]);
         assert_eq!(row.species_id.as_deref(), Some("fake-species"));
+    }
+
+    #[test]
+    fn reanalysis_keeps_a_drawn_manual_box() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 160, 160)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+        let manual = BBox::new(600, 600, 160, 160);
+        analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            None,
+            None,
+            Some(manual),
+            &[],
+        )
+        .unwrap();
+
+        // A model change / "re-analyse" reruns detection for the same content:
+        // the user's box must still be there afterwards.
+        analysis_store::mark_folder_stale(&conn, fid).unwrap();
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.bboxes.contains(&manual));
+        assert!(row
+            .subject_species
+            .iter()
+            .any(|s| s.class.as_deref() == Some("manual")));
+    }
+
+    #[test]
+    fn reanalysis_drops_boxes_from_replaced_content() {
+        let (dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 160, 160)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+        analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            None,
+            None,
+            Some(BBox::new(600, 600, 160, 160)),
+            &[],
+        )
+        .unwrap();
+
+        // Replace the file, rescan, re-analyse: boxes describe the old bytes.
+        std::fs::write(dir.path().join("img0.cr3"), b"replacement with other bytes").unwrap();
+        library::scan_folder(&conn, fid).unwrap();
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(!row.bboxes.contains(&BBox::new(600, 600, 160, 160)));
+        assert!(!row
+            .subject_species
+            .iter()
+            .any(|s| s.class.as_deref() == Some("manual")));
     }
 
     #[test]

@@ -609,6 +609,8 @@ fn files_query(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1 {where_extra}
           ORDER BY {order_extra}"
     );
@@ -653,8 +655,6 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
         folder_id,
         "AND f.trashed_at IS NULL
          AND (a.file_id IS NULL
-              OR a.analyzed_content_hash IS NOT NULL
-                 AND a.analyzed_content_hash <> f.content_hash
               OR COALESCE(a.model_stale, 0) = 1)",
         "f.filename ASC",
     )
@@ -680,6 +680,8 @@ pub fn files_with_predicted_label(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1
             AND f.trashed_at IS NULL
             AND COALESCE(a.model_stale, 0) = 0
@@ -773,6 +775,8 @@ pub fn list_files_with_details(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1 {trashed_filter}
           ORDER BY {order}"
     );
@@ -939,7 +943,8 @@ pub fn set_rating(conn: &Connection, file_ids: &[i64], rating: i64) -> Result<us
 }
 
 /// Auto-rate a folder from the stored verdicts: sharp 5, uncertain 3, blurry 1,
-/// no_subject 0. Files without an analysis row keep their rating.
+/// no_subject 0. Only active files are changed; files without a current analysis
+/// row or in the trash keep their rating.
 pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
     with_tx(conn, || {
         let n = conn.execute(
@@ -950,34 +955,41 @@ pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
                             WHEN 'blurry' THEN 1
                             ELSE 0
                          END
-                    FROM analysis a WHERE a.file_id = files.id),
+                    FROM analysis a
+                   WHERE a.file_id = files.id
+                     AND (a.analyzed_content_hash IS NULL
+                          OR a.analyzed_content_hash = files.content_hash)),
                  files.rating)
-               WHERE folder_id = ?1
-                 AND EXISTS (SELECT 1 FROM analysis a WHERE a.file_id = files.id)",
+               WHERE folder_id = ?1 AND trashed_at IS NULL
+                  AND EXISTS (
+                      SELECT 1 FROM analysis a
+                       WHERE a.file_id = files.id
+                         AND (a.analyzed_content_hash IS NULL
+                              OR a.analyzed_content_hash = files.content_hash))",
             [folder_id],
         )?;
         Ok(n)
     })
 }
 
-/// Clear every rating in a folder. Returns rows changed.
+/// Clear ratings for active files in a folder. Returns rows changed.
 pub fn reset_ratings(conn: &Connection, folder_id: i64) -> Result<usize> {
     with_tx(conn, || {
         let n = conn.execute(
-            "UPDATE files SET rating = 0 WHERE folder_id = ?1",
+            "UPDATE files SET rating = 0 WHERE folder_id = ?1 AND trashed_at IS NULL",
             [folder_id],
         )?;
         Ok(n)
     })
 }
 
-/// `(file_id, absolute_path, rating)` for a folder — used to mirror ratings
-/// into XMP sidecars.
+/// `(file_id, absolute_path, rating)` for active files in a folder — used to
+/// mirror ratings into XMP sidecars.
 pub fn ratings_for_folder(conn: &Connection, folder_id: i64) -> Result<Vec<(i64, PathBuf, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT f.id, fo.path AS folder_path, f.relative_path, f.rating
            FROM files f JOIN folders fo ON fo.id = f.folder_id
-          WHERE f.folder_id = ?1",
+           WHERE f.folder_id = ?1 AND f.trashed_at IS NULL",
     )?;
     let rows = stmt.query_map([folder_id], |r| {
         let folder_path: String = r.get("folder_path")?;
@@ -1330,6 +1342,98 @@ mod tests {
     }
 
     #[test]
+    fn replaced_content_hides_the_old_verdict_everywhere() {
+        use crate::analysis::scorer::score_rules;
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{
+            get_analysis, rescore_folder, upsert_analysis, AnalysisRecord,
+        };
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        let p = write(dir.path(), "a.cr3", b"original");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.9,
+            laplacian_subject: 0.9,
+            fft_high_freq_subject: 0.9,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let score = score_rules(&features, &ScoreSettings::default());
+        let label = score.label.clone();
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: lf.file.id,
+                features,
+                score,
+                analyzed_content_hash: Some(lf.file.content_hash.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_rating(&conn, &[lf.file.id], 2).unwrap();
+        crate::data::labels::add_label(
+            &conn,
+            lf.file.id,
+            crate::data::labels::UserLabel::Sharp,
+            crate::data::labels::LabelSource::Manual,
+        )
+        .unwrap();
+        assert!(list_files_with_details(&conn, fid, false, false).unwrap()[0].analyzed);
+        assert_eq!(
+            files_with_predicted_label(&conn, fid, &label)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Same path, new bytes: every read path must stop showing the old verdict.
+        std::fs::write(&p, b"replacement with different content").unwrap();
+        assert_eq!(scan_folder(&conn, fid).unwrap().updated, 1);
+
+        assert_eq!(files_needing_analysis(&conn, fid).unwrap().len(), 1);
+        let rows = list_files_with_details(&conn, fid, false, false).unwrap();
+        assert!(!rows[0].analyzed);
+        assert!(rows[0].predicted_label.is_none());
+        assert!(rows[0].sharpness_score.is_none());
+        assert!(files_with_predicted_label(&conn, fid, &label)
+            .unwrap()
+            .is_empty());
+        assert!(get_analysis(&conn, lf.file.id).unwrap().is_none());
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 0);
+        assert_eq!(
+            rescore_folder(&conn, fid, &ScoreSettings::default()).unwrap(),
+            0
+        );
+        let rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [lf.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rating, 2,
+            "an old verdict must not change a new file's rating"
+        );
+        assert!(crate::data::labels::all_labeled_features(&conn)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::data::labels::latest_label(&conn, lf.file.id).unwrap(),
+            Some(crate::data::labels::UserLabel::Sharp),
+            "the user's label still belongs to the file row"
+        );
+    }
+
+    #[test]
     fn duplicate_content_files_are_all_soft_deleted() {
         let (dir, conn) = setup();
         write(dir.path(), "a.cr3", b"same");
@@ -1604,6 +1708,96 @@ mod tests {
             1,
             "the rows must survive an offline volume"
         );
+    }
+
+    #[test]
+    fn bulk_rating_actions_leave_trashed_files_untouched() {
+        use crate::analysis::scorer::score_rules;
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        write(dir.path(), "active.cr3", b"active");
+        write(dir.path(), "trashed.cr3", b"trashed");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let files = list_files(&conn, fid, true, false).unwrap();
+        let active = files
+            .iter()
+            .find(|file| file.file.filename == "active.cr3")
+            .unwrap();
+        let trashed = files
+            .iter()
+            .find(|file| file.file.filename == "trashed.cr3")
+            .unwrap();
+        set_rating(&conn, &[active.file.id], 2).unwrap();
+        set_rating(&conn, &[trashed.file.id], 4).unwrap();
+
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.9,
+            laplacian_subject: 0.9,
+            fft_high_freq_subject: 0.9,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let expected_active_rating = match score_rules(&features, &ScoreSettings::default())
+            .label
+            .as_str()
+        {
+            "sharp" => 5,
+            "uncertain" => 3,
+            "blurry" => 1,
+            _ => 0,
+        };
+        for file in &files {
+            let features = features.clone();
+            let score = score_rules(&features, &ScoreSettings::default());
+            upsert_analysis(
+                &conn,
+                &AnalysisRecord {
+                    file_id: file.file.id,
+                    features,
+                    score,
+                    analyzed_content_hash: Some(file.file.content_hash.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        set_trashed(&conn, &[trashed.file.id], true).unwrap();
+
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 1);
+        assert_eq!(ratings_for_folder(&conn, fid).unwrap().len(), 1);
+        let active_rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [active.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let trashed_rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [trashed.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_rating, expected_active_rating);
+        assert_eq!(trashed_rating, 4);
+
+        set_rating(&conn, &[active.file.id], 3).unwrap();
+        assert_eq!(reset_ratings(&conn, fid).unwrap(), 1);
+        let trashed_rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [trashed.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trashed_rating, 4);
     }
 
     #[test]
