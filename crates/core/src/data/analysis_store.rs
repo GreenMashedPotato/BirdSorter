@@ -326,6 +326,9 @@ fn read_subject_boxes(
 }
 
 /// Read the analysis row for a file, if present.
+///
+/// A row analyzed from different bytes (the file was replaced) is treated as
+/// absent: the caller must not show the old photo's verdict for the new one.
 pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRow>> {
     let row = conn
         .query_row(
@@ -340,7 +343,10 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
                     o.confidence AS override_confidence
                FROM analysis
                LEFT JOIN species_overrides o ON o.file_id = analysis.file_id
-              WHERE analysis.file_id = ?1",
+              WHERE analysis.file_id = ?1
+                AND (analysis.analyzed_content_hash IS NULL
+                     OR analysis.analyzed_content_hash =
+                        (SELECT content_hash FROM files WHERE id = ?1))",
             [file_id],
             |r| {
                 Ok((
