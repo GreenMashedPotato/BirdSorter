@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -42,6 +42,25 @@ fn run_with_cpu_fallback<S, R>(
             let cpu = rebuild_cpu()?;
             *session = cpu;
             attempt(session)
+        }
+    }
+}
+
+fn lock_or_rebuild<'a, T>(
+    label: &str,
+    lock: &'a Mutex<T>,
+    gpu: &AtomicBool,
+    rebuild: impl FnOnce() -> Result<T>,
+) -> Result<MutexGuard<'a, T>> {
+    match lock.lock() {
+        Ok(session) => Ok(session),
+        Err(poisoned) => {
+            let mut session = poisoned.into_inner();
+            tracing::warn!(model = label, "session lock poisoned; rebuilding on CPU");
+            *session = rebuild()?;
+            lock.clear_poison();
+            gpu.store(false, Ordering::Relaxed);
+            Ok(session)
         }
     }
 }
@@ -87,18 +106,18 @@ impl OnnxSession {
     /// Run one `f32` input tensor and decode its first output with `f`.
     ///
     /// The session lock is held across the run so a provider fallback cannot
-    /// race with another inference.
+    /// race with another inference. A panic may leave the native session in an
+    /// unknown state, so a poisoned lock is rebuilt on CPU before reuse.
     pub(crate) fn run_tensor<R>(
         &self,
         tensor: &Tensor<f32>,
         mut f: impl FnMut(&[usize], &[f32]) -> Result<R>,
     ) -> Result<R> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
         let model = self.model.clone();
         let input_name = self.input_name.clone();
+        let mut session = lock_or_rebuild(&self.label, &self.session, &self.gpu, || {
+            build_session(&model, DevicePreference::Cpu).map(|(session, _)| session)
+        })?;
         // The attempt returns `Ok(Err(..))` for a post-processing failure: only
         // a runtime/provider error (the outer `Err`) may rebuild on CPU. A bad
         // output must not permanently downgrade the session to CPU.
@@ -111,7 +130,14 @@ impl OnnxSession {
                 let outputs = session
                     .run(ort::inputs![input_name.clone() => tensor])
                     .map_err(ort_err)?;
-                let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+                // A shape/type mismatch is not a provider failure: rebuilding
+                // on CPU cannot fix it, so report it without the fallback.
+                let Ok((shape, data)) = outputs[0].try_extract_tensor::<f32>() else {
+                    return Ok(Err(CoreError::inference(
+                        &self.label,
+                        "the model returned a tensor that is not f32",
+                    )));
+                };
                 let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
                 Ok(f(&dims, data))
             },
@@ -301,5 +327,34 @@ mod tests {
         assert_eq!(out, 1);
         assert_eq!(rebuilds.get(), 0);
         assert!(gpu.load(Ordering::Relaxed), "no failure, no fallback");
+    }
+
+    #[test]
+    fn a_poisoned_session_is_rebuilt_on_cpu_before_reuse() {
+        let lock = Mutex::new(FakeSession::failing());
+        std::thread::scope(|scope| {
+            let panic = scope.spawn(|| {
+                let _session = lock.lock().unwrap();
+                panic!("simulate a panic while the session is locked");
+            });
+            assert!(panic.join().is_err());
+        });
+
+        let gpu = AtomicBool::new(true);
+        let rebuilds = Cell::new(0);
+        let mut session = lock_or_rebuild("model.onnx", &lock, &gpu, || {
+            rebuilds.set(rebuilds.get() + 1);
+            Ok(FakeSession::working())
+        })
+        .unwrap();
+
+        assert_eq!(rebuilds.get(), 1);
+        assert!(!gpu.load(Ordering::Relaxed));
+        assert_eq!(session.run().unwrap(), 1);
+        drop(session);
+        assert!(
+            lock.lock().is_ok(),
+            "the repaired lock is no longer poisoned"
+        );
     }
 }
