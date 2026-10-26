@@ -52,7 +52,7 @@ Commands:
       --threads <n>             Decode workers (default: all cores; lower = less RAM)
       --limit <n>               Analyse at most n pending files (benchmarks)
       --device cpu|auto|gpu     Compute device for the models (default: settings)
-      --slice off|fallback|always|<n>  Sliced detection for distant birds
+      --slice off|fallback|always|0..=12  Sliced detection (numeric grids are bounded)
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
@@ -1620,6 +1620,31 @@ struct AnalyzeArgs {
     slice: Option<String>,
 }
 
+fn parse_device(value: &str) -> std::result::Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "cpu" | "auto" | "gpu" => Ok(value),
+        _ => Err("--device must be cpu, auto or gpu".to_string()),
+    }
+}
+
+fn parse_slice(value: &str) -> std::result::Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if matches!(
+        value.as_str(),
+        "off" | "none" | "fallback" | "smart" | "always" | "tiles"
+    ) {
+        return Ok(value);
+    }
+    let grid = value
+        .parse::<u32>()
+        .map_err(|_| "--slice must be off, fallback, always or a grid from 0 to 12".to_string())?;
+    if grid > 12 {
+        return Err("--slice grid must be from 0 to 12".to_string());
+    }
+    Ok(value)
+}
+
 fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut folder = None;
     let mut model = None;
@@ -1656,13 +1681,13 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
             }
             "--device" => {
                 let v = it.next().ok_or("--device needs cpu|auto|gpu")?;
-                device = Some(v.clone());
+                device = Some(parse_device(v)?);
             }
             "--slice" => {
                 let v = it
                     .next()
-                    .ok_or("--slice needs off|fallback|always|<grid>")?;
-                slice = Some(v.clone());
+                    .ok_or("--slice needs off|fallback|always|0..=12")?;
+                slice = Some(parse_slice(v)?);
             }
             "--force" => force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
@@ -1930,4 +1955,23 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         eprintln!("  ! {name}: {reason}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod analyze_args_tests {
+    use super::parse_analyze;
+
+    fn parse(values: &[&str]) -> std::result::Result<(), String> {
+        let args: Vec<String> = values.iter().map(|value| (*value).to_string()).collect();
+        parse_analyze(&args).map(|_| ())
+    }
+
+    #[test]
+    fn analyze_overrides_accept_only_bounded_supported_values() {
+        assert!(parse(&["folder", "--device", "GPU", "--slice", "12"]).is_ok());
+        assert!(parse(&["folder", "--device", "gup"]).is_err());
+        assert!(parse(&["folder", "--slice", "13"]).is_err());
+        assert!(parse(&["folder", "--slice", "1600"]).is_err());
+        assert!(parse(&["folder", "--slice", "lots"]).is_err());
+    }
 }
