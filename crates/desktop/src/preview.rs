@@ -160,6 +160,22 @@ fn thumbnail_impl(
     Ok(thumbnail_id(&lf.file.content_hash, THUMB_LONG_SIDE))
 }
 
+/// The base renders the pipeline can produce. `mode` is interpolated into a
+/// cache file name, so an unknown value must be rejected before it becomes a
+/// path (a `..\\` would write outside the cache directory).
+fn preview_mode(mode: Option<String>) -> Result<String, String> {
+    let mode = match mode {
+        Some(mode) if !mode.is_empty() => mode,
+        _ => "fast".to_string(),
+    };
+    match mode.as_str() {
+        "fast" | "full" | "develop" => Ok(mode),
+        other => Err(format!(
+            "unknown preview mode {other:?} (expected fast, full or develop)"
+        )),
+    }
+}
+
 /// The cached base render (JPEG bytes) for `file`/`mode`. Modes:
 /// - `"fast"` (default): analysis resolution (2400 px) — boxes align 1:1.
 /// - `"full"`: the largest embedded preview at native resolution (fast, ~1.4 s).
@@ -351,7 +367,7 @@ pub(crate) async fn preview_denoised(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
-    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    let mode = preview_mode(mode)?;
     blocking(move || {
         let strength = strength.clamp(0.0, 1.0);
         if strength <= MIN_STRENGTH {
@@ -391,7 +407,7 @@ pub(crate) async fn preview_image(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
-    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    let mode = preview_mode(mode)?;
     blocking(move || preview_impl(&cache_root, &db_path, &gates, file, &mode)).await
 }
 
@@ -413,7 +429,7 @@ pub(crate) async fn export_edited(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
-    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    let mode = preview_mode(mode)?;
     blocking(move || {
         let target = export_target(&dest)?;
         let rgb = match denoise.map(|s| s.clamp(0.0, 1.0)) {
@@ -471,7 +487,7 @@ pub(crate) async fn preview_adjusted(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
-    let mode = mode.unwrap_or_else(|| "fast".to_string());
+    let mode = preview_mode(mode)?;
     blocking(move || {
         preview_adjusted_impl(&cache_root, &db_path, &gates, file, &mode, &adjustments)
     })
@@ -592,7 +608,7 @@ pub(crate) async fn preview_region(
     let region = state.region.clone();
     let request = RegionRequest {
         file,
-        mode: mode.unwrap_or_else(|| "fast".to_string()),
+        mode: preview_mode(mode)?,
         x,
         y,
         width,
@@ -616,6 +632,21 @@ mod tests {
             .decode(encoded)
             .expect("base64");
         image::load_from_memory(&bytes).expect("JPEG")
+    }
+
+    #[test]
+    fn unknown_preview_modes_are_rejected_before_they_become_paths() {
+        assert_eq!(preview_mode(None).unwrap(), "fast");
+        assert_eq!(preview_mode(Some(String::new())).unwrap(), "fast");
+        for mode in ["fast", "full", "develop"] {
+            assert_eq!(preview_mode(Some(mode.into())).unwrap(), mode);
+        }
+        for bad in ["../escape", "..\\escape", "full/../../x", "FAST"] {
+            assert!(
+                preview_mode(Some(bad.into())).is_err(),
+                "{bad} must not reach a cache path"
+            );
+        }
     }
 
     #[test]
