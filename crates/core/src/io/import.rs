@@ -8,6 +8,7 @@
 //! The day comes from the file's EXIF capture time; files without one land in
 //! `undated/`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -48,9 +49,9 @@ fn day_folder(path: &Path) -> String {
 }
 
 /// Existing collision candidates for `name` (the bare name and the ` (n)`
-/// suffixes `unique_target` produces). The directory is scanned once so a gap
-/// left by a deleted copy cannot hide a later copy of the same photo.
-fn existing_candidates(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+/// suffixes `unique_target` produces). All matching names are considered so a
+/// gap left by a deleted copy cannot hide a later copy of the same photo.
+fn existing_candidates(dir: &Path, name: &str, file_names: &[String]) -> Vec<PathBuf> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) => (stem, Some(ext)),
         None => (name, None),
@@ -59,24 +60,36 @@ fn existing_candidates(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
     let suffix = ext
         .map(|ext| format!(").{ext}"))
         .unwrap_or_else(|| ")".into());
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| CoreError::io(dir, e))? {
-        let entry = entry.map_err(|e| CoreError::io(dir, e))?;
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
-            continue;
-        };
-        let matches = file_name == name
-            || file_name
-                .strip_prefix(&prefix)
-                .and_then(|rest| rest.strip_suffix(suffix.as_str()))
-                .and_then(|n| n.parse::<u32>().ok())
-                .is_some_and(|n| (1..10_000).contains(&n));
-        if matches {
-            out.push(entry.path());
+    file_names
+        .iter()
+        .filter(|file_name| {
+            *file_name == name
+                || file_name
+                    .strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix(suffix.as_str()))
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| (1..10_000).contains(&n))
+        })
+        .map(|file_name| dir.join(file_name))
+        .collect()
+}
+
+/// Names in a destination directory, read once per import run.
+fn directory_names<'a>(
+    dir: &Path,
+    cache: &'a mut HashMap<PathBuf, Vec<String>>,
+) -> Result<&'a [String]> {
+    if !cache.contains_key(dir) {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|e| CoreError::io(dir, e))? {
+            let entry = entry.map_err(|e| CoreError::io(dir, e))?;
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
         }
+        cache.insert(dir.to_path_buf(), names);
     }
-    Ok(out)
+    Ok(cache.get(dir).map(Vec::as_slice).unwrap_or(&[]))
 }
 
 /// Copy every supported photo under `src` into `dest`.
@@ -121,6 +134,7 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
     sources.sort();
 
     let mut report = ImportReport::default();
+    let mut directory_cache = HashMap::new();
     for path in sources {
         let Some(name) = path
             .file_name()
@@ -147,13 +161,14 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
         // candidate — comparing only the bare name would import it again as
         // ` (2)`, ` (3)`, … every time the card is read.
         let source_size = std::fs::metadata(&path).ok().map(|m| m.len());
-        let candidates = match existing_candidates(&dir, &name) {
-            Ok(candidates) => candidates,
+        let file_names = match directory_names(&dir, &mut directory_cache) {
+            Ok(file_names) => file_names,
             Err(e) => {
                 report.failed.push((path, e.to_string()));
                 continue;
             }
         };
+        let candidates = existing_candidates(&dir, &name, file_names);
         let mut source_hash: Option<String> = None;
         let mut already_imported = false;
         for candidate in candidates {
