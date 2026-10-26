@@ -954,10 +954,17 @@ pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
                             WHEN 'blurry' THEN 1
                             ELSE 0
                          END
-                    FROM analysis a WHERE a.file_id = files.id),
+                    FROM analysis a
+                   WHERE a.file_id = files.id
+                     AND (a.analyzed_content_hash IS NULL
+                          OR a.analyzed_content_hash = files.content_hash)),
                  files.rating)
                WHERE folder_id = ?1
-                 AND EXISTS (SELECT 1 FROM analysis a WHERE a.file_id = files.id)",
+                  AND EXISTS (
+                      SELECT 1 FROM analysis a
+                       WHERE a.file_id = files.id
+                         AND (a.analyzed_content_hash IS NULL
+                              OR a.analyzed_content_hash = files.content_hash))",
             [folder_id],
         )?;
         Ok(n)
@@ -1337,7 +1344,9 @@ mod tests {
     fn replaced_content_hides_the_old_verdict_everywhere() {
         use crate::analysis::scorer::score_rules;
         use crate::analysis::sharpness::SharpnessFeatures;
-        use crate::data::analysis_store::{get_analysis, upsert_analysis, AnalysisRecord};
+        use crate::data::analysis_store::{
+            get_analysis, rescore_folder, upsert_analysis, AnalysisRecord,
+        };
         use crate::data::settings::ScoreSettings;
 
         let (dir, conn) = setup();
@@ -1368,6 +1377,14 @@ mod tests {
             },
         )
         .unwrap();
+        set_rating(&conn, &[lf.file.id], 2).unwrap();
+        crate::data::labels::add_label(
+            &conn,
+            lf.file.id,
+            crate::data::labels::UserLabel::Sharp,
+            crate::data::labels::LabelSource::Manual,
+        )
+        .unwrap();
         assert!(list_files_with_details(&conn, fid, false, false).unwrap()[0].analyzed);
         assert_eq!(
             files_with_predicted_label(&conn, fid, &label)
@@ -1389,6 +1406,30 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(get_analysis(&conn, lf.file.id).unwrap().is_none());
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 0);
+        assert_eq!(
+            rescore_folder(&conn, fid, &ScoreSettings::default()).unwrap(),
+            0
+        );
+        let rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [lf.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rating, 2,
+            "an old verdict must not change a new file's rating"
+        );
+        assert!(crate::data::labels::all_labeled_features(&conn)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::data::labels::latest_label(&conn, lf.file.id).unwrap(),
+            Some(crate::data::labels::UserLabel::Sharp),
+            "the user's label still belongs to the file row"
+        );
     }
 
     #[test]

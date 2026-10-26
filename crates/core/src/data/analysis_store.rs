@@ -541,7 +541,9 @@ pub fn rescore_folder_with(
             "SELECT a.file_id, a.features_json
                FROM analysis a
                JOIN files f ON f.id = a.file_id
-              WHERE f.folder_id = ?1",
+              WHERE f.folder_id = ?1
+                AND (a.analyzed_content_hash IS NULL
+                     OR a.analyzed_content_hash = f.content_hash)",
         )?
         .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
