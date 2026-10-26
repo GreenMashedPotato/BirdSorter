@@ -609,6 +609,8 @@ fn files_query(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1 {where_extra}
           ORDER BY {order_extra}"
     );
@@ -653,8 +655,6 @@ pub fn files_needing_analysis(conn: &Connection, folder_id: i64) -> Result<Vec<L
         folder_id,
         "AND f.trashed_at IS NULL
          AND (a.file_id IS NULL
-              OR a.analyzed_content_hash IS NOT NULL
-                 AND a.analyzed_content_hash <> f.content_hash
               OR COALESCE(a.model_stale, 0) = 1)",
         "f.filename ASC",
     )
@@ -680,6 +680,8 @@ pub fn files_with_predicted_label(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1
             AND f.trashed_at IS NULL
             AND COALESCE(a.model_stale, 0) = 0
@@ -773,6 +775,8 @@ pub fn list_files_with_details(
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
+              AND (a.analyzed_content_hash IS NULL
+                   OR a.analyzed_content_hash = f.content_hash)
           WHERE f.folder_id = ?1 {trashed_filter}
           ORDER BY {order}"
     );
@@ -950,10 +954,17 @@ pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
                             WHEN 'blurry' THEN 1
                             ELSE 0
                          END
-                    FROM analysis a WHERE a.file_id = files.id),
+                    FROM analysis a
+                   WHERE a.file_id = files.id
+                     AND (a.analyzed_content_hash IS NULL
+                          OR a.analyzed_content_hash = files.content_hash)),
                  files.rating)
                WHERE folder_id = ?1
-                 AND EXISTS (SELECT 1 FROM analysis a WHERE a.file_id = files.id)",
+                  AND EXISTS (
+                      SELECT 1 FROM analysis a
+                       WHERE a.file_id = files.id
+                         AND (a.analyzed_content_hash IS NULL
+                              OR a.analyzed_content_hash = files.content_hash))",
             [folder_id],
         )?;
         Ok(n)
@@ -1326,6 +1337,98 @@ mod tests {
         assert_eq!(
             stored[0].file.content_hash,
             crate::io::hash::hash_bytes(b"changed!")
+        );
+    }
+
+    #[test]
+    fn replaced_content_hides_the_old_verdict_everywhere() {
+        use crate::analysis::scorer::score_rules;
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{
+            get_analysis, rescore_folder, upsert_analysis, AnalysisRecord,
+        };
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        let p = write(dir.path(), "a.cr3", b"original");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.9,
+            laplacian_subject: 0.9,
+            fft_high_freq_subject: 0.9,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let score = score_rules(&features, &ScoreSettings::default());
+        let label = score.label.clone();
+        upsert_analysis(
+            &conn,
+            &AnalysisRecord {
+                file_id: lf.file.id,
+                features,
+                score,
+                analyzed_content_hash: Some(lf.file.content_hash.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_rating(&conn, &[lf.file.id], 2).unwrap();
+        crate::data::labels::add_label(
+            &conn,
+            lf.file.id,
+            crate::data::labels::UserLabel::Sharp,
+            crate::data::labels::LabelSource::Manual,
+        )
+        .unwrap();
+        assert!(list_files_with_details(&conn, fid, false, false).unwrap()[0].analyzed);
+        assert_eq!(
+            files_with_predicted_label(&conn, fid, &label)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Same path, new bytes: every read path must stop showing the old verdict.
+        std::fs::write(&p, b"replacement with different content").unwrap();
+        assert_eq!(scan_folder(&conn, fid).unwrap().updated, 1);
+
+        assert_eq!(files_needing_analysis(&conn, fid).unwrap().len(), 1);
+        let rows = list_files_with_details(&conn, fid, false, false).unwrap();
+        assert!(!rows[0].analyzed);
+        assert!(rows[0].predicted_label.is_none());
+        assert!(rows[0].sharpness_score.is_none());
+        assert!(files_with_predicted_label(&conn, fid, &label)
+            .unwrap()
+            .is_empty());
+        assert!(get_analysis(&conn, lf.file.id).unwrap().is_none());
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 0);
+        assert_eq!(
+            rescore_folder(&conn, fid, &ScoreSettings::default()).unwrap(),
+            0
+        );
+        let rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM files WHERE id = ?1",
+                [lf.file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rating, 2,
+            "an old verdict must not change a new file's rating"
+        );
+        assert!(crate::data::labels::all_labeled_features(&conn)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::data::labels::latest_label(&conn, lf.file.id).unwrap(),
+            Some(crate::data::labels::UserLabel::Sharp),
+            "the user's label still belongs to the file row"
         );
     }
 
