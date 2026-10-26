@@ -473,6 +473,9 @@
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
     undoStack = undoStack.slice(0, -1);
+    // Non-reentrant: a second Ctrl+Z must not pop and undo another entry while
+    // this one is still writing.
+    busy = true;
     try {
       if (entry.kind === "labels") {
         const toClear = entry.ids.filter((_, i) => entry.prev[i] === null);
@@ -529,6 +532,8 @@
       if (reviewFile !== null) reviewRefresh++;
     } catch (e) {
       status = `error: ${e}`;
+    } finally {
+      busy = false;
     }
   }
 

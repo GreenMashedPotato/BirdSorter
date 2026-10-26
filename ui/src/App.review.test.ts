@@ -224,6 +224,46 @@ describe("review view", () => {
     await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
   });
 
+  it("ignores a second Ctrl+Z while an undo is still running", async () => {
+    localStorage.clear();
+    vi.mocked(rateFiles).mockClear();
+    const { container } = await openFirstReview();
+    // Two rating steps, so the undo stack holds two entries.
+    await fireEvent.keyDown(window, { key: "5", code: "Digit5" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 5));
+    await fireEvent.keyDown(window, { key: "4", code: "Digit4" });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 4));
+
+    // Park the undo on its first write, like a slow XMP sidecar.
+    let finishUndo!: () => void;
+    vi.mocked(rateFiles).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finishUndo = resolve;
+      });
+      return { changed: 1, xmpWritten: 1, xmpFailed: [] };
+    });
+
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledTimes(3));
+
+    // Presses while the first undo is parked must not pop its neighbour.
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    expect(rateFiles).toHaveBeenCalledTimes(3);
+    expect(rateFiles).not.toHaveBeenCalledWith([1], 0);
+    const undo = container.querySelector<HTMLButtonElement>(
+      'button[title^="Undo the last"]',
+    )!;
+    expect(undo.disabled).toBe(true);
+
+    finishUndo();
+    await waitFor(() => expect(undo.disabled).toBe(false));
+
+    // The earlier entry survived the ignored presses, so it undoes now.
+    await fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
+    await waitFor(() => expect(rateFiles).toHaveBeenCalledWith([1], 0));
+  });
+
   it("blocks undo while auto-star is pending, then restores prior ratings", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const previous = [[1, 2], [2, 4], [3, 1]] as const;
