@@ -87,7 +87,9 @@ impl OnnxSession {
     /// Run one `f32` input tensor and decode its first output with `f`.
     ///
     /// The session lock is held across the run so a provider fallback cannot
-    /// race with another inference.
+    /// race with another inference. A panic in post-processing poisons the
+    /// lock; it is recovered rather than left to fail every later inference,
+    /// which would otherwise brick the model until a restart.
     pub(crate) fn run_tensor<R>(
         &self,
         tensor: &Tensor<f32>,
@@ -96,7 +98,7 @@ impl OnnxSession {
         let mut session = self
             .session
             .lock()
-            .map_err(|_| CoreError::Other("onnx session lock poisoned".into()))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let model = self.model.clone();
         let input_name = self.input_name.clone();
         // The attempt returns `Ok(Err(..))` for a post-processing failure: only
@@ -111,7 +113,14 @@ impl OnnxSession {
                 let outputs = session
                     .run(ort::inputs![input_name.clone() => tensor])
                     .map_err(ort_err)?;
-                let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+                // A shape/type mismatch is not a provider failure: rebuilding
+                // on CPU cannot fix it, so report it without the fallback.
+                let Ok((shape, data)) = outputs[0].try_extract_tensor::<f32>() else {
+                    return Ok(Err(CoreError::inference(
+                        &self.label,
+                        "the model returned a tensor that is not f32",
+                    )));
+                };
                 let dims: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
                 Ok(f(&dims, data))
             },
