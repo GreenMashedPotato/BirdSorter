@@ -383,6 +383,26 @@ fn place_file(
     )
 }
 
+/// The sidecar's destination name, derived from where its RAW landed so the
+/// pair keeps the same stem (a rename must move both).
+fn sidecar_name_for(photo_target: &Path, src: &Path, sidecar: &Path) -> Option<String> {
+    let full_style = {
+        let mut name = src.as_os_str().to_os_string();
+        name.push(".xmp");
+        Path::new(&name) == sidecar
+    };
+    let target_name = photo_target.file_name()?;
+    Some(if full_style {
+        format!("{}.xmp", target_name.to_string_lossy())
+    } else {
+        photo_target
+            .with_extension("xmp")
+            .file_name()?
+            .to_string_lossy()
+            .to_string()
+    })
+}
+
 /// Copy or move `items` into `dest`, arranging them per `opts`.
 ///
 /// Missing sources are reported per-file rather than aborting the run.
@@ -424,7 +444,7 @@ pub fn export_items(
         }
         let (result, delete_failed) = place_file(src, &dir, &name, mode);
         match result {
-            Ok(_) => {
+            Ok(target) => {
                 report.exported += 1;
                 if let Some(e) = delete_failed {
                     // The photo is safe in both places; do not report the move
@@ -433,6 +453,24 @@ pub fn export_items(
                         src.clone(),
                         format!("copied, but the original could not be removed: {e}"),
                     ));
+                }
+                // The XMP sidecar carries the rating, keywords and develop
+                // settings. Leaving it behind loses them (and a later file with
+                // the same name would inherit them), so it travels with the RAW.
+                if let Some(sidecar) = crate::io::xmp::existing_sidecar(src) {
+                    if let Some(sidecar_name) = sidecar_name_for(&target, src, &sidecar) {
+                        let sidecar_target = dir.join(&sidecar_name);
+                        let placed = match mode {
+                            ExportMode::Copy => copy_atomic(&sidecar, &sidecar_target),
+                            ExportMode::Move => move_atomic(&sidecar, &sidecar_target).0,
+                        };
+                        if let Err(e) = placed {
+                            report.failed.push((
+                                sidecar.clone(),
+                                format!("photo exported, but its sidecar could not be: {e}"),
+                            ));
+                        }
+                    }
                 }
             }
             Err(e) => report.failed.push((src.clone(), e.to_string())),
@@ -444,6 +482,72 @@ pub fn export_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_carries_the_sidecar_and_follows_a_rename() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let raw = write(src.path(), "shot.cr3", "raw");
+        write(src.path(), "shot.xmp", "develop-settings");
+
+        let opts = ExportOptions {
+            layout: ExportLayout::Flat,
+            rename: Some("keep_{name}".into()),
+        };
+        let report = export_items(
+            &[ExportItem {
+                src: raw,
+                species: None,
+            }],
+            dst.path(),
+            ExportMode::Copy,
+            &opts,
+        )
+        .unwrap();
+
+        assert_eq!(report.exported, 1);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert!(dst.path().join("keep_shot.cr3").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("keep_shot.xmp")).unwrap(),
+            "develop-settings"
+        );
+        // A copy keeps the originals.
+        assert!(src.path().join("shot.xmp").is_file());
+    }
+
+    #[test]
+    fn a_move_takes_the_full_name_sidecar_along() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let raw = write(src.path(), "shot.cr3", "raw");
+        write(src.path(), "shot.cr3.xmp", "develop-settings");
+
+        let report = export_files(&[raw], dst.path(), ExportMode::Move).unwrap();
+
+        assert_eq!(report.exported, 1);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert!(dst.path().join("shot.cr3").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("shot.cr3.xmp")).unwrap(),
+            "develop-settings"
+        );
+        assert!(!src.path().join("shot.cr3.xmp").exists());
+    }
+
+    #[test]
+    fn a_jpeg_export_does_not_invent_a_sidecar() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let jpeg = write(src.path(), "shot.jpg", "jpeg");
+        // `shot.xmp` next to a JPEG belongs to a same-named RAW, not the JPEG.
+        write(src.path(), "shot.xmp", "raw-settings");
+
+        export_files(&[jpeg], dst.path(), ExportMode::Copy).unwrap();
+
+        assert!(dst.path().join("shot.jpg").is_file());
+        assert!(!dst.path().join("shot.xmp").exists());
+    }
 
     #[test]
     fn image_format_follows_the_destination_suffix() {
