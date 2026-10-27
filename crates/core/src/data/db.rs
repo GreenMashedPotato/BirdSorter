@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 21;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -34,6 +34,7 @@ const DDL: &[&str] = &[
         trashed_at          TEXT,
         captured_at         TEXT,
         rating              INTEGER NOT NULL DEFAULT 0,
+        rating_manual       INTEGER NOT NULL DEFAULT 0,
         flag                TEXT,
         color               TEXT,
         burst_winner        INTEGER NOT NULL DEFAULT 0,
@@ -371,6 +372,22 @@ fn migrate_steps(conn: &Connection, from: i64) -> Result<()> {
             if present == 0 {
                 conn.execute_batch(ddl)?;
             }
+        }
+    }
+    if from < 21 {
+        // Remember which stars the user set, so auto-rate can leave them alone.
+        // Existing non-zero ratings are treated as manual: we cannot know their
+        // source, and keeping them is safer than overwriting them.
+        let present: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'rating_manual'",
+            [],
+            |r| r.get(0),
+        )?;
+        if present == 0 {
+            conn.execute_batch(
+                "ALTER TABLE files ADD COLUMN rating_manual INTEGER NOT NULL DEFAULT 0;
+                 UPDATE files SET rating_manual = 1 WHERE rating > 0;",
+            )?;
         }
     }
     Ok(())
@@ -762,6 +779,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(species_name, 0, "the earlier ALTER must be rolled back");
+    }
+
+    #[test]
+    fn migration_from_v20_adds_the_manual_rating_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = connect(&path).unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO folders (path, added_at) VALUES ('x', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO files
+               (folder_id, relative_path, filename, content_hash, filesize, mtime,
+                format, imported_at, rating)
+             VALUES (1, 'a.cr3', 'a.cr3', 'h', 1, 0.0, 'CR3', 'now', 4)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE files DROP COLUMN rating_manual;
+             UPDATE schema_version SET version = 20;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // Existing stars are treated as manual: we cannot know their source,
+        // and preserving a user rating is safer than auto-rate overwriting it.
+        let (rating, manual): (i64, i64) = conn
+            .query_row(
+                "SELECT rating, rating_manual FROM files WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rating, manual), (4, 1));
+        assert_eq!(schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
     }
 
     #[test]
