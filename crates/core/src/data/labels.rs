@@ -113,7 +113,7 @@ pub fn remove_latest_labels_bulk(conn: &Connection, file_ids: &[i64]) -> Result<
         let mut stmt = conn.prepare(
             "DELETE FROM labels WHERE id = (
                  SELECT id FROM labels WHERE file_id = ?1
-                 ORDER BY created_at DESC, id DESC LIMIT 1
+                 ORDER BY id DESC LIMIT 1
              )",
         )?;
         let mut removed = 0usize;
@@ -125,11 +125,14 @@ pub fn remove_latest_labels_bulk(conn: &Connection, file_ids: &[i64]) -> Result<
 }
 
 /// The most recent label for a file, if any.
+///
+/// Ordered by `id`: `created_at` is RFC 3339 text and its fraction can be
+/// trimmed (`.5` vs `.51`), so text order is not time order.
 pub fn latest_label(conn: &Connection, file_id: i64) -> Result<Option<UserLabel>> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT user_label FROM labels WHERE file_id = ?1
-              ORDER BY created_at DESC, id DESC LIMIT 1",
+              ORDER BY id DESC LIMIT 1",
             [file_id],
             |r| r.get(0),
         )
@@ -144,7 +147,7 @@ pub fn all_labeled_features(conn: &Connection) -> Result<Vec<(String, UserLabel)
         "SELECT a.features_json AS features_json,
                 (SELECT user_label FROM labels l
                   WHERE l.file_id = a.file_id
-                  ORDER BY l.created_at DESC, l.id DESC LIMIT 1) AS user_label
+                  ORDER BY l.id DESC LIMIT 1) AS user_label
            FROM analysis a
            JOIN files f ON f.id = a.file_id
             AND (a.analyzed_content_hash IS NULL
@@ -248,6 +251,31 @@ mod tests {
             .collect::<std::result::Result<_, _>>()
             .unwrap();
         assert_eq!(sources, vec!["bulk", "bulk"]);
+    }
+
+    #[test]
+    fn latest_label_and_undo_follow_insert_order_not_text_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let a = analyzed_file(&conn, dir.path(), "a.cr3");
+
+        // `.5Z` sorts after `.51Z` as text but was inserted first.
+        for (label, created_at) in [
+            ("blurry", "2026-01-01T00:00:00.5Z"),
+            ("sharp", "2026-01-01T00:00:00.51Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO labels (file_id, user_label, source, created_at)
+                 VALUES (?1, ?2, 'manual', ?3)",
+                rusqlite::params![a, label, created_at],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(latest_label(&conn, a).unwrap(), Some(UserLabel::Sharp));
+        assert_eq!(remove_latest_labels_bulk(&conn, &[a]).unwrap(), 1);
+        assert_eq!(latest_label(&conn, a).unwrap(), Some(UserLabel::Blurry));
     }
 
     #[test]
