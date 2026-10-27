@@ -280,6 +280,14 @@ fn denoised_rgb(
     if cached.is_file() {
         return Ok(cached);
     }
+    // Two quick requests (a slider move plus a mode change, or a double click)
+    // can both miss the cache. The gate makes the model run once for this
+    // photo/mode instead of twice, which at 44 MP is an OOM risk.
+    let gate = gates.gate(&format!("denoise:{}@{mode}", lf.file.content_hash));
+    let _held = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cached.is_file() {
+        return Ok(cached);
+    }
 
     let base = base_preview(cache_root, db_path, gates, file, mode)?;
     let rgb = dynamic_to_rgb(image::load_from_memory(&base).map_err(err)?, None);
