@@ -204,6 +204,14 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
             Ok(()) => {
                 report.copied += 1;
                 report.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+                // Later sources can share this name; let the cached listing see
+                // the copy this run just made.
+                if let (Some(file_name), Some(names)) = (
+                    target.file_name().and_then(|name| name.to_str()),
+                    directory_cache.get_mut(&dir),
+                ) {
+                    names.push(file_name.to_string());
+                }
             }
             Err(e) => report.failed.push((path, e.to_string())),
         }
@@ -335,6 +343,23 @@ mod tests {
             !day.join("a (1).cr3").exists(),
             "a missing suffix must not turn an existing copy into a duplicate"
         );
+    }
+
+    #[test]
+    fn duplicate_names_in_one_run_see_the_first_copy() {
+        let src = tempfile::tempdir().unwrap();
+        for day in ["one", "two"] {
+            std::fs::create_dir_all(src.path().join(day)).unwrap();
+            std::fs::write(src.path().join(day).join("a.cr3"), b"same-photo").unwrap();
+        }
+        let dest = tempfile::tempdir().unwrap();
+        let opts = ImportOptions { by_day: false };
+
+        let report = import_folder(src.path(), dest.path(), &opts).unwrap();
+
+        assert_eq!(report.copied, 1);
+        assert_eq!(report.skipped, 1);
+        assert!(!dest.path().join("a (1).cr3").exists());
     }
 
     #[test]
