@@ -70,7 +70,7 @@ impl SliceMode {
     /// Build from the persisted setting: `"off"`, `"fallback"`, `"always"`.
     ///
     /// Legacy numeric values are still accepted (`0` = off, `1` = fallback,
-    /// `n > 1` = always `n x n`), so old settings files keep working.
+    /// `n > 1` = always `n x n`, capped at 12 to bound tile work).
     pub fn from_setting(mode: &str, grid: u32) -> Self {
         let grid = grid.clamp(1, 12) as usize;
         let cfg = SliceConfig {
@@ -94,7 +94,7 @@ impl SliceMode {
                     overlap: 0.25,
                 }),
                 Ok(n) => SliceMode::Always(SliceConfig {
-                    grid: n as usize,
+                    grid: n.min(12) as usize,
                     overlap: 0.25,
                 }),
                 Err(_) => SliceMode::Fallback(cfg),
@@ -624,6 +624,12 @@ mod tests {
             ..YoloConfig::default()
         };
         assert_eq!(always.resolved_slice().unwrap().grid, 4);
+    }
+
+    #[test]
+    fn numeric_slice_grid_is_bounded() {
+        let slice = SliceMode::from_setting("1600", 6);
+        assert_eq!(slice.config().unwrap().grid, 12);
     }
 
     #[test]

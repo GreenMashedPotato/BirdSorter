@@ -50,6 +50,9 @@ Commands:
       --species-labels <path.json>  Labels for the species classifier
       --no-species              Skip species identification (saves ~800 MB RAM)
       --threads <n>             Decode workers (default: all cores; lower = less RAM)
+      --limit <n>               Analyse at most n pending files (benchmarks)
+      --device cpu|auto|gpu     Compute device for the models (default: settings)
+      --slice off|fallback|always|0..=12  Sliced detection (numeric grids are bounded)
       --no-detect               Score whole images without subject detection
       --db <path>               Override the library database location
   list <folder> [--db <path>] Print each file's verdict (worst first)
@@ -1612,6 +1615,34 @@ struct AnalyzeArgs {
     db_path: Option<String>,
     species_model: Option<String>,
     species_labels: Option<String>,
+    device: Option<String>,
+    limit: Option<usize>,
+    slice: Option<String>,
+}
+
+fn parse_device(value: &str) -> std::result::Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "cpu" | "auto" | "gpu" => Ok(value),
+        _ => Err("--device must be cpu, auto or gpu".to_string()),
+    }
+}
+
+fn parse_slice(value: &str) -> std::result::Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if matches!(
+        value.as_str(),
+        "off" | "none" | "fallback" | "smart" | "always" | "tiles"
+    ) {
+        return Ok(value);
+    }
+    let grid = value
+        .parse::<u32>()
+        .map_err(|_| "--slice must be off, fallback, always or a grid from 0 to 12".to_string())?;
+    if grid > 12 {
+        return Err("--slice grid must be from 0 to 12".to_string());
+    }
+    Ok(value)
 }
 
 fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
@@ -1624,6 +1655,9 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
     let mut db_path = None;
     let mut species_model = None;
     let mut species_labels = None;
+    let mut device = None;
+    let mut limit = None;
+    let mut slice = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -1641,6 +1675,20 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
                 let v = it.next().ok_or("--threads needs a number")?;
                 threads = Some(v.parse::<usize>().map_err(|_| "--threads needs a number")?);
             }
+            "--limit" => {
+                let v = it.next().ok_or("--limit needs a number")?;
+                limit = Some(v.parse::<usize>().map_err(|_| "--limit needs a number")?);
+            }
+            "--device" => {
+                let v = it.next().ok_or("--device needs cpu|auto|gpu")?;
+                device = Some(parse_device(v)?);
+            }
+            "--slice" => {
+                let v = it
+                    .next()
+                    .ok_or("--slice needs off|fallback|always|0..=12")?;
+                slice = Some(parse_slice(v)?);
+            }
             "--force" => force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => folder = Some(other.to_string()),
@@ -1656,7 +1704,19 @@ fn parse_analyze(args: &[String]) -> std::result::Result<AnalyzeArgs, String> {
         db_path,
         species_model,
         species_labels,
+        device,
+        limit,
+        slice,
     })
+}
+
+/// The effective sliced-inference setting, after legacy values are normalised.
+fn describe_slice(slice: &SliceMode) -> String {
+    match slice {
+        SliceMode::Off => "off".to_string(),
+        SliceMode::Fallback(c) => format!("fallback {}x{}", c.grid, c.grid),
+        SliceMode::Always(c) => format!("always {}x{}", c.grid, c.grid),
+    }
 }
 
 fn cmd_analyze(args: &[String]) -> ExitCode {
@@ -1724,6 +1784,23 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         }
     }
 
+    // One device choice for every model in this run; `--device` overrides the
+    // saved setting so a GPU split can be measured without editing settings.
+    let det = DetectionSettings::load_default();
+    let device_setting = args.device.clone().unwrap_or_else(|| det.device.clone());
+    let device = DevicePreference::from_setting(&device_setting);
+    // Sliced inference is the biggest switch in detection cost, so it is
+    // overridable per run for A/B measurements.
+    let mut yolo = det.yolo_config();
+    if let Some(mode) = &args.slice {
+        yolo.slice = SliceMode::from_setting(mode, det.slice_grid);
+    }
+    println!("slice: {}", describe_slice(&yolo.slice));
+    println!(
+        "analysis preview: {} (device {device_setting})",
+        det.analysis_preview
+    );
+
     // Detector selection: explicit model > installed detector > saliency.
     let detector: Box<dyn SubjectDetector> = if args.no_detect {
         Box::new(NullDetector)
@@ -1733,31 +1810,17 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         .map(str::trim)
         .filter(|m| !m.is_empty())
     {
-        let det = DetectionSettings::load_default();
-        let device = DevicePreference::from_setting(&det.device);
-        println!("using ONNX detector: {m} (device: {})", det.device);
-        Box::new(OnnxDetector::from_file(
-            Path::new(m),
-            det.yolo_config(),
-            device,
-        )?)
-    } else if let Some(d) = {
-        let det = DetectionSettings::load_default();
-        OnnxDetector::load_default(
-            det.yolo_config(),
-            DevicePreference::from_setting(&det.device),
-        )?
-    } {
-        println!("using installed detector (model manager)");
+        println!("using ONNX detector: {m} (device: {device_setting})");
+        Box::new(OnnxDetector::from_file(Path::new(m), yolo, device)?)
+    } else if let Some(d) = OnnxDetector::load_default(yolo, device)? {
+        println!("using installed detector (model manager, device: {device_setting})");
         Box::new(d)
     } else {
         println!("no detector installed — using the zero-download saliency detector");
         Box::new(SaliencyDetector::default())
     };
-
     // Species identification (optional): explicit flags, else whatever species
     // model is installed (a fixed-head ViT or an open-vocabulary CLIP bundle).
-    let species_device = DevicePreference::from_setting(&DetectionSettings::load_default().device);
     let species: Option<Box<dyn SpeciesClassifier>> = if args.no_detect || args.no_species {
         None
     } else if let (Some(m), Some(l)) = (&args.species_model, &args.species_labels) {
@@ -1765,10 +1828,10 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             Path::new(m),
             Path::new(l),
             SpeciesPreprocess::default(),
-            species_device,
+            device,
         )?) as Box<dyn SpeciesClassifier>)
     } else {
-        match birdsorter_core::runtime::load_species_classifier(species_device) {
+        match birdsorter_core::runtime::load_species_classifier(device) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("warning: species model could not be loaded: {e}");
@@ -1789,7 +1852,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
 
     let decoder = CompositeDecoder::new(birdsorter_core::io::default_decoders_with(
         Some(2400),
-        DetectionSettings::load_default().use_embedded_preview(),
+        det.use_embedded_preview(),
     ));
     let settings = ScoreSettings::load_default();
     let scorer: Box<dyn VerdictScorer> = match models::latest_model(&conn)? {
@@ -1833,6 +1896,7 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         decode_threads,
         species: species.as_deref(),
         eye: eye.as_deref(),
+        limit: args.limit,
         ..IngestContext::new(&decoder, detector.as_ref(), scorer.as_ref())
     };
 
@@ -1873,8 +1937,43 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
             secs
         );
     }
+    // Per-file stage costs. Decode runs on the workers, so its figure is per
+    // decoded file and can overlap the serial stages below it.
+    let st = progress.stages;
+    let per_img = |ms: u64| ms as f64 / progress.analyzed.max(1) as f64;
+    let per_dec = |ms: u64| ms as f64 / progress.decoded.max(1) as f64;
+    println!(
+        "stages (ms/img): decode {:.0} (hash {:.0}) | detect {:.0} | features {:.0} | \
+         species {:.0} | signature {:.0} | store {:.0}",
+        per_dec(st.decode_ms),
+        per_dec(st.hash_ms),
+        per_img(st.detect_ms),
+        per_img(st.features_ms),
+        per_img(st.species_ms),
+        per_img(st.signature_ms),
+        per_img(st.store_ms),
+    );
     for (name, reason) in &progress.failures {
         eprintln!("  ! {name}: {reason}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod analyze_args_tests {
+    use super::parse_analyze;
+
+    fn parse(values: &[&str]) -> std::result::Result<(), String> {
+        let args: Vec<String> = values.iter().map(|value| (*value).to_string()).collect();
+        parse_analyze(&args).map(|_| ())
+    }
+
+    #[test]
+    fn analyze_overrides_accept_only_bounded_supported_values() {
+        assert!(parse(&["folder", "--device", "GPU", "--slice", "12"]).is_ok());
+        assert!(parse(&["folder", "--device", "gup"]).is_err());
+        assert!(parse(&["folder", "--slice", "13"]).is_err());
+        assert!(parse(&["folder", "--slice", "1600"]).is_err());
+        assert!(parse(&["folder", "--slice", "lots"]).is_err());
+    }
 }
