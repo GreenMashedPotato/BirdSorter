@@ -329,53 +329,67 @@ pub fn folder_bursts(conn: &Connection, folder_id: i64, gap_seconds: i64) -> Res
 /// keeper next to it (0.50 vs 0.68 in the same burst). Within a burst the sharpest
 /// frame is the reference, so anything below `ratio` of it is marked `uncertain`
 /// with the [`MISS_FOCUS_SOFT_BURST`] reason. Already-uncertain/blurry frames and
-/// the burst winner are left alone. Returns the number of rows updated.
+/// the burst winner are left alone. Returns the number of newly downgraded rows.
 pub fn mark_soft_members(conn: &Connection, folder_id: i64, ratio: f32) -> Result<usize> {
-    let bursts = folder_bursts(conn, folder_id, DEFAULT_GAP_SECONDS)?;
-    let mut updated = 0usize;
-    for burst in bursts.iter().filter(|b| b.size > 1) {
-        let best: Option<f32> = conn
-            .query_row(
-                "SELECT a.sharpness_score
-                   FROM analysis a JOIN files f ON f.id = a.file_id
-                  WHERE a.file_id = ?1
-                    AND (a.analyzed_content_hash IS NULL
-                         OR a.analyzed_content_hash = f.content_hash)",
-                [burst.best],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(best) = best.filter(|&s| s > 0.0) else {
-            continue;
-        };
-        for &id in burst.frames.iter().filter(|&&id| id != burst.best) {
-            let row: Option<(f32, String)> = conn
+    crate::data::db::with_tx(conn, || {
+        // Undo the previous pass first: the winner or a score may have changed,
+        // and a frame that is no longer soft must not stay 'uncertain' until a
+        // full rescore. Only rows this pass marked are touched.
+        conn.execute(
+            "UPDATE analysis SET predicted_label = 'sharp', miss_focus_reason = NULL
+              WHERE miss_focus_reason = ?1
+                AND file_id IN (SELECT id FROM files WHERE folder_id = ?2)
+                AND (analyzed_content_hash IS NULL OR analyzed_content_hash =
+                     (SELECT content_hash FROM files WHERE id = analysis.file_id))",
+            rusqlite::params![MISS_FOCUS_SOFT_BURST, folder_id],
+        )?;
+
+        let bursts = folder_bursts(conn, folder_id, DEFAULT_GAP_SECONDS)?;
+        let mut updated = 0usize;
+        for burst in bursts.iter().filter(|b| b.size > 1) {
+            let best: Option<f32> = conn
                 .query_row(
-                    "SELECT a.sharpness_score, a.predicted_label
+                    "SELECT a.sharpness_score
                        FROM analysis a JOIN files f ON f.id = a.file_id
                       WHERE a.file_id = ?1
                         AND (a.analyzed_content_hash IS NULL
                              OR a.analyzed_content_hash = f.content_hash)",
-                    [id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    [burst.best],
+                    |r| r.get(0),
                 )
                 .optional()?;
-            let Some((score, label)) = row else {
+            let Some(best) = best.filter(|&s| s > 0.0) else {
                 continue;
             };
-            if label == "sharp" && score < ratio * best {
-                conn.execute(
-                    "UPDATE analysis SET predicted_label = 'uncertain', miss_focus_reason = ?2 \
-                      WHERE file_id = ?1
-                        AND (analyzed_content_hash IS NULL OR analyzed_content_hash =
-                             (SELECT content_hash FROM files WHERE id = ?1))",
-                    rusqlite::params![id, MISS_FOCUS_SOFT_BURST],
-                )?;
-                updated += 1;
+            for &id in burst.frames.iter().filter(|&&id| id != burst.best) {
+                let row: Option<(f32, String)> = conn
+                    .query_row(
+                        "SELECT a.sharpness_score, a.predicted_label
+                           FROM analysis a JOIN files f ON f.id = a.file_id
+                          WHERE a.file_id = ?1
+                            AND (a.analyzed_content_hash IS NULL
+                                 OR a.analyzed_content_hash = f.content_hash)",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                let Some((score, label)) = row else {
+                    continue;
+                };
+                if label == "sharp" && score < ratio * best {
+                    conn.execute(
+                        "UPDATE analysis SET predicted_label = 'uncertain', miss_focus_reason = ?2 \
+                          WHERE file_id = ?1
+                            AND (analyzed_content_hash IS NULL OR analyzed_content_hash =
+                                 (SELECT content_hash FROM files WHERE id = ?1))",
+                        rusqlite::params![id, MISS_FOCUS_SOFT_BURST],
+                    )?;
+                    updated += 1;
+                }
             }
         }
-    }
-    Ok(updated)
+        Ok(updated)
+    })
 }
 
 /// Mark `file_id` as its burst's winner, or clear the manual choice.
@@ -660,6 +674,27 @@ mod tests {
                 .unwrap();
             assert_eq!(label, expected, "{name}");
         }
+
+        // Making the downgraded frame the sharpest restores it on the next pass
+        // instead of leaving it 'uncertain' until a full rescore.
+        conn.execute(
+            "UPDATE analysis SET sharpness_score = 0.70
+              WHERE file_id = (SELECT id FROM files WHERE filename = 'b.cr3')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(mark_soft_members(&conn, fid, SOFT_BURST_RATIO).unwrap(), 0);
+        let (label, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT a.predicted_label, a.miss_focus_reason
+                   FROM analysis a JOIN files f ON f.id = a.file_id
+                  WHERE f.filename = 'b.cr3'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, "sharp");
+        assert_eq!(reason, None);
     }
 
     #[test]
