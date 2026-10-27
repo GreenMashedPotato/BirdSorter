@@ -1755,11 +1755,15 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         restored,
         relinked,
         missing,
+        failed,
     } = library::scan_folder(&conn, folder_id)?;
     println!(
         "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
          {restored} restored, {relinked} moved, {missing} gone)"
     );
+    for failure in &failed {
+        eprintln!("warning: could not read {failure}");
+    }
 
     // `--force` recomputes files that already have results. Marking them stale
     // keeps the old verdicts (a cancelled run does not lose them) and leaves

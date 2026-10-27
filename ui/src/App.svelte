@@ -1384,7 +1384,9 @@
           r.restored ? `, ${r.restored} restored` : ""
         }${r.relinked ? `, ${r.relinked} moved` : ""}${
           r.missing ? `, ${r.missing} no longer on disk` : ""
-        })${primaryLabel ? ` · ${primaryLabel}` : ""}`;
+        }${r.failed ? `, ${r.failed} could not be read` : ""})${
+          primaryLabel ? ` · ${primaryLabel}` : ""
+        }`;
         await refreshFolders();
         await refreshFiles();
         // Opt-in: warm the preview cache after a scan.
