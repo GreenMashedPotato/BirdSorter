@@ -23,6 +23,8 @@ pub(crate) struct AppState {
     pub(crate) cancel: Mutex<Option<CancelToken>>,
     /// Separate token so a long scan can be cancelled independently.
     pub(crate) scan_cancel: Mutex<Option<CancelToken>>,
+    /// Token for an in-flight card import.
+    pub(crate) import_cancel: Mutex<Option<CancelToken>>,
     /// The running scan thread, so a restart can wait for it to stop.
     pub(crate) scan_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The running analysis thread, so a restart can wait for it to stop.
