@@ -498,7 +498,20 @@ fn flush_batch(
             // replaced file starts clean.
             let (h, w, _) = item.rgb.dim();
             let stored = stored_detections(conn, item.file_id)?;
-            let dets = stages::resolve_detections(&stored, dets, None, &[], w as i32, h as i32)?;
+            let exclusions = crate::data::analysis_store::read_exclusions(
+                conn,
+                item.file_id,
+                &item.content_hash,
+            )?;
+            let dets = stages::resolve_detections(
+                &stored,
+                dets,
+                None,
+                &[],
+                &exclusions,
+                w as i32,
+                h as i32,
+            )?;
             let mut record = analyze_one(
                 item.file_id,
                 &item.rgb,
@@ -639,6 +652,13 @@ pub fn analyze_file_with(
         let (img, _hash) = decode_unchanged(decoder, file)?;
         let (h, w, _) = img.rgb.dim();
         let stored = stored_detections(conn, file.file.id)?;
+        // Tombstones from earlier removals, scoped to these bytes. They filter
+        // the fresh detection too; a plain re-identify still re-detects.
+        let tombstones = crate::data::analysis_store::read_exclusions(
+            conn,
+            file.file.id,
+            &file.file.content_hash,
+        )?;
         // A manual box or an exclusion edits the stored set; a fresh detection
         // pass only runs for a plain re-identify.
         let detected = if manual_box.is_none() && exclude.is_empty() {
@@ -650,8 +670,15 @@ pub fn analyze_file_with(
         } else {
             Vec::new()
         };
-        let dets =
-            stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
+        let dets = stages::resolve_detections(
+            &stored,
+            detected,
+            manual_box,
+            exclude,
+            &tombstones,
+            w as i32,
+            h as i32,
+        )?;
         let mut record = analyze_one(
             file.file.id,
             &img.rgb,
@@ -1308,6 +1335,61 @@ mod tests {
             .subject_species
             .iter()
             .any(|s| s.class.as_deref() == Some("manual")));
+    }
+
+    #[test]
+    fn a_removed_box_stays_removed_after_a_full_reanalysis() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![
+            subject_at(32, 32, 160, 160),
+            subject_at(500, 500, 160, 160),
+        ]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+        let removed = BBox::new(500, 500, 160, 160);
+        // `remove_subject` records the tombstone, then re-evaluates.
+        analysis_store::add_exclusion(&conn, lf.file.id, removed, &lf.file.content_hash).unwrap();
+        analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !row.bboxes.contains(&removed),
+            "removal applies immediately: {:?}",
+            row.bboxes
+        );
+        assert!(row.bboxes.contains(&BBox::new(32, 32, 160, 160)));
+
+        // A full folder re-analysis must not resurrect the removed box.
+        analysis_store::mark_folder_stale(&conn, fid).unwrap();
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !row.bboxes.contains(&removed),
+            "tombstone survived re-analysis: {:?}",
+            row.bboxes
+        );
     }
 
     #[test]

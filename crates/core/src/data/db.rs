@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use crate::{CoreError, Result};
 
 /// Current schema version. Bump when adding a migration step below.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 const DDL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -115,6 +115,19 @@ const DDL: &[&str] = &[
         created_at  TEXT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_subject_boxes_file ON subject_boxes(file_id)",
+    // Boxes the user removed. Kept per content hash so a replaced photo starts
+    // clean and a re-analysis cannot re-add a removed false positive.
+    "CREATE TABLE IF NOT EXISTS subject_exclusions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        x            INTEGER NOT NULL,
+        y            INTEGER NOT NULL,
+        w            INTEGER NOT NULL,
+        h            INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_subject_exclusions_file ON subject_exclusions(file_id)",
     "CREATE TABLE IF NOT EXISTS models (
         version       TEXT PRIMARY KEY,
         trained_at    TEXT NOT NULL,
@@ -497,6 +510,7 @@ mod tests {
             "eye_labels",
             "species_overrides",
             "subject_boxes",
+            "subject_exclusions",
         ] {
             assert!(tables.contains(&expected.to_string()), "missing {expected}");
         }
