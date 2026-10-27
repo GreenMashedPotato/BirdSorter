@@ -588,6 +588,8 @@ pub(crate) fn analyze_folder(
     // first run's handle so it can wait for it.
     let mut slot = state.analysis_thread.lock().map_err(err)?;
     let previous = slot.take();
+    let target = state.analysis_target.clone();
+    *target.lock().map_err(err)? = Some(folder);
     let handle = std::thread::spawn(move || {
         // Never let two ingest threads write at once (and never let a `force`
         // clear race with the run it is replacing).
@@ -629,6 +631,11 @@ pub(crate) fn analyze_folder(
                         crate::startup::panic_message(payload.as_ref())
                     ),
                 );
+            }
+        }
+        if let Ok(mut slot) = target.lock() {
+            if *slot == Some(folder) {
+                *slot = None;
             }
         }
     });
