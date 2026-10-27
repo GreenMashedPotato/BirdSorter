@@ -8,6 +8,7 @@
 //! The destination can be organised: flat (default), one subfolder per capture
 //! day, or one per species. Names can be rebuilt from a template.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -109,6 +110,18 @@ pub struct ExportReport {
 /// This is only a hint: another process can claim the name after the check.
 /// Writers must still publish with a no-clobber operation.
 pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
+    let mut next = 1;
+    unique_target_from(dir, name, &mut next)
+}
+
+/// [`unique_target`], starting the ` (n)` search at `*next` and advancing it.
+///
+/// A batch export of many same-named files (a template without `{name}`) would
+/// otherwise probe `name`, `name (1)`, … from zero for every file, which is
+/// O(n²) `exists()` calls on a NAS. The hint is only a starting point: every
+/// candidate is still checked, and the writer still publishes with a no-clobber
+/// operation.
+fn unique_target_from(dir: &Path, name: &str, next: &mut usize) -> Result<PathBuf> {
     let first = dir.join(name);
     if !first.exists() {
         return Ok(first);
@@ -117,14 +130,17 @@ pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
         Some((stem, ext)) => (stem, Some(ext)),
         None => (name, None),
     };
-    for n in 1..10_000 {
+    let mut n = (*next).max(1);
+    while n < 10_000 {
         let candidate = match ext {
             Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
             None => dir.join(format!("{stem} ({n})")),
         };
         if !candidate.exists() {
+            *next = n + 1;
             return Ok(candidate);
         }
+        n += 1;
     }
     Err(CoreError::invalid_input(format!(
         "no free name for {name} in {}",
@@ -393,9 +409,10 @@ fn place_file(
     dir: &Path,
     name: &str,
     mode: ExportMode,
+    suffix: &mut usize,
 ) -> (Result<PathBuf>, Option<std::io::Error>) {
     for _ in 0..8 {
-        let target = match unique_target(dir, name) {
+        let target = match unique_target_from(dir, name, suffix) {
             Ok(target) => target,
             Err(e) => return (Err(e), None),
         };
@@ -452,6 +469,8 @@ pub fn export_items(
         destination: dest.to_path_buf(),
         ..Default::default()
     };
+    // Next ` (n)` to try for each (directory, name) that already collided.
+    let mut suffix_cursors: HashMap<(PathBuf, String), usize> = HashMap::new();
 
     for item in items {
         let src = &item.src;
@@ -477,7 +496,10 @@ pub fn export_items(
             report.failed.push((src.clone(), e.to_string()));
             continue;
         }
-        let (result, delete_failed) = place_file(src, &dir, &name, mode);
+        let suffix = suffix_cursors
+            .entry((dir.clone(), name.clone()))
+            .or_insert(1);
+        let (result, delete_failed) = place_file(src, &dir, &name, mode, suffix);
         match result {
             Ok(target) => {
                 report.exported += 1;
@@ -783,6 +805,21 @@ mod tests {
         assert!(space_warning_for(1, dst.path()).is_none());
         let msg = space_warning_for(u64::MAX, dst.path()).unwrap();
         assert!(msg.contains("free on the destination"), "{msg}");
+    }
+
+    #[test]
+    fn the_suffix_hint_skips_names_already_probed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.cr3", "x");
+
+        let mut next = 40;
+        let first = unique_target_from(dir.path(), "a.cr3", &mut next).unwrap();
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), "a (40).cr3");
+        assert_eq!(next, 41);
+
+        write(dir.path(), "a (40).cr3", "x");
+        let second = unique_target_from(dir.path(), "a.cr3", &mut next).unwrap();
+        assert_eq!(second.file_name().unwrap().to_string_lossy(), "a (41).cr3");
     }
 
     #[test]
