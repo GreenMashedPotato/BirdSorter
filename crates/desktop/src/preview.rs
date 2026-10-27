@@ -25,7 +25,7 @@ use birdsorter_core::io::thumb::{
 };
 
 use crate::config::{ANALYSIS_LONG_SIDE, DEVELOP_MAX_LONG_SIDE, THUMB_LONG_SIDE};
-use crate::state::{AppState, RegionSource};
+use crate::state::{AppState, BlendSource, RegionSource};
 use crate::util::{blocking, err, open_ready};
 
 /// A deferred, cache-miss render: produces encoded JPEG bytes.
@@ -315,23 +315,68 @@ fn denoised_rgb(
     Ok(cached)
 }
 
+/// Above this, two decoded RGB arrays would cost too much memory to keep for
+/// the next slider tick (16 MP = ~96 MB for both), so the blend runs uncached.
+const MAX_BLEND_CACHE_PIXELS: usize = 16_000_000;
+
+/// Decoded base and denoised arrays, shared with the cache.
+type BlendArrays = (Arc<Array3<u8>>, Arc<Array3<u8>>);
+
+/// Decode (or reuse) the base and denoised arrays for one blended preview.
+///
+/// The key is the denoised cache path: it already contains the content hash,
+/// mode and cache versions, so a new photo or mode misses.
+fn blend_sources(
+    blend: &Mutex<Option<BlendSource>>,
+    key: &str,
+    base_jpeg: &[u8],
+    denoised_file: &Path,
+) -> Result<BlendArrays, String> {
+    if let Some(hit) = blend
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+    {
+        if hit.key == key {
+            return Ok((hit.original.clone(), hit.clean.clone()));
+        }
+    }
+    let original = Arc::new(dynamic_to_rgb(
+        image::load_from_memory(base_jpeg).map_err(err)?,
+        None,
+    ));
+    let clean = Arc::new(dynamic_to_rgb(
+        image::load_from_memory(&std::fs::read(denoised_file).map_err(err)?).map_err(err)?,
+        None,
+    ));
+    let (h, w, _) = original.dim();
+    if h * w <= MAX_BLEND_CACHE_PIXELS {
+        *blend
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BlendSource {
+            key: key.to_string(),
+            original: original.clone(),
+            clean: clean.clone(),
+        });
+    }
+    Ok((original, clean))
+}
+
 /// The base preview blended `strength` of the way toward its cached denoised
 /// render. `strength` is clamped; `0` returns the untouched base.
+#[allow(clippy::too_many_arguments)]
 fn blended_preview_rgb(
     cache_root: &Path,
     db_path: &Path,
     gates: &RenderGates,
+    blend: &Mutex<Option<BlendSource>>,
     file: i64,
     mode: &str,
     strength: f32,
 ) -> Result<Array3<u8>, String> {
     let denoised = denoised_rgb(cache_root, db_path, gates, file, mode)?;
     let base = base_preview(cache_root, db_path, gates, file, mode)?;
-    let original = dynamic_to_rgb(image::load_from_memory(&base).map_err(err)?, None);
-    let clean = dynamic_to_rgb(
-        image::load_from_memory(&std::fs::read(&denoised).map_err(err)?).map_err(err)?,
-        None,
-    );
+    let (original, clean) = blend_sources(blend, &denoised.to_string_lossy(), &base, &denoised)?;
     Ok(blend_strength(&original, &clean, strength))
 }
 
@@ -351,13 +396,15 @@ pub(crate) async fn preview_denoised(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
+    let blend = state.blend.clone();
     let mode = mode.unwrap_or_else(|| "fast".to_string());
     blocking(move || {
         let strength = strength.clamp(0.0, 1.0);
         if strength <= MIN_STRENGTH {
             return preview_adjusted_impl(&cache_root, &db_path, &gates, file, &mode, &adjustments);
         }
-        let blended = blended_preview_rgb(&cache_root, &db_path, &gates, file, &mode, strength)?;
+        let blended =
+            blended_preview_rgb(&cache_root, &db_path, &gates, &blend, file, &mode, strength)?;
         let adjusted = adjust::apply(&blended, &adjustments);
         let bytes = encode_rgb_jpeg(&adjusted, 92).map_err(err)?;
         Ok(data_url(bytes))
@@ -413,13 +460,21 @@ pub(crate) async fn export_edited(
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
     let gates = state.render_gates.clone();
+    let blend = state.blend.clone();
     let mode = mode.unwrap_or_else(|| "fast".to_string());
     blocking(move || {
         let target = export_target(&dest)?;
         let rgb = match denoise.map(|s| s.clamp(0.0, 1.0)) {
             Some(strength) if strength > MIN_STRENGTH => {
-                let blended =
-                    blended_preview_rgb(&cache_root, &db_path, &gates, file, &mode, strength)?;
+                let blended = blended_preview_rgb(
+                    &cache_root,
+                    &db_path,
+                    &gates,
+                    &blend,
+                    file,
+                    &mode,
+                    strength,
+                )?;
                 adjust::apply(&blended, &adjustments)
             }
             _ => {
@@ -616,6 +671,28 @@ mod tests {
             .decode(encoded)
             .expect("base64");
         image::load_from_memory(&bytes).expect("JPEG")
+    }
+
+    #[test]
+    fn the_blend_cache_reuses_decoded_arrays_for_the_same_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_bytes = encode_rgb_jpeg(&Array3::from_elem((8, 8, 3), 10u8), 90).unwrap();
+        let clean_bytes = encode_rgb_jpeg(&Array3::from_elem((8, 8, 3), 200u8), 90).unwrap();
+        let denoised = dir.path().join("denoised.jpg");
+        std::fs::write(&denoised, &clean_bytes).unwrap();
+        let cache = Mutex::new(None);
+
+        let (a1, b1) = blend_sources(&cache, "key", &base_bytes, &denoised).unwrap();
+        let (a2, b2) = blend_sources(&cache, "key", &base_bytes, &denoised).unwrap();
+        assert!(Arc::ptr_eq(&a1, &a2), "the base was decoded again");
+        assert!(
+            Arc::ptr_eq(&b1, &b2),
+            "the denoised render was decoded again"
+        );
+
+        // A different photo/mode must not reuse the arrays.
+        let (a3, _) = blend_sources(&cache, "other", &base_bytes, &denoised).unwrap();
+        assert!(!Arc::ptr_eq(&a1, &a3));
     }
 
     #[test]

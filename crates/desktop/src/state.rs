@@ -15,6 +15,15 @@ pub(crate) struct RegionSource {
     pub(crate) rgb: Arc<Array3<u8>>,
 }
 
+/// The decoded base + denoised renders for the last blended preview. Moving the
+/// denoise slider only re-blends these; without it every tick decoded both
+/// JPEGs again (~200-400 ms at 24 MP).
+pub(crate) struct BlendSource {
+    pub(crate) key: String,
+    pub(crate) original: Arc<Array3<u8>>,
+    pub(crate) clean: Arc<Array3<u8>>,
+}
+
 pub(crate) struct AppState {
     pub(crate) db_path: PathBuf,
     pub(crate) cache: ThumbCache,
@@ -31,6 +40,8 @@ pub(crate) struct AppState {
     pub(crate) open_request: Mutex<Option<String>>,
     /// The current file's decoded preview, for windowed 1:1 crops.
     pub(crate) region: Arc<Mutex<Option<RegionSource>>>,
+    /// The current file's decoded base + denoised arrays, for the denoise slider.
+    pub(crate) blend: Arc<Mutex<Option<BlendSource>>>,
     /// Detector/species/scorer stack reused by review actions, so drawing a box
     /// does not reload an 800 MB model.
     pub(crate) pipeline: Arc<Mutex<Option<crate::analysis::PipelineCache>>>,
