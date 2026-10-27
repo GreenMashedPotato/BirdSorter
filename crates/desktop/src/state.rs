@@ -25,8 +25,13 @@ pub(crate) struct AppState {
     pub(crate) scan_cancel: Mutex<Option<CancelToken>>,
     /// The running scan thread, so a restart can wait for it to stop.
     pub(crate) scan_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Folder the running scan belongs to, so removing that folder can stop it
+    /// before its rows cascade away.
+    pub(crate) scan_target: Arc<Mutex<Option<i64>>>,
     /// The running analysis thread, so a restart can wait for it to stop.
     pub(crate) analysis_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Folder the running analysis belongs to (see [`Self::scan_target`]).
+    pub(crate) analysis_target: Arc<Mutex<Option<i64>>>,
     /// A file path the app was launched to open (file association / "Open with").
     pub(crate) open_request: Mutex<Option<String>>,
     /// The current file's decoded preview, for windowed 1:1 crops.

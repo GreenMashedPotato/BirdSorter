@@ -271,10 +271,50 @@ pub(crate) async fn add_folder(state: State<'_, AppState>, path: String) -> Resu
 }
 
 /// Remove a folder from the library. The directory and its files stay on disk.
+///
+/// A scan or analysis that belongs to this folder is stopped and joined first:
+/// otherwise it keeps decoding files whose rows are being cascade-deleted and
+/// records a failure for every one of them.
 #[tauri::command]
 pub(crate) async fn remove_folder(state: State<'_, AppState>, folder: i64) -> Result<(), String> {
     let db_path = state.db_path.clone();
+    let scan_running = *state.scan_target.lock().map_err(err)? == Some(folder);
+    let analysis_running = *state.analysis_target.lock().map_err(err)? == Some(folder);
+
+    let scan_token = if scan_running {
+        state.scan_cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_token = if analysis_running {
+        state.cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let scan_thread = if scan_running {
+        state.scan_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_thread = if analysis_running {
+        state.analysis_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    if let Some(token) = scan_token {
+        token.cancel();
+    }
+    if let Some(token) = analysis_token {
+        token.cancel();
+    }
+
     blocking(move || {
+        if let Some(handle) = scan_thread {
+            let _ = handle.join();
+        }
+        if let Some(handle) = analysis_thread {
+            let _ = handle.join();
+        }
         let conn = open(&db_path)?;
         library::remove_folder(&conn, folder).map_err(err)
     })
@@ -307,6 +347,8 @@ pub(crate) fn scan_folder(
     // first run's handle and waits for it before writing.
     let mut slot = state.scan_thread.lock().map_err(err)?;
     let previous = slot.take();
+    let target = state.scan_target.clone();
+    *target.lock().map_err(err)? = Some(folder);
     let handle = std::thread::spawn(move || {
         if let Some(previous) = previous {
             let _ = previous.join();
@@ -327,6 +369,11 @@ pub(crate) fn scan_folder(
                     "scan-error",
                     "scan crashed (see the console); the library was left consistent".to_string(),
                 );
+            }
+        }
+        if let Ok(mut slot) = target.lock() {
+            if *slot == Some(folder) {
+                *slot = None;
             }
         }
     });
