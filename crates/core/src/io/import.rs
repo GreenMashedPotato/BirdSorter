@@ -8,6 +8,7 @@
 //! The day comes from the file's EXIF capture time; files without one land in
 //! `undated/`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -45,6 +46,50 @@ impl Default for ImportOptions {
 /// The subfolder a file belongs to: its capture day, or `undated`.
 fn day_folder(path: &Path) -> String {
     capture_day(path).unwrap_or_else(|| "undated".to_string())
+}
+
+/// Existing collision candidates for `name` (the bare name and the ` (n)`
+/// suffixes `unique_target` produces). All matching names are considered so a
+/// gap left by a deleted copy cannot hide a later copy of the same photo.
+fn existing_candidates(dir: &Path, name: &str, file_names: &[String]) -> Vec<PathBuf> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) => (stem, Some(ext)),
+        None => (name, None),
+    };
+    let prefix = format!("{stem} (");
+    let suffix = ext
+        .map(|ext| format!(").{ext}"))
+        .unwrap_or_else(|| ")".into());
+    file_names
+        .iter()
+        .filter(|file_name| {
+            *file_name == name
+                || file_name
+                    .strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix(suffix.as_str()))
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| (1..10_000).contains(&n))
+        })
+        .map(|file_name| dir.join(file_name))
+        .collect()
+}
+
+/// Names in a destination directory, read once per import run.
+fn directory_names<'a>(
+    dir: &Path,
+    cache: &'a mut HashMap<PathBuf, Vec<String>>,
+) -> Result<&'a [String]> {
+    if !cache.contains_key(dir) {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|e| CoreError::io(dir, e))? {
+            let entry = entry.map_err(|e| CoreError::io(dir, e))?;
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+        cache.insert(dir.to_path_buf(), names);
+    }
+    Ok(cache.get(dir).map(Vec::as_slice).unwrap_or(&[]))
 }
 
 /// Copy every supported photo under `src` into `dest`.
@@ -89,6 +134,7 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
     sources.sort();
 
     let mut report = ImportReport::default();
+    let mut directory_cache = HashMap::new();
     for path in sources {
         let Some(name) = path
             .file_name()
@@ -110,23 +156,41 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
             continue;
         }
 
-        let existing = dir.join(&name);
-        if let (Ok(target_meta), Ok(source_meta)) =
-            (std::fs::metadata(&existing), std::fs::metadata(&path))
-        {
-            // Same name and size is not proof of the same photo: two bodies with
-            // synced clocks produce `IMG_0001.CR3` on the same day, and a name
-            // reuse can collide too. Compare the content before skipping, or a
-            // distinct photo would be silently reported as "already there".
-            if target_meta.len() == source_meta.len()
-                && matches!(
-                    (hash_file(&existing), hash_file(&path)),
-                    (Ok(a), Ok(b)) if a == b
-                )
-            {
-                report.skipped += 1;
+        // A name collision with different content gets a ` (1)` suffix. On a
+        // later run that copy is the same photo, so check every existing
+        // candidate — comparing only the bare name would import it again as
+        // ` (2)`, ` (3)`, … every time the card is read.
+        let source_size = std::fs::metadata(&path).ok().map(|m| m.len());
+        let file_names = match directory_names(&dir, &mut directory_cache) {
+            Ok(file_names) => file_names,
+            Err(e) => {
+                report.failed.push((path, e.to_string()));
                 continue;
             }
+        };
+        let candidates = existing_candidates(&dir, &name, file_names);
+        let mut source_hash: Option<String> = None;
+        let mut already_imported = false;
+        for candidate in candidates {
+            let Ok(meta) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if Some(meta.len()) != source_size {
+                continue;
+            }
+            if source_hash.is_none() {
+                source_hash = hash_file(&path).ok();
+            }
+            if let Some(hash) = &source_hash {
+                if hash_file(&candidate).ok().as_deref() == Some(hash.as_str()) {
+                    already_imported = true;
+                    break;
+                }
+            }
+        }
+        if already_imported {
+            report.skipped += 1;
+            continue;
         }
 
         let target = match unique_target(&dir, &name) {
@@ -140,6 +204,14 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
             Ok(()) => {
                 report.copied += 1;
                 report.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+                // Later sources can share this name; let the cached listing see
+                // the copy this run just made.
+                if let (Some(file_name), Some(names)) = (
+                    target.file_name().and_then(|name| name.to_str()),
+                    directory_cache.get_mut(&dir),
+                ) {
+                    names.push(file_name.to_string());
+                }
             }
             Err(e) => report.failed.push((path, e.to_string())),
         }
@@ -229,6 +301,65 @@ mod tests {
             std::fs::read(dest.path().join("undated").join("a (1).cr3")).unwrap(),
             b"new"
         );
+    }
+
+    #[test]
+    fn a_second_run_does_not_duplicate_a_suffixed_clash() {
+        let src = source_with(&[("a.cr3", b"new-and-longer")]);
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dest.path().join("undated")).unwrap();
+        std::fs::write(dest.path().join("undated").join("a.cr3"), b"old").unwrap();
+
+        let first = import_folder(src.path(), dest.path(), &ImportOptions::default()).unwrap();
+        assert_eq!(first.copied, 1);
+        let copy = dest.path().join("undated").join("a (1).cr3");
+        assert!(copy.is_file());
+
+        // Reading the same card again must recognise its earlier ` (1)` copy.
+        let second = import_folder(src.path(), dest.path(), &ImportOptions::default()).unwrap();
+        assert_eq!(second.copied, 0);
+        assert_eq!(second.skipped, 1);
+        assert!(
+            !dest.path().join("undated").join("a (2).cr3").exists(),
+            "a re-import must not add another copy"
+        );
+        assert_eq!(std::fs::read(&copy).unwrap(), b"new-and-longer");
+    }
+
+    #[test]
+    fn a_gap_between_collision_suffixes_does_not_hide_a_previous_copy() {
+        let src = source_with(&[("a.cr3", b"already-imported")]);
+        let dest = tempfile::tempdir().unwrap();
+        let day = dest.path().join("undated");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("a.cr3"), b"different").unwrap();
+        std::fs::write(day.join("a (2).cr3"), b"already-imported").unwrap();
+
+        let report = import_folder(src.path(), dest.path(), &ImportOptions::default()).unwrap();
+
+        assert_eq!(report.copied, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(
+            !day.join("a (1).cr3").exists(),
+            "a missing suffix must not turn an existing copy into a duplicate"
+        );
+    }
+
+    #[test]
+    fn duplicate_names_in_one_run_see_the_first_copy() {
+        let src = tempfile::tempdir().unwrap();
+        for day in ["one", "two"] {
+            std::fs::create_dir_all(src.path().join(day)).unwrap();
+            std::fs::write(src.path().join(day).join("a.cr3"), b"same-photo").unwrap();
+        }
+        let dest = tempfile::tempdir().unwrap();
+        let opts = ImportOptions { by_day: false };
+
+        let report = import_folder(src.path(), dest.path(), &opts).unwrap();
+
+        assert_eq!(report.copied, 1);
+        assert_eq!(report.skipped, 1);
+        assert!(!dest.path().join("a (1).cr3").exists());
     }
 
     #[test]
