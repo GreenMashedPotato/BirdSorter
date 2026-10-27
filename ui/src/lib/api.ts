@@ -552,7 +552,8 @@ export interface ScoreBreakdown {
   storedLabel: string | null;
   storedScore: number | null;
   modelVersion: string | null;
-  explanation: ScoreExplanation;
+  /** `null` when a trained model produced the verdict (no rule trace). */
+  explanation: ScoreExplanation | null;
 }
 
 /** Every intermediate value behind a file's sharpness verdict. */
