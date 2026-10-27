@@ -324,12 +324,18 @@ fn run_analysis(
     app: &AppHandle,
     db_path: &Path,
     cache_root: &Path,
+    pipeline: &std::sync::Mutex<Option<PipelineCache>>,
     folder: i64,
     model: Option<&str>,
     cancel: &CancelToken,
 ) -> Result<(), String> {
     let conn = open(db_path)?;
-    let pipe = build_pipeline(&conn, model)?;
+    // Share the review view's cached stack unless the caller picked a one-off
+    // model file. Loading the species model twice costs ~818 MB.
+    let pipe = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(_) => std::sync::Arc::new(build_pipeline(&conn, model)?),
+        None => pipeline_cached(pipeline, &conn)?,
+    };
 
     // Warn (do not fail) when the data drive is nearly full.
     if let Some(msg) = birdsorter_core::io::disk::low_space_warning(
@@ -572,6 +578,7 @@ pub(crate) fn analyze_folder(
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
     let cache_root = state.cache.root().to_path_buf();
+    let pipeline = state.pipeline.clone();
     let cancel = CancelToken::new();
     {
         // Supersede any run that is still winding down, so restarting after a
@@ -606,6 +613,7 @@ pub(crate) fn analyze_folder(
                 &app,
                 &db_path,
                 &cache_root,
+                &pipeline,
                 folder,
                 model.as_deref(),
                 &cancel,
