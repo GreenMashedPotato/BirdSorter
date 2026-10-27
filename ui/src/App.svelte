@@ -659,7 +659,7 @@
       !confirm(
         "Set stars for every analysed file from its verdict?\n\n" +
           "sharp → 5 · uncertain → 3 · blurry → 1 · no subject → 0\n\n" +
-          "This overwrites existing ratings (Ctrl+Z undoes it) and writes " +
+          "Stars you set by hand are kept (Ctrl+Z undoes the rest); it also writes " +
           "xmp:Rating into each file's XMP sidecar.",
       )
     ) {

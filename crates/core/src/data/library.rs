@@ -284,8 +284,9 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                     conn.execute(
                         "INSERT INTO files
                            (folder_id, relative_path, filename, content_hash,
-                            filesize, mtime, format, imported_at, captured_at, rating)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            filesize, mtime, format, imported_at, captured_at, rating,
+                            rating_manual)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         rusqlite::params![
                             folder_id,
                             rel,
@@ -296,7 +297,9 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                             format,
                             now_iso(),
                             captured_at,
-                            rating
+                            rating,
+                            // A star imported from Lightroom is still the user's.
+                            (rating > 0) as i64
                         ],
                     )?;
                 }
@@ -324,7 +327,8 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                             .filter(|rating| *rating > 0)
                     {
                         conn.execute(
-                            "UPDATE files SET rating = ?1 WHERE id = ?2 AND rating = 0",
+                            "UPDATE files SET rating = ?1, rating_manual = 1
+                              WHERE id = ?2 AND rating = 0",
                             rusqlite::params![rating, id],
                         )?;
                     }
@@ -930,10 +934,14 @@ pub fn set_color(conn: &Connection, file_ids: &[i64], color: Option<&str>) -> Re
 }
 
 /// Set the 0-5 rating for a set of files (clamped). Returns rows changed.
+///
+/// A rating set here is the user's: auto-rate leaves it alone until "Reset
+/// stars" clears the mark.
 pub fn set_rating(conn: &Connection, file_ids: &[i64], rating: i64) -> Result<usize> {
     let rating = rating.clamp(0, 5);
     with_tx(conn, || {
-        let mut stmt = conn.prepare("UPDATE files SET rating = ?1 WHERE id = ?2")?;
+        let mut stmt =
+            conn.prepare("UPDATE files SET rating = ?1, rating_manual = 1 WHERE id = ?2")?;
         let mut n = 0;
         for id in file_ids {
             n += stmt.execute(rusqlite::params![rating, id])?;
@@ -961,11 +969,12 @@ pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
                           OR a.analyzed_content_hash = files.content_hash)),
                  files.rating)
                WHERE folder_id = ?1 AND trashed_at IS NULL
-                  AND EXISTS (
-                      SELECT 1 FROM analysis a
-                       WHERE a.file_id = files.id
-                         AND (a.analyzed_content_hash IS NULL
-                              OR a.analyzed_content_hash = files.content_hash))",
+                 AND rating_manual = 0
+                 AND EXISTS (
+                     SELECT 1 FROM analysis a
+                      WHERE a.file_id = files.id
+                        AND (a.analyzed_content_hash IS NULL
+                             OR a.analyzed_content_hash = files.content_hash))",
             [folder_id],
         )?;
         Ok(n)
@@ -976,7 +985,8 @@ pub fn auto_rate_folder(conn: &Connection, folder_id: i64) -> Result<usize> {
 pub fn reset_ratings(conn: &Connection, folder_id: i64) -> Result<usize> {
     with_tx(conn, || {
         let n = conn.execute(
-            "UPDATE files SET rating = 0 WHERE folder_id = ?1 AND trashed_at IS NULL",
+            "UPDATE files SET rating = 0, rating_manual = 0
+              WHERE folder_id = ?1 AND trashed_at IS NULL",
             [folder_id],
         )?;
         Ok(n)
@@ -1453,6 +1463,76 @@ mod tests {
     }
 
     #[test]
+    fn auto_rate_keeps_manual_ratings() {
+        use crate::analysis::scorer::score_rules;
+        use crate::analysis::sharpness::SharpnessFeatures;
+        use crate::data::analysis_store::{upsert_analysis, AnalysisRecord};
+        use crate::data::settings::ScoreSettings;
+
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let files = list_files(&conn, fid, false, false).unwrap();
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.9,
+            laplacian_subject: 0.9,
+            fft_high_freq_subject: 0.9,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let score = score_rules(&features, &ScoreSettings::default());
+        for f in &files {
+            upsert_analysis(
+                &conn,
+                &AnalysisRecord {
+                    file_id: f.file.id,
+                    features: features.clone(),
+                    score: score.clone(),
+                    analyzed_content_hash: Some(f.file.content_hash.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        // A hand-set 2 on a sharp photo must survive auto-rate.
+        set_rating(&conn, &[files[0].file.id], 2).unwrap();
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 1);
+        assert_eq!(
+            get_file(&conn, files[0].file.id)
+                .unwrap()
+                .unwrap()
+                .file
+                .rating,
+            2
+        );
+        assert_eq!(
+            get_file(&conn, files[1].file.id)
+                .unwrap()
+                .unwrap()
+                .file
+                .rating,
+            5
+        );
+
+        // Reset clears the mark, so the next auto-rate can repopulate both.
+        reset_ratings(&conn, fid).unwrap();
+        assert_eq!(auto_rate_folder(&conn, fid).unwrap(), 2);
+        assert_eq!(
+            get_file(&conn, files[0].file.id)
+                .unwrap()
+                .unwrap()
+                .file
+                .rating,
+            5
+        );
+    }
+
+    #[test]
     fn files_needing_analysis_excludes_analyzed_and_trashed() {
         use crate::analysis::scorer::{score_rules, ScoreResult};
         use crate::analysis::sharpness::SharpnessFeatures;
@@ -1731,8 +1811,9 @@ mod tests {
             .iter()
             .find(|file| file.file.filename == "trashed.cr3")
             .unwrap();
-        set_rating(&conn, &[active.file.id], 2).unwrap();
         set_rating(&conn, &[trashed.file.id], 4).unwrap();
+        // `active` is left unrated for auto-rate; a hand-set rating is now
+        // preserved (see `auto_rate_keeps_manual_ratings`).
 
         let features = SharpnessFeatures {
             has_subject: true,
