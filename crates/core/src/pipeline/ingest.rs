@@ -80,6 +80,8 @@ pub struct StageTimes {
     pub species_ms: u64,
     pub signature_ms: u64,
     pub store_ms: u64,
+    /// Filling the render cache (gallery tile + review preview).
+    pub warm_ms: u64,
 }
 
 /// Live progress for a run. `total` is known up front (pending files).
@@ -103,6 +105,17 @@ impl IngestProgress {
     }
 }
 
+/// Renders to cache while the decoded image is still in memory.
+///
+/// The grid tile and the review preview are otherwise produced by decoding the
+/// RAW a second time (~0.5-0.7 s per file). `renders` is `(long side, JPEG
+/// quality)`; the app passes its thumbnail and analysis-preview sizes.
+#[derive(Clone, Copy)]
+pub struct WarmRenders<'a> {
+    pub cache: &'a crate::io::cache::ThumbCache,
+    pub renders: &'a [(u32, u8)],
+}
+
 /// Everything the pipeline needs from its environment.
 pub struct IngestContext<'a> {
     pub decoder: &'a dyn ImageDecoder,
@@ -120,6 +133,8 @@ pub struct IngestContext<'a> {
     pub eye: Option<&'a dyn EyeDetector>,
     /// Analyse at most this many pending files (benchmarking aid). `None` = all.
     pub limit: Option<usize>,
+    /// Optional render cache to fill while the pixels are in memory.
+    pub warm: Option<WarmRenders<'a>>,
 }
 
 impl<'a> IngestContext<'a> {
@@ -138,6 +153,7 @@ impl<'a> IngestContext<'a> {
             species: None,
             eye: None,
             limit: None,
+            warm: None,
         }
     }
 
@@ -508,6 +524,25 @@ fn flush_batch(
         progress.stages.species_ms += times.species_ms;
         progress.stages.signature_ms += times.signature_ms;
         let analyze_ms = times.features_ms + times.species_ms + times.signature_ms;
+
+        // Fill the render cache from the image we already decoded, so the grid
+        // and the review open without decoding the RAW again.
+        if let Some(warm) = ctx.warm {
+            let warm_started = std::time::Instant::now();
+            for &(dim, quality) in warm.renders {
+                if let Err(e) = crate::io::thumb::warm_render(
+                    warm.cache,
+                    &item.content_hash,
+                    &item.rgb,
+                    dim,
+                    quality,
+                ) {
+                    tracing::debug!(dim, error = %e, "render cache warm-up failed");
+                }
+            }
+            progress.stages.warm_ms += warm_started.elapsed().as_millis() as u64;
+        }
+
         let store_started = std::time::Instant::now();
         match upsert_analysis(conn, &record) {
             Ok(()) => progress.analyzed += 1,
@@ -839,6 +874,35 @@ mod tests {
 
     fn subject_at(x: i32, y: i32, w: i32, h: i32) -> Detection {
         Detection::new(BBox::new(x, y, w, h), "bird", 0.9)
+    }
+
+    #[test]
+    fn analysis_warms_the_gallery_tile_and_the_review_preview() {
+        let (_dir, conn) = setup(2);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector::new(vec![subject_at(32, 32, 64, 64)]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = crate::io::cache::ThumbCache::new(cache_dir.path().join("cache"));
+        let renders = [(512u32, 82u8), (2400, 85)];
+        let ctx = IngestContext {
+            batch_size: 1,
+            warm: Some(WarmRenders {
+                cache: &cache,
+                renders: &renders,
+            }),
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        for lf in list_files(&conn, fid, false, false).unwrap() {
+            for &(dim, _) in &renders {
+                let key = crate::io::thumb::render_key(&lf.file.content_hash, dim);
+                assert!(cache.get(&key).is_some(), "missing render {key}");
+            }
+        }
     }
 
     #[test]

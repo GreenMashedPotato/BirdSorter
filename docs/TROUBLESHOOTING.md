@@ -156,7 +156,10 @@ automatically (analysis is tied to the file's content hash).
   Re-score, Keep burst winners, Auto-star, Reset stars and Export use it. Scanning
   a folder includes its child folders.
 - **Grid thumbnails** use the camera's embedded `PRVW` (about 1620×1080 on an
-  R5), not the full-size JPEG, so they are soft at 100%. Use the review's
+  R5), not the full-size JPEG, so they are soft at 100%. Analysis writes the tile
+  from the image it already decoded, so a folder that has just been analysed
+  scrolls without decoding each RAW again (the review preview is still rendered
+  on demand). Use the review's
   **High-res** mode (or `preview <raw> out.jpg 8000`) for critical focus.
 - **The EXIF strip** reads camera/lens/ISO/shutter/aperture/focal from the RAW
   metadata (JPEG/TIFF from their EXIF). Missing fields are normal — e.g. a lens

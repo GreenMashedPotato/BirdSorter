@@ -21,12 +21,12 @@ use birdsorter_core::io::exif;
 use birdsorter_core::learning::trainer;
 use birdsorter_core::pipeline::{
     analyze_file_with, ingest_folder, rescore_folder, scorer_for, CancelToken, IngestContext,
-    VerdictScorer,
+    VerdictScorer, WarmRenders,
 };
 use birdsorter_core::runtime::{DevicePreference, OnnxDetector};
 use rusqlite::Connection;
 
-use crate::config::{ANALYSIS_LONG_SIDE, MAX_DECODE_THREADS};
+use crate::config::{ANALYSIS_LONG_SIDE, MAX_DECODE_THREADS, THUMB_LONG_SIDE};
 use crate::state::AppState;
 use crate::util::{blocking, err, open, open_ready};
 
@@ -349,12 +349,23 @@ fn run_analysis(
     let threads = detection
         .resolved_threads(available)
         .min(MAX_DECODE_THREADS);
+    // Fill the grid tile while the decoded pixels are still here: the tile costs
+    // a resize and a JPEG encode now instead of a fresh RAW decode (~0.45 s) when
+    // the grid first scrolls to it. Only the tile is warmed — the 2400 px review
+    // preview is ~0.7 MB per file and would push a whole shoot out of the cache
+    // budget, and the review path already prefetches its neighbours.
+    let warm_cache = birdsorter_core::io::cache::ThumbCache::new(cache_root.to_path_buf());
+    const WARM_RENDERS: [(u32, u8); 1] = [(THUMB_LONG_SIDE, 82)];
     let ctx = IngestContext {
         batch_size: threads.clamp(1, 8),
         decode_threads: threads,
         cancel: Some(cancel),
         species: pipe.species.as_deref(),
         eye: pipe.eye.as_deref(),
+        warm: Some(WarmRenders {
+            cache: &warm_cache,
+            renders: &WARM_RENDERS,
+        }),
         ..IngestContext::new(&pipe.decoder, pipe.detector.as_ref(), pipe.scorer.as_ref())
     };
 
@@ -389,9 +400,7 @@ fn run_analysis(
     // cache inside its budget here (off the UI thread). A cancelled run has not
     // written much, and the walk costs a second, so skip it.
     if !cancel.is_cancelled() {
-        match birdsorter_core::io::cache::ThumbCache::new(cache_root)
-            .prune_to_budget(birdsorter_core::io::cache::DEFAULT_CACHE_BUDGET_BYTES)
-        {
+        match warm_cache.prune_to_budget(birdsorter_core::io::cache::DEFAULT_CACHE_BUDGET_BYTES) {
             Ok(0) => {}
             Ok(removed) => tracing::info!(removed, "pruned the render cache to its budget"),
             Err(e) => tracing::warn!(error = %e, "render cache prune failed"),
