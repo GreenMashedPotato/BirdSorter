@@ -103,6 +103,7 @@ pub(crate) async fn export_file(
         let items = vec![ExportItem {
             src: lf.absolute_path.clone(),
             species: species_of(&conn, file)?,
+            captured_at: lf.file.captured_at.clone(),
         }];
         let warning = copy_space_warning(mode, &items, Path::new(&dest));
         let report = export_items(&items, Path::new(&dest), mode, &opts).map_err(err)?;
@@ -267,6 +268,7 @@ pub(crate) async fn export_keepers(
             items.push(ExportItem {
                 src: f.absolute_path.clone(),
                 species: species_of(&conn, f.file.id)?,
+                captured_at: f.file.captured_at.clone(),
             });
         }
         let warning = copy_space_warning(mode, &items, Path::new(&dest));
