@@ -51,10 +51,17 @@ fn unstable(out: &[f32]) -> bool {
     if out.is_empty() {
         return true;
     }
-    let bad = out
-        .iter()
-        .filter(|&&v| !(-0.02..=1.02).contains(&v))
-        .count();
+    let mut bad = 0usize;
+    for &v in out {
+        // One NaN would reach the clamp (which passes it through) and poison
+        // the whole blended tile, so a non-finite value is always fatal.
+        if !v.is_finite() {
+            return true;
+        }
+        if !(-0.02..=1.02).contains(&v) {
+            bad += 1;
+        }
+    }
     bad as f32 / out.len() as f32 > MAX_UNSTABLE_SHARE
 }
 
@@ -322,6 +329,26 @@ mod tests {
         assert!(
             out.iter().all(|&v| v == 40),
             "garbage must not be blended in"
+        );
+    }
+
+    #[test]
+    fn a_single_nan_marks_the_tile_unstable() {
+        // A NaN passes a range check's `contains` in the wrong direction: it
+        // would be blended into the accumulator and turn the pixel black.
+        let calls = std::cell::Cell::new(0);
+        let model = |t: &[f32], _w: usize, _h: usize| {
+            calls.set(calls.get() + 1);
+            let mut out = t.to_vec();
+            out[0] = f32::NAN;
+            Ok(out)
+        };
+        let src = Array3::<u8>::from_elem((64, 64, 3), 128);
+        let out = denoise_tiled(&src, &TilePlan::default(), model).unwrap();
+
+        assert!(
+            out.iter().all(|&v| v == 128),
+            "the NaN leaked into the result"
         );
     }
 
