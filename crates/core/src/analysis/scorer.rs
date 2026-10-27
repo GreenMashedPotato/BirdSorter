@@ -33,6 +33,10 @@ pub const MISS_FOCUS_EYE_SOFTNESS: &str = "eye_softness";
 pub const MISS_FOCUS_MOTION_BLUR: &str = "motion_blur";
 pub const MISS_FOCUS_OFF_FRAME: &str = "off_frame";
 
+/// The `model_version` of the hand-tuned rule scorer. Any other stored version
+/// came from a trained model, which has no rule trace.
+pub const RULES_MODEL_VERSION: &str = "rules-v1";
+
 /// A verdict for one image.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScoreResult {
@@ -52,7 +56,7 @@ impl ScoreResult {
             score,
             label: label.to_string(),
             has_bokeh,
-            model_version: "rules-v1".to_string(),
+            model_version: RULES_MODEL_VERSION.to_string(),
             miss_focus_reason: reason.map(str::to_string),
         }
     }
@@ -305,7 +309,7 @@ pub fn score_rules(f: &SharpnessFeatures, s: &ScoreSettings) -> ScoreResult {
         score: e.final_score,
         label: e.final_label,
         has_bokeh: e.has_bokeh,
-        model_version: "rules-v1".to_string(),
+        model_version: RULES_MODEL_VERSION.to_string(),
         miss_focus_reason: e.penalty,
     }
 }
