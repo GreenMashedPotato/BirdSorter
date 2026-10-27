@@ -250,14 +250,15 @@
             onchange={(e) =>
               (localDetection = { ...localDetection, device: e.currentTarget.value })}
           >
-            <option value="cpu">CPU — fastest for these models</option>
+            <option value="cpu">CPU — no extra runtime</option>
             <option value="auto">Auto — GPU when available</option>
             <option value="gpu">GPU — force</option>
           </select>
         </div>
         <p class="status">
-          The detector and species models are small, so CPU usually beats a GPU provider
-          (measured ~1.7× faster for the detector). Switch to Auto/GPU for larger models.
+          Detection is faster on a capable GPU (DirectML on Windows; measured ~2-2.5×);
+          the species model still runs on CPU because DirectML cannot execute it, and a
+          weak integrated GPU can be slower — so CPU stays the default.
         </p>
       </section>
 
