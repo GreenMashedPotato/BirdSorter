@@ -234,25 +234,47 @@ pub(crate) fn resolve_detections(
     }
     let mut dets = detected;
     for d in stored.iter().filter(|d| d.class_name == "manual") {
-        if !dets.iter().any(|e| boxes_overlap(&e.bbox, &d.bbox)) {
+        if !dets.iter().any(|e| covers_manual(&e.bbox, &d.bbox)) {
             dets.push(d.clone());
         }
     }
     Ok(dets)
 }
 
-/// True when two boxes describe the same subject: high IoU, or the second box
-/// mostly covers the first (used to avoid duplicating a subject the user
-/// redrew over).
-fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
+/// True when `detected` is the same subject as the user's `manual` box: high
+/// IoU, or the detection covers most of the manual box. Coverage is measured
+/// against the *manual* box so a small second bird sitting inside a large
+/// hand-drawn box cannot count as re-finding it.
+fn covers_manual(detected: &BBox, manual: &BBox) -> bool {
+    let inter = intersection(detected, manual);
+    if inter <= 0 {
+        return false;
+    }
+    let union = detected.area() + manual.area() - inter;
+    let iou = inter as f64 / union.max(1) as f64;
+    let covered = inter as f64 / manual.area().max(1) as f64;
+    iou >= 0.3 || covered >= 0.6
+}
+
+fn intersection(a: &BBox, b: &BBox) -> i64 {
     let ix0 = a.x.max(b.x);
     let iy0 = a.y.max(b.y);
     let ix1 = a.x1().min(b.x1());
     let iy1 = a.y1().min(b.y1());
     if ix1 <= ix0 || iy1 <= iy0 {
+        return 0;
+    }
+    (i64::from(ix1) - i64::from(ix0)) * (i64::from(iy1) - i64::from(iy0))
+}
+
+/// True when two boxes describe the same subject: high IoU, or the second box
+/// mostly covers the first (used to avoid duplicating a subject the user
+/// redrew over).
+fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
+    let inter = intersection(a, b);
+    if inter == 0 {
         return false;
     }
-    let inter = i64::from(ix1 - ix0) * i64::from(iy1 - iy0);
     let union = a.area() + b.area() - inter;
     if union <= 0 {
         return false;
@@ -275,6 +297,33 @@ mod tests {
                 20
             }
         })
+    }
+
+    #[test]
+    fn a_small_detection_inside_a_manual_box_does_not_drop_it() {
+        let manual = BBox::new(100, 100, 600, 600);
+        let stored = vec![Detection::new(manual, "manual", 1.0)];
+        // A second, much smaller bird inside the large hand-drawn box.
+        let detected = vec![Detection::new(BBox::new(300, 300, 40, 40), "bird", 0.9)];
+
+        let dets = resolve_detections(&stored, detected, None, &[], 1024, 1024).unwrap();
+
+        assert!(
+            dets.iter().any(|d| d.class_name == "manual"),
+            "the user's box must survive: {dets:?}"
+        );
+    }
+
+    #[test]
+    fn a_detection_covering_most_of_a_manual_box_replaces_it() {
+        let manual = BBox::new(100, 100, 600, 600);
+        let stored = vec![Detection::new(manual, "manual", 1.0)];
+        let detected = vec![Detection::new(BBox::new(110, 110, 580, 580), "bird", 0.9)];
+
+        let dets = resolve_detections(&stored, detected, None, &[], 1024, 1024).unwrap();
+
+        assert_eq!(dets.len(), 1, "no duplicate for the same bird: {dets:?}");
+        assert_eq!(dets[0].class_name, "bird");
     }
 
     #[test]
