@@ -35,9 +35,10 @@ pub enum DevicePreference {
 
 impl DevicePreference {
     /// Map a user-facing setting string: `"auto"`, `"gpu"`, anything else =
-    /// CPU. The default is CPU because these models are small enough that GPU
-    /// execution-provider overhead dominates (measured: a 640×640 YOLO11n is
-    /// ~1.7× faster on CPU than DirectML on a modern desktop).
+    /// CPU. The default is CPU so no machine pays for a provider probe it
+    /// cannot use. A capable GPU is faster for detection (measured ~2-2.5x on
+    /// DirectML, tile pass included), but the species model still falls back to
+    /// CPU because DirectML cannot run it; see `docs/TROUBLESHOOTING.md`.
     pub fn from_setting(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => DevicePreference::Auto,

@@ -31,12 +31,21 @@ rebuilds the session on CPU once and retries.
 - To see which provider is active: `RUST_LOG=info birdsorter probe <file>`
   prints `compute: GPU execution provider provider="DirectML"` (or nothing on
   CPU). The Settings ▸ **Compute device** selector (`cpu` / `auto` / `gpu`)
-  controls the preference; **CPU is the default** because these models are small
-  and a GPU EP's overhead can make them *slower* (measured ~1.7× slower for the
-  detector on one machine).
+  controls the preference; **CPU is the default** because a weak integrated GPU
+  can be slower than the CPU (see the measurement below).
+- **Measured on Windows with DirectML** (RTX 5060 Ti, 40 Canon R5 CR3 files):
+  detection is ~2–2.5× faster on the GPU — 389 → 159 ms/img on frames that slice
+  and 100 → 47 ms/img on plain frames — and end-to-end throughput with the
+  species model installed goes 1.25 → 1.65 img/s. A weak integrated GPU can go
+  the other way, which is why the default stays CPU.
 - **DirectML cannot run the iNaturalist ConvNeXt** (`Reshape` node crashes the
-  DML provider). The species classifier detects this, rebuilds on CPU, and
-  continues — so leaving the device on `auto` is safe.
+  DML provider). The species classifier detects this, logs
+  `provider failed; rebuilding the session on CPU`, and continues — so leaving
+  the device on `auto` is safe; the species model just runs on CPU.
+- **A CUDA build is the other option** (`--features gpu-cuda`): it needs CUDA
+  12.8+ and cuDNN 9 on `PATH` (Blackwell cards need 12.8 or newer). Without them
+  it logs e.g. `cublasLt64_12.dll ... missing`, falls back to CPU and finishes the
+  run — that is the tested fallback, not a hang.
 - **macOS CoreML is unverified** — the CoreML execution provider is selected
   automatically but has had no real-hardware testing yet.
 
@@ -77,9 +86,10 @@ rebuilds the session on CPU once and retries.
   `always` is thorough but slow.
 - Analysis decodes the largest embedded preview at long-side **2400** by default;
   grid thumbnails are 512. **Analysis preview -> Camera preview**
-  (Settings -> Performance) decodes the camera's small preview instead: about
-  15x faster and far less memory, but distant birds get fewer pixels and
-  verdicts can change (re-analyze the folder after switching).
+  (Settings -> Performance) decodes the camera's small preview instead: decode
+  drops from ~740 ms to ~20 ms per file and uses far less memory, but distant
+  birds get fewer pixels and verdicts can change (re-analyze the folder after
+  switching). It does not speed up a run that is already inference-bound.
 - The species classifier names only the **chosen subject** during ingest and
   skips crops smaller than **110 px**. Other birds in the frame are named on
   demand in review; a tiny subject leaves the file-level name empty.
@@ -89,6 +99,27 @@ rebuilds the session on CPU once and retries.
   each worker holds a decoded 2400 px image, so fewer workers means a smaller peak
   RSS and less CPU contention. The batch holds at most one decoded image per worker
   (capped at 4), so peak memory scales with that setting.
+
+### Where the time goes
+
+Measured on a 20-core i7-14700F, Canon R5 CR3 files, 10,000-species model
+installed, CPU: **1.2–2.0 img/s** — the low end is a foliage-heavy day where the
+tile pass runs on most frames. Per image:
+
+| Stage | ms/img | Note |
+|---|---|---|
+| decode | ~740 | 2400 px preview; ~20 ms with Camera preview |
+| detect | 25–400 | 25 ms full frame, ~800 ms on a frame that slices |
+| species | ~330 | the biggest fixed cost when the model is installed |
+| features | ~60 | sharpness metrics incl. the FFT |
+| signature | ~9 | burst grouping |
+
+`analyze` prints this line after every run (`stages (ms/img): ...`), so a speed
+change can be measured before it is believed. The CLI can isolate each cost:
+`--no-species` roughly doubles throughput, `--slice off` (with the full-frame
+pass only) roughly doubles it again, and `--limit <n>` keeps a test run short.
+Decode overlaps with analysis, so it only becomes the limit once inference is
+fast enough — four workers sustain ~5 img/s of 2400 px previews.
 
 ## Results look stale
 

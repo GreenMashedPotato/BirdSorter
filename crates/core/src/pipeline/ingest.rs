@@ -67,6 +67,21 @@ impl CancelToken {
     }
 }
 
+/// Wall-clock milliseconds per stage, summed over files. Decode runs on the
+/// worker threads, so its total can exceed the wall clock; the rest is serial.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageTimes {
+    pub decode_ms: u64,
+    /// Part of `decode_ms`: re-reading the file to confirm its content hash.
+    pub hash_ms: u64,
+    pub detect_ms: u64,
+    /// Subject selection and the sharpness feature vector.
+    pub features_ms: u64,
+    pub species_ms: u64,
+    pub signature_ms: u64,
+    pub store_ms: u64,
+}
+
 /// Live progress for a run. `total` is known up front (pending files).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IngestProgress {
@@ -76,6 +91,8 @@ pub struct IngestProgress {
     pub failed: usize,
     pub current_file: String,
     pub failures: Vec<(String, String)>,
+    /// Where the time went. Zero unless the run actually did the work.
+    pub stages: StageTimes,
 }
 
 impl IngestProgress {
@@ -101,6 +118,8 @@ pub struct IngestContext<'a> {
     pub species: Option<&'a dyn SpeciesClassifier>,
     /// Optional eye/head keypoint model; refines `eye_sharpness_worst`.
     pub eye: Option<&'a dyn EyeDetector>,
+    /// Analyse at most this many pending files (benchmarking aid). `None` = all.
+    pub limit: Option<usize>,
 }
 
 impl<'a> IngestContext<'a> {
@@ -118,6 +137,7 @@ impl<'a> IngestContext<'a> {
             decode_threads: 1,
             species: None,
             eye: None,
+            limit: None,
         }
     }
 
@@ -160,7 +180,10 @@ pub fn ingest_folder(
         species_id.as_deref(),
     )?;
 
-    let pending = library::files_needing_analysis(conn, folder_id)?;
+    let mut pending = library::files_needing_analysis(conn, folder_id)?;
+    if let Some(limit) = ctx.limit {
+        pending.truncate(limit);
+    }
     let mut progress = IngestProgress {
         total: pending.len(),
         ..Default::default()
@@ -197,14 +220,16 @@ fn run_sequential(
         }
         progress.current_file = lf.file.filename.clone();
 
-        match catch_decode(|| decode_unchanged(ctx.decoder, &lf)) {
-            Ok(img) => {
+        match catch_decode(|| decode_timed(ctx.decoder, &lf)) {
+            Ok(d) => {
+                progress.stages.decode_ms += d.decode_ms;
+                progress.stages.hash_ms += d.hash_ms;
                 progress.decoded += 1;
                 batch.push(PendingItem {
                     file_id: lf.file.id,
                     name: lf.file.filename.clone(),
                     content_hash: lf.file.content_hash.clone(),
-                    rgb: img.rgb,
+                    rgb: d.image.rgb,
                 });
             }
             Err(e) => {
@@ -247,7 +272,7 @@ fn run_parallel(
 
     let batch_size = ctx.batch_size.max(1);
     let bound = (ctx.decode_threads * 2).max(1);
-    let (tx, rx) = sync_channel::<(usize, std::result::Result<DecodedImage, CoreError>)>(bound);
+    let (tx, rx) = sync_channel::<(usize, std::result::Result<Decoded, CoreError>)>(bound);
     let next_index = AtomicUsize::new(0);
     let total = pending.len();
     let queue = pending;
@@ -272,7 +297,7 @@ fn run_parallel(
                     break;
                 }
                 let lf = &queue[i];
-                let res = catch_decode(|| decode_unchanged(decoder, lf));
+                let res = catch_decode(|| decode_timed(decoder, lf));
                 // Blocking send: backpressure keeps peak memory bounded.
                 if tx.send((i, res)).is_err() {
                     break;
@@ -289,13 +314,15 @@ fn run_parallel(
             let lf = &queue[i];
             progress.current_file = lf.file.filename.clone();
             match res {
-                Ok(img) => {
+                Ok(d) => {
+                    progress.stages.decode_ms += d.decode_ms;
+                    progress.stages.hash_ms += d.hash_ms;
                     progress.decoded += 1;
                     batch.push(PendingItem {
                         file_id: lf.file.id,
                         name: lf.file.filename.clone(),
                         content_hash: lf.file.content_hash.clone(),
-                        rgb: img.rgb,
+                        rgb: d.image.rgb,
                     });
                 }
                 Err(e) => {
@@ -324,7 +351,7 @@ fn run_parallel(
 
 /// Decode through a panic boundary: a single bad file (or a bug in a decoder
 /// backend) must not take down a multi-thousand-file run.
-fn catch_decode(f: impl FnOnce() -> Result<DecodedImage>) -> Result<DecodedImage> {
+fn catch_decode<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => r,
         Err(_) => Err(CoreError::Other(
@@ -336,15 +363,41 @@ fn catch_decode(f: impl FnOnce() -> Result<DecodedImage>) -> Result<DecodedImage
 /// Decode a file only if its bytes still match the content hash the scan
 /// stored. Without this, a replacement between scan and decode would be saved
 /// under the old hash and never re-analysed.
-fn decode_unchanged(decoder: &dyn ImageDecoder, lf: &LibraryFile) -> Result<DecodedImage> {
+///
+/// Also returns how long the verification hash took, so a run can report the
+/// share of decode time spent re-reading the file.
+fn decode_unchanged(
+    decoder: &dyn ImageDecoder,
+    lf: &LibraryFile,
+) -> Result<(DecodedImage, std::time::Duration)> {
     let image = decoder.decode(&lf.absolute_path)?;
+    let hash_started = std::time::Instant::now();
     let current = crate::io::hash::hash_file(&lf.absolute_path)?;
+    let hash = hash_started.elapsed();
     if current != lf.file.content_hash {
         return Err(CoreError::Other(
             "file changed since it was scanned; rescan the folder".into(),
         ));
     }
-    Ok(image)
+    Ok((image, hash))
+}
+
+/// A decoded image plus the I/O time it cost.
+struct Decoded {
+    image: DecodedImage,
+    decode_ms: u64,
+    hash_ms: u64,
+}
+
+/// [`decode_unchanged`] with its timings collected.
+fn decode_timed(decoder: &dyn ImageDecoder, lf: &LibraryFile) -> Result<Decoded> {
+    let started = std::time::Instant::now();
+    let (image, hash) = decode_unchanged(decoder, lf)?;
+    Ok(Decoded {
+        image,
+        decode_ms: started.elapsed().as_millis() as u64,
+        hash_ms: hash.as_millis() as u64,
+    })
 }
 
 /// Analyse one item through a panic boundary, for the same reason as
@@ -413,6 +466,7 @@ fn flush_batch(
         ms = detect_started.elapsed().as_millis() as u64,
         "detect batch"
     );
+    progress.stages.detect_ms += detect_started.elapsed().as_millis() as u64;
 
     for (item, dets) in batch.iter().zip(detections) {
         // Stop promptly on cancel: a long batch must not keep working after the
@@ -420,7 +474,7 @@ fn flush_batch(
         if ctx.cancelled() {
             break;
         }
-        let analyze_started = std::time::Instant::now();
+        let mut times = StageTimes::default();
         let record = match catch_analyze(|| {
             // Keep the user's own boxes: a re-run re-detects the birds, but a
             // drawn box the detector did not re-find must survive the rewrite.
@@ -438,6 +492,7 @@ fn flush_batch(
                 ctx.eye,
                 detector_id.as_deref(),
                 species_id.as_deref(),
+                &mut times,
             )?;
             record.analyzed_content_hash = Some(item.content_hash.clone());
             Ok(record)
@@ -449,7 +504,10 @@ fn flush_batch(
                 continue;
             }
         };
-        let analyze_ms = analyze_started.elapsed().as_millis() as u64;
+        progress.stages.features_ms += times.features_ms;
+        progress.stages.species_ms += times.species_ms;
+        progress.stages.signature_ms += times.signature_ms;
+        let analyze_ms = times.features_ms + times.species_ms + times.signature_ms;
         let store_started = std::time::Instant::now();
         match upsert_analysis(conn, &record) {
             Ok(()) => progress.analyzed += 1,
@@ -460,10 +518,12 @@ fn flush_batch(
                     .push((item.name.clone(), format!("store: {e}")));
             }
         }
+        let store_ms = store_started.elapsed().as_millis() as u64;
+        progress.stages.store_ms += store_ms;
         tracing::debug!(
             file = %item.name,
             analyze_ms,
-            store_ms = store_started.elapsed().as_millis() as u64,
+            store_ms,
             "analysis stage"
         );
     }
@@ -483,16 +543,25 @@ fn analyze_one(
     eye: Option<&dyn EyeDetector>,
     detector_id: Option<&str>,
     species_id: Option<&str>,
+    times: &mut StageTimes,
 ) -> Result<AnalysisRecord> {
     let mut all_bboxes: Vec<BBox> = dets.iter().map(|d| d.bbox).collect();
 
+    let pick_started = std::time::Instant::now();
     let pick = stages::select_subject(rgb, &dets, eye);
     let score = scorer.score(&pick.features)?;
+    times.features_ms = pick_started.elapsed().as_millis() as u64;
 
     let (img_h, img_w, _) = rgb.dim();
+    let species_started = std::time::Instant::now();
     let outcome = stages::classify_species(rgb, &dets, species, pick.bbox)?;
+    times.species_ms = species_started.elapsed().as_millis() as u64;
     let mut per_box = outcome.per_box;
     stages::subject_first(&mut all_bboxes, &mut per_box, pick.bbox);
+
+    let signature_started = std::time::Instant::now();
+    let signature = crate::analysis::burst::signature(rgb).map(|s| s.encode());
+    times.signature_ms = signature_started.elapsed().as_millis() as u64;
 
     Ok(AnalysisRecord {
         file_id,
@@ -508,7 +577,7 @@ fn analyze_one(
         image_width: Some(img_w as u32),
         image_height: Some(img_h as u32),
         analyzed_content_hash: None,
-        signature: crate::analysis::burst::signature(rgb).map(|s| s.encode()),
+        signature,
         detector_id: detector_id.map(str::to_string),
         species_id: species_id.map(str::to_string),
     })
@@ -532,7 +601,7 @@ pub fn analyze_file_with(
     exclude: &[BBox],
 ) -> Result<AnalysisRecord> {
     catch_analyze(|| {
-        let img = decode_unchanged(decoder, file)?;
+        let (img, _hash) = decode_unchanged(decoder, file)?;
         let (h, w, _) = img.rgb.dim();
         let stored = stored_detections(conn, file.file.id)?;
         // A manual box or an exclusion edits the stored set; a fresh detection
@@ -559,6 +628,7 @@ pub fn analyze_file_with(
             species
                 .and_then(|classifier| classifier.identity())
                 .as_deref(),
+            &mut StageTimes::default(),
         )?;
         record.analyzed_content_hash = Some(file.file.content_hash.clone());
         upsert_analysis(conn, &record)?;

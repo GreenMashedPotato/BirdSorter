@@ -249,6 +249,18 @@ provider as the comparison.
 | Peak RAM during ingest | ≤ 1.5 GB without species | ≤ 2 GB |
 | Install size (no models) | **≤ 80 MB** | — |
 
+Measured against this budget on a 20-core i7-14700F, Canon R5 CR3 files, CPU
+only, default settings with the species model installed: **1.2–2.0 img/s**
+(2.0 when the full-frame pass finds the bird, 1.2 on a foliage-heavy day where
+the tile pass runs on most frames; `--no-species` doubles it, `--no-species
+--slice off` roughly doubles it again). The sliced "distant birds" pass and the
+species crop dominate; full-size preview decode (~740 ms/img) overlaps with
+analysis and only binds once inference is faster than about 5 img/s. With
+DirectML on an RTX 5060 Ti the detector is 2–2.5× faster (1.65 img/s with
+species), but the species model falls back to CPU and remains the ceiling.
+`birdsorter analyze` prints the per-stage split. See TROUBLESHOOTING.md →
+"Where the time goes".
+
 ---
 
 ## 8. Where to go next
