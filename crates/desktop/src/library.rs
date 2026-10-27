@@ -380,6 +380,13 @@ pub(crate) async fn trash_files(
                     continue;
                 }
             }
+            // The sidecar is part of the photo's user data. Leaving it behind
+            // would let a later file with the same name inherit its rating.
+            if let Some(sidecar) = xmp::existing_sidecar(&lf.absolute_path) {
+                if let Err(e) = birdsorter_core::io::trash::move_to_trash(&sidecar) {
+                    failures.push(format!("{} (sidecar): {e}", lf.file.filename));
+                }
+            }
             moved += 1;
             mark.push(*id);
         }

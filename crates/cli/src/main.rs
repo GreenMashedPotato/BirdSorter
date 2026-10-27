@@ -1705,10 +1705,12 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         eprintln!("warning: could not read {failure}");
     }
 
-    // `--force` recomputes files that already have results.
+    // `--force` recomputes files that already have results. Marking them stale
+    // keeps the old verdicts (a cancelled run does not lose them) and leaves
+    // user-drawn subject boxes in place.
     if args.force {
-        let cleared = analysis_store::clear_folder(&conn, folder_id)?;
-        println!("--force: cleared {cleared} stored result(s)");
+        let stale = analysis_store::mark_folder_stale(&conn, folder_id)?;
+        println!("--force: marked {stale} stored result(s) stale");
     }
 
     // Warn (do not fail) when the data or cache drive is nearly full, so a long
