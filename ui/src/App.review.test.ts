@@ -141,6 +141,8 @@ vi.mock("./lib/api", async (importOriginal) => {
     onScanProgress: () => Promise.resolve(() => {}),
     onScanDone: () => Promise.resolve(() => {}),
     onScanError: () => Promise.resolve(() => {}),
+    onImportProgress: () => Promise.resolve(() => {}),
+    cancelImport: vi.fn(async () => {}),
     getSettings: vi.fn(async () => actual.DEFAULT_SETTINGS),
     getDetectionSettings: vi.fn(async () => actual.DEFAULT_DETECTION_SETTINGS),
   };
