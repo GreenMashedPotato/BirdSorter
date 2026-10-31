@@ -437,6 +437,11 @@ fn reevaluate(
             .map_err(err)?
             .ok_or_else(|| "file not found".to_string())?;
         let pipe = pipeline_cached(pipeline, &conn)?;
+        // Remember removals so a later full analysis does not re-add them.
+        for bbox in exclude {
+            analysis_store::add_exclusion(&conn, file, *bbox, &lf.file.content_hash)
+                .map_err(err)?;
+        }
         analyze_file_with(
             &conn,
             &lf,
