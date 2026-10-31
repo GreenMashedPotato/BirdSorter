@@ -262,11 +262,13 @@ pub(crate) async fn export_keepers(
                 library::files_with_latest_label(&conn, folder, label).map_err(err)?
             }
         };
+        let ids: Vec<i64> = files.iter().map(|f| f.file.id).collect();
+        let species = analysis_store::species_for_files(&conn, &ids).map_err(err)?;
         let mut items: Vec<ExportItem> = Vec::with_capacity(files.len());
         for f in &files {
             items.push(ExportItem {
                 src: f.absolute_path.clone(),
-                species: species_of(&conn, f.file.id)?,
+                species: species.get(&f.file.id).cloned(),
             });
         }
         let warning = copy_space_warning(mode, &items, Path::new(&dest));
