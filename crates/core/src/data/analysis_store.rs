@@ -510,6 +510,46 @@ pub fn clear_species_override(conn: &Connection, file_id: i64) -> Result<()> {
     })
 }
 
+/// Effective species names for many files in one query.
+///
+/// Export uses this instead of `get_analysis` per file, which parses every
+/// stored feature vector just to read one column. A user override wins; a row
+/// from different bytes is ignored, like [`get_analysis`].
+pub fn species_for_files(
+    conn: &Connection,
+    file_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, String>> {
+    if file_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(file_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT a.file_id,
+                COALESCE(o.species_name, a.species_override_name, a.species_name)
+           FROM analysis a
+           JOIN files f ON f.id = a.file_id
+           LEFT JOIN species_overrides o ON o.file_id = a.file_id
+          WHERE a.file_id IN ({placeholders})
+            AND (a.analyzed_content_hash IS NULL
+                 OR a.analyzed_content_hash = f.content_hash)"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(file_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (file_id, species) = row?;
+        if let Some(species) = species {
+            out.insert(file_id, species);
+        }
+    }
+    Ok(out)
+}
+
 /// Recompute verdicts for every analyzed file in a folder using `score`.
 /// Cheap (no decode). Returns the number of rows rescored.
 pub fn rescore_folder_with(
@@ -805,6 +845,38 @@ mod tests {
         assert_eq!(mark_folder_stale(&conn, folder_id(&conn)).unwrap(), 1);
         let row = get_analysis(&conn, fid).unwrap().expect("verdict survives");
         assert!(row.model_stale);
+    }
+
+    #[test]
+    fn species_for_files_reads_the_effective_name_in_one_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let a = file_id(&conn, dir.path(), "a.cr3");
+        let b = file_id(&conn, dir.path(), "b.cr3");
+        upsert_analysis(&conn, &sample_record(a)).unwrap();
+        upsert_analysis(&conn, &sample_record(b)).unwrap();
+
+        let map = species_for_files(&conn, &[a, b, 999]).unwrap();
+        assert_eq!(map.get(&a).map(String::as_str), Some("Pycnonotus goiavier"));
+        assert_eq!(map.get(&b).map(String::as_str), Some("Pycnonotus goiavier"));
+
+        // The user's override wins.
+        set_species_override(&conn, a, "Copsychus saularis", 0.99).unwrap();
+        assert_eq!(
+            species_for_files(&conn, &[a]).unwrap()[&a],
+            "Copsychus saularis"
+        );
+
+        // A row from different bytes is treated as absent, like `get_analysis`.
+        conn.execute(
+            "UPDATE analysis SET analyzed_content_hash = 'old' WHERE file_id = ?1",
+            [b],
+        )
+        .unwrap();
+        conn.execute("UPDATE files SET content_hash = 'new' WHERE id = ?1", [b])
+            .unwrap();
+        assert!(!species_for_files(&conn, &[b]).unwrap().contains_key(&b));
     }
 
     #[test]

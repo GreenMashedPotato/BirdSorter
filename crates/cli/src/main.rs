@@ -1161,13 +1161,13 @@ fn cmd_export(args: &[String]) -> ExitCode {
             return Ok(());
         }
         // Species for `--by species` / `{species}` comes from the library.
+        let ids: Vec<i64> = files.iter().map(|f| f.file.id).collect();
+        let species = analysis_store::species_for_files(&conn, &ids)?;
         let mut items: Vec<ExportItem> = Vec::with_capacity(files.len());
         for f in &files {
-            let species =
-                analysis_store::get_analysis(&conn, f.file.id)?.and_then(|a| a.species_name);
             items.push(ExportItem {
                 src: f.absolute_path.clone(),
-                species,
+                species: species.get(&f.file.id).cloned(),
             });
         }
         let opts = ExportOptions { layout, rename };
