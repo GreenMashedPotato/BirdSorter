@@ -246,6 +246,11 @@ fn mirror_ratings(
     let mut written = 0usize;
     let mut failed = Vec::new();
     for (_, path, rating) in rows {
+        // An unrated file with no sidecar has nothing to clear; writing
+        // xmp:Rating=0 would create one sidecar per RAW on every reset.
+        if rating <= 0 && xmp::existing_sidecar(&path).is_none() {
+            continue;
+        }
         match xmp::write_rating(&path, rating.clamp(0, 5) as u8) {
             Ok(()) => written += 1,
             Err(e) => failed.push(format!("{}: {e}", path.display())),
@@ -408,6 +413,11 @@ pub(crate) async fn rate_files(
         let mut failed = Vec::new();
         for id in &files {
             if let Some(lf) = library::get_file(&conn, *id).map_err(err)? {
+                // Clearing a rating on a file with no sidecar has nothing to do;
+                // creating an empty one would litter the folder.
+                if rating == 0 && xmp::existing_sidecar(&lf.absolute_path).is_none() {
+                    continue;
+                }
                 match xmp::write_rating(&lf.absolute_path, rating) {
                     Ok(()) => written += 1,
                     Err(e) => failed.push(format!("{}: {e}", lf.file.filename)),
@@ -494,4 +504,42 @@ pub(crate) async fn reset_ratings(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use birdsorter_core::data::db;
+
+    #[test]
+    fn clearing_a_rating_does_not_create_a_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let photos = dir.path().join("photos");
+        std::fs::create_dir(&photos).unwrap();
+        std::fs::write(photos.join("a.cr3"), b"raw").unwrap();
+
+        let conn = db::connect(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let folder = library::add_folder(&conn, &photos).unwrap();
+        library::scan_folder(&conn, folder).unwrap();
+        let id = library::list_files(&conn, folder, false, false).unwrap()[0]
+            .file
+            .id;
+
+        // Clearing a rating must not write a sidecar that was never there.
+        library::set_rating(&conn, &[id], 0).unwrap();
+        let (written, failed) = mirror_ratings(&conn, folder).unwrap();
+        assert_eq!((written, failed.len()), (0, 0));
+        assert!(!photos.join("a.xmp").exists());
+
+        // A real rating still creates and mirrors one.
+        library::set_rating(&conn, &[id], 4).unwrap();
+        let (written, _) = mirror_ratings(&conn, folder).unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(
+            birdsorter_core::io::xmp::read_rating(&photos.join("a.cr3")),
+            Some(4)
+        );
+    }
 }
