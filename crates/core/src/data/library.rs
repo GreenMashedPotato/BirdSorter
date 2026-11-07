@@ -715,7 +715,7 @@ pub fn files_with_latest_label(
             AND f.trashed_at IS NULL
             AND (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id
-                  ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
+                  ORDER BY l.id DESC LIMIT 1) = ?2
           ORDER BY f.filename ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -771,7 +771,8 @@ pub fn list_files_with_details(
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
                 a.species_name, a.subject_class, f.rating, f.flag, f.color,
                 (SELECT l.user_label FROM labels l
-                  WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
+                  WHERE l.file_id = f.id
+                  ORDER BY l.id DESC LIMIT 1) AS user_label
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
@@ -1261,6 +1262,33 @@ mod tests {
             f[0].file.content_hash,
             crate::io::hash::hash_bytes(b"changed content")
         );
+    }
+
+    #[test]
+    fn the_grid_takes_the_newest_label_when_text_timestamps_disagree() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let file_id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+
+        // RFC 3339 text trims trailing zeros, so `.5Z` sorts AFTER `.51Z` as a
+        // string although it is earlier in time. The autoincrement id is the
+        // only reliable "latest".
+        for (label, created_at) in [
+            ("sharp", "2026-01-01T00:00:00.5Z"),
+            ("blurry", "2026-01-01T00:00:00.51Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO labels (file_id, user_label, source, created_at)
+                 VALUES (?1, ?2, 'manual', ?3)",
+                rusqlite::params![file_id, label, created_at],
+            )
+            .unwrap();
+        }
+
+        let rows = list_files_with_details(&conn, fid, false, false).unwrap();
+        assert_eq!(rows[0].user_label.as_deref(), Some("blurry"));
     }
 
     #[test]
