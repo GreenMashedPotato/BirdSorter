@@ -149,9 +149,29 @@ pub(crate) fn capture_day(src: &Path) -> Option<String> {
     day_of(captured.as_deref())
 }
 
+/// Windows refuses these as file or folder names even with an extension
+/// (`CON.cr3` is still the console device).
+fn is_reserved_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit())
+}
+
+/// Prefix a reserved Windows device stem without changing the rest of the name.
+fn avoid_device_name(name: &str) -> String {
+    let stem = name.split('.').next().unwrap_or("");
+    if is_reserved_device_name(stem) {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Make a value safe to use as a path component on Windows and macOS: replace
-/// control characters and reserved characters with `_`, and trim trailing dots
-/// and spaces (which Windows refuses).
+/// control characters and reserved characters with `_`, trim trailing dots and
+/// spaces (which Windows refuses), and prefix a reserved device name.
 fn sanitize(value: &str) -> String {
     let cleaned: String = value
         .chars()
@@ -163,7 +183,13 @@ fn sanitize(value: &str) -> String {
             }
         })
         .collect();
-    cleaned.trim().trim_end_matches(['.', ' ']).to_string()
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']);
+    let stem = cleaned.split('.').next().unwrap_or("");
+    if is_reserved_device_name(stem) {
+        format!("_{cleaned}")
+    } else {
+        cleaned.to_string()
+    }
 }
 
 /// The subfolder an export lands in (`""` for the flat layout).
@@ -183,7 +209,9 @@ fn folder_for(layout: ExportLayout, species: Option<&str>, src: &Path) -> String
 fn file_name_for(pattern: Option<&str>, src: &Path, species: Option<&str>) -> Option<String> {
     let original = src.file_name()?.to_string_lossy().to_string();
     let Some(pattern) = pattern else {
-        return Some(original);
+        // A source from a Unix share can legally be named `CON.cr3`; writing
+        // that on Windows would target the console device.
+        return Some(avoid_device_name(&original));
     };
     let (stem, ext) = match original.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), Some(e.to_string())),
@@ -838,6 +866,23 @@ mod tests {
         assert_eq!(sanitize("a/b\\c:d"), "a_b_c_d");
         assert_eq!(sanitize("trailing. "), "trailing");
         assert_eq!(sanitize("  spaced  "), "spaced");
+    }
+
+    #[test]
+    fn windows_device_names_are_prefixed() {
+        assert_eq!(sanitize("CON"), "_CON");
+        assert_eq!(sanitize("con.cr3"), "_con.cr3");
+        assert_eq!(sanitize("NUL"), "_NUL");
+        assert_eq!(sanitize("COM1"), "_COM1");
+        assert_eq!(sanitize("LPT9.jpg"), "_LPT9.jpg");
+        // Not reserved: a normal name that merely starts with the letters.
+        assert_eq!(sanitize("CONSOLE"), "CONSOLE");
+        assert_eq!(sanitize("COM10"), "COM10");
+
+        // The source name itself can be a device name (a Unix share) and is
+        // copied unchanged by a no-template export.
+        assert_eq!(avoid_device_name("CON.cr3"), "_CON.cr3");
+        assert_eq!(avoid_device_name("a.cr3"), "a.cr3");
     }
 
     #[test]
