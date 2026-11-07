@@ -98,7 +98,9 @@ pub(crate) struct BreakdownDto {
     stored_label: Option<String>,
     stored_score: Option<f32>,
     model_version: Option<String>,
-    explanation: ScoreExplanation,
+    /// The rule trace that produced the stored score, or `None` when a trained
+    /// model produced it (the rules do not explain that verdict).
+    explanation: Option<ScoreExplanation>,
 }
 
 #[derive(Serialize)]
@@ -473,6 +475,25 @@ pub(crate) async fn analysis_detail(
     blocking(move || analysis_detail_impl(&db_path, file)).await
 }
 
+/// The rule trace behind a file's stored verdict. A trained-model verdict has
+/// no rule trace, so the explanation is `None` rather than a misleading one.
+fn score_breakdown_impl(db_path: &Path, file: i64) -> Result<BreakdownDto, String> {
+    let conn = open(db_path)?;
+    let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
+    let Some(a) = analysis else {
+        return Err("file has not been analyzed yet".to_string());
+    };
+    let explanation = (a.model_version == birdsorter_core::analysis::scorer::RULES_MODEL_VERSION)
+        .then(|| explain_rules(&a.features, &ScoreSettings::load_default()));
+    Ok(BreakdownDto {
+        file_id: file,
+        stored_label: Some(a.predicted_label.clone()),
+        stored_score: Some(a.sharpness_score),
+        model_version: Some(a.model_version.clone()),
+        explanation,
+    })
+}
+
 /// Every intermediate value behind a file's sharpness verdict.
 #[tauri::command]
 pub(crate) async fn score_breakdown(
@@ -480,23 +501,7 @@ pub(crate) async fn score_breakdown(
     file: i64,
 ) -> Result<BreakdownDto, String> {
     let db_path = state.db_path.clone();
-    blocking(move || {
-        let conn = open(&db_path)?;
-        let analysis = analysis_store::get_analysis(&conn, file).map_err(err)?;
-        let Some(a) = analysis else {
-            return Err("file has not been analyzed yet".to_string());
-        };
-        let settings = ScoreSettings::load_default();
-        let explanation = explain_rules(&a.features, &settings);
-        Ok(BreakdownDto {
-            file_id: file,
-            stored_label: Some(a.predicted_label.clone()),
-            stored_score: Some(a.sharpness_score),
-            model_version: Some(a.model_version.clone()),
-            explanation,
-        })
-    })
-    .await
+    blocking(move || score_breakdown_impl(&db_path, file)).await
 }
 
 /// Burst groups for a folder (by EXIF capture time).
@@ -810,5 +815,62 @@ mod edit_lock_tests {
         }
         second.join().unwrap().unwrap();
         assert!(!entered_early, "the read-modify-write edits overlapped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use birdsorter_core::analysis::scorer::score_rules;
+    use birdsorter_core::analysis::sharpness::SharpnessFeatures;
+    use birdsorter_core::data::analysis_store::{upsert_analysis, AnalysisRecord};
+    use birdsorter_core::data::db;
+
+    #[test]
+    fn the_breakdown_only_explains_a_rules_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let photos = dir.path().join("photos");
+        std::fs::create_dir(&photos).unwrap();
+        std::fs::write(photos.join("a.jpg"), b"photo").unwrap();
+
+        let conn = db::connect(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let folder = library::add_folder(&conn, &photos).unwrap();
+        library::scan_folder(&conn, folder).unwrap();
+        let mut files = library::list_files(&conn, folder, false, false).unwrap();
+        let lf = files.remove(0);
+
+        let features = SharpnessFeatures {
+            has_subject: true,
+            tenengrad_subject: 0.9,
+            laplacian_subject: 0.9,
+            fft_high_freq_subject: 0.9,
+            subject_edge_distance: 1.0,
+            center_edge_ratio: 1.0,
+            ..Default::default()
+        };
+        let score = score_rules(&features, &ScoreSettings::default());
+        let mut record = AnalysisRecord {
+            file_id: lf.file.id,
+            features,
+            score,
+            analyzed_content_hash: Some(lf.file.content_hash.clone()),
+            ..Default::default()
+        };
+        upsert_analysis(&conn, &record).unwrap();
+        assert!(score_breakdown_impl(&db_path, lf.file.id)
+            .unwrap()
+            .explanation
+            .is_some());
+
+        // A trained-model verdict has no rule trace: the old code still showed
+        // the rules' explanation, which did not match the stored score.
+        record.score.model_version = "trained-test".into();
+        upsert_analysis(&conn, &record).unwrap();
+        assert!(score_breakdown_impl(&db_path, lf.file.id)
+            .unwrap()
+            .explanation
+            .is_none());
     }
 }
