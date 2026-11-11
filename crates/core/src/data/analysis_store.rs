@@ -510,6 +510,52 @@ pub fn clear_species_override(conn: &Connection, file_id: i64) -> Result<()> {
     })
 }
 
+/// Record that the user removed `bbox`, so a later detector pass does not bring
+/// it back. Scoped to the file's content: a replaced photo starts clean.
+pub fn add_exclusion(
+    conn: &Connection,
+    file_id: i64,
+    bbox: BBox,
+    content_hash: &str,
+) -> Result<()> {
+    with_tx(conn, || {
+        // Removing the same box twice is one tombstone, not two.
+        conn.execute(
+            "DELETE FROM subject_exclusions
+              WHERE file_id = ?1 AND content_hash = ?2
+                AND x = ?3 AND y = ?4 AND w = ?5 AND h = ?6",
+            rusqlite::params![file_id, content_hash, bbox.x, bbox.y, bbox.w, bbox.h],
+        )?;
+        conn.execute(
+            "INSERT INTO subject_exclusions
+               (file_id, x, y, w, h, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                file_id,
+                bbox.x,
+                bbox.y,
+                bbox.w,
+                bbox.h,
+                content_hash,
+                now_iso()
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+/// The boxes the user removed from this exact content, in removal order.
+pub fn read_exclusions(conn: &Connection, file_id: i64, content_hash: &str) -> Result<Vec<BBox>> {
+    let mut stmt = conn.prepare(
+        "SELECT x, y, w, h FROM subject_exclusions
+          WHERE file_id = ?1 AND content_hash = ?2 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![file_id, content_hash], |r| {
+        Ok(BBox::new(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Recompute verdicts for every analyzed file in a folder using `score`.
 /// Cheap (no decode). Returns the number of rows rescored.
 pub fn rescore_folder_with(
@@ -716,6 +762,27 @@ mod tests {
         assert_eq!(got.bboxes.len(), 2);
         assert_eq!(got.bboxes[0], BBox::new(10, 20, 30, 40));
         assert_eq!(got.subject_species[0].class.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn subject_exclusions_are_scoped_to_the_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let fid = file_id(&conn, dir.path(), "a.cr3");
+        let removed = BBox::new(10, 20, 30, 40);
+
+        add_exclusion(&conn, fid, removed, "hash-a").unwrap();
+        assert_eq!(
+            read_exclusions(&conn, fid, "hash-a").unwrap(),
+            vec![removed]
+        );
+        // A replaced file must not inherit the old photo's removals.
+        assert!(read_exclusions(&conn, fid, "hash-b").unwrap().is_empty());
+
+        // Removing the same box twice is one tombstone.
+        add_exclusion(&conn, fid, removed, "hash-a").unwrap();
+        assert_eq!(read_exclusions(&conn, fid, "hash-a").unwrap().len(), 1);
     }
 
     #[test]

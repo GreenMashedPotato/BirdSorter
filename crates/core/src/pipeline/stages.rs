@@ -208,6 +208,7 @@ pub(crate) fn resolve_detections(
     detected: Vec<Detection>,
     manual: Option<BBox>,
     exclude: &[BBox],
+    tombstones: &[BBox],
     img_w: i32,
     img_h: i32,
 ) -> Result<Vec<Detection>> {
@@ -219,26 +220,53 @@ pub(crate) fn resolve_detections(
         };
         let mut dets: Vec<Detection> = stored
             .iter()
-            .filter(|d| !exclude.contains(&d.bbox) && !boxes_overlap(&d.bbox, &clamped))
+            .filter(|d| {
+                !is_excluded(&d.bbox, exclude)
+                    // A tombstone suppresses detections, not a hand-drawn box.
+                    && (d.class_name == "manual" || !is_excluded(&d.bbox, tombstones))
+                    && !boxes_overlap(&d.bbox, &clamped)
+            })
             .cloned()
             .collect();
         dets.push(Detection::new(clamped, "manual", 1.0));
         return Ok(dets);
     }
-    if !exclude.is_empty() {
-        return Ok(stored
-            .iter()
-            .filter(|d| !exclude.contains(&d.bbox))
-            .cloned()
-            .collect());
-    }
-    let mut dets = detected;
+    // A fresh pass (or the stored set when there was none) minus the boxes the
+    // user removed, then keep hand-drawn boxes the pass did not re-find. The
+    // exclusions also filter fresh detections, so a removed false positive
+    // stays gone on every later analysis.
+    let mut dets = if detected.is_empty() {
+        stored.to_vec()
+    } else {
+        detected
+    };
+    dets.retain(|d| !is_excluded(&d.bbox, exclude) && !is_excluded(&d.bbox, tombstones));
     for d in stored.iter().filter(|d| d.class_name == "manual") {
-        if !dets.iter().any(|e| covers_manual(&e.bbox, &d.bbox)) {
+        // A tombstone never drops a box the user drew; only this edit's own
+        // removal (or the box being genuinely gone) does.
+        if !is_excluded(&d.bbox, exclude) && !dets.iter().any(|e| covers_manual(&e.bbox, &d.bbox)) {
             dets.push(d.clone());
         }
     }
     Ok(dets)
+}
+
+/// True when `bbox` is one the user removed. Exact equality covers the same
+/// set; IoU covers a re-detection that shifted slightly after a model change.
+fn is_excluded(bbox: &BBox, exclusions: &[BBox]) -> bool {
+    exclusions.iter().any(|e| e == bbox || iou(e, bbox) >= 0.5)
+}
+
+fn iou(a: &BBox, b: &BBox) -> f64 {
+    let inter = intersection(a, b);
+    if inter == 0 {
+        return 0.0;
+    }
+    let union = a.area() + b.area() - inter;
+    if union <= 0 {
+        return 0.0;
+    }
+    inter as f64 / union as f64
 }
 
 /// True when `detected` is the same subject as the user's `manual` box: high
@@ -300,13 +328,60 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_detection_is_not_re_added_by_a_fresh_pass() {
+        let removed = BBox::new(10, 10, 50, 50);
+        let kept = BBox::new(200, 200, 50, 50);
+        let stored = vec![Detection::new(removed, "bird", 0.9)];
+        let detected = vec![
+            Detection::new(removed, "bird", 0.9),
+            Detection::new(kept, "bird", 0.8),
+        ];
+
+        let dets =
+            resolve_detections(&stored, detected, None, &[removed], &[], 1024, 1024).unwrap();
+
+        assert_eq!(dets.len(), 1, "{dets:?}");
+        assert_eq!(dets[0].bbox, kept);
+    }
+
+    #[test]
+    fn a_shifted_redetection_of_a_removed_box_is_excluded() {
+        let removed = BBox::new(10, 10, 50, 50);
+        // The same false positive after a model change: same place, 2 px off.
+        let shifted = BBox::new(12, 12, 50, 50);
+        let detected = vec![
+            Detection::new(shifted, "bird", 0.9),
+            Detection::new(BBox::new(300, 300, 50, 50), "bird", 0.8),
+        ];
+
+        let dets = resolve_detections(&[], detected, None, &[removed], &[], 1024, 1024).unwrap();
+
+        assert_eq!(dets.len(), 1, "{dets:?}");
+        assert_eq!(dets[0].bbox, BBox::new(300, 300, 50, 50));
+    }
+
+    #[test]
+    fn a_manual_box_drawn_over_a_tombstone_is_kept() {
+        let manual = BBox::new(100, 100, 60, 60);
+        let stored = vec![Detection::new(manual, "manual", 1.0)];
+        let detected = vec![Detection::new(manual, "bird", 0.9)];
+
+        let dets = resolve_detections(&stored, detected, None, &[], &[manual], 1024, 1024).unwrap();
+
+        // The tombstone suppresses the detector's box, but a box the user drew
+        // later is user data and must survive a full re-analysis.
+        assert!(dets.iter().any(|d| d.class_name == "manual"));
+        assert!(!dets.iter().any(|d| d.class_name == "bird"));
+    }
+
+    #[test]
     fn a_small_detection_inside_a_manual_box_does_not_drop_it() {
         let manual = BBox::new(100, 100, 600, 600);
         let stored = vec![Detection::new(manual, "manual", 1.0)];
         // A second, much smaller bird inside the large hand-drawn box.
         let detected = vec![Detection::new(BBox::new(300, 300, 40, 40), "bird", 0.9)];
 
-        let dets = resolve_detections(&stored, detected, None, &[], 1024, 1024).unwrap();
+        let dets = resolve_detections(&stored, detected, None, &[], &[], 1024, 1024).unwrap();
 
         assert!(
             dets.iter().any(|d| d.class_name == "manual"),
@@ -320,7 +395,7 @@ mod tests {
         let stored = vec![Detection::new(manual, "manual", 1.0)];
         let detected = vec![Detection::new(BBox::new(110, 110, 580, 580), "bird", 0.9)];
 
-        let dets = resolve_detections(&stored, detected, None, &[], 1024, 1024).unwrap();
+        let dets = resolve_detections(&stored, detected, None, &[], &[], 1024, 1024).unwrap();
 
         assert_eq!(dets.len(), 1, "no duplicate for the same bird: {dets:?}");
         assert_eq!(dets[0].class_name, "bird");
@@ -450,6 +525,7 @@ mod tests {
             vec![],
             Some(BBox::new(20, 20, 90, 90)),
             &[],
+            &[],
             1000,
             1000,
         )
@@ -470,7 +546,7 @@ mod tests {
             Detection::new(a, "bird", 0.9),
             Detection::new(b, "bird", 0.9),
         ];
-        let dets = resolve_detections(&stored, vec![], None, &[a], 1000, 1000).unwrap();
+        let dets = resolve_detections(&stored, vec![], None, &[a], &[], 1000, 1000).unwrap();
         assert_eq!(dets.len(), 1);
         assert_eq!(dets[0].bbox, b);
     }
@@ -480,7 +556,7 @@ mod tests {
         let manual = BBox::new(400, 400, 50, 50);
         let stored = vec![Detection::new(manual, "manual", 1.0)];
         let detected = vec![Detection::new(BBox::new(10, 10, 80, 80), "bird", 0.9)];
-        let dets = resolve_detections(&stored, detected, None, &[], 1000, 1000).unwrap();
+        let dets = resolve_detections(&stored, detected, None, &[], &[], 1000, 1000).unwrap();
         assert_eq!(dets.len(), 2);
         assert!(dets
             .iter()
@@ -492,7 +568,7 @@ mod tests {
         let manual = BBox::new(400, 400, 50, 50);
         let stored = vec![Detection::new(manual, "manual", 1.0)];
         let detected = vec![Detection::new(BBox::new(402, 402, 50, 50), "bird", 0.9)];
-        let dets = resolve_detections(&stored, detected, None, &[], 1000, 1000).unwrap();
+        let dets = resolve_detections(&stored, detected, None, &[], &[], 1000, 1000).unwrap();
         assert_eq!(dets.len(), 1, "an overlapping manual box is not re-added");
     }
 
@@ -502,6 +578,7 @@ mod tests {
             &[],
             vec![],
             Some(BBox::new(5000, 5000, 10, 10)),
+            &[],
             &[],
             100,
             100,
