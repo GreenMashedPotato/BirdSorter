@@ -6,6 +6,8 @@
     addFolder,
     removeFolder,
     importFolder,
+    cancelImport,
+    onImportProgress,
     startScan,
     cancelScan,
     onScanProgress,
@@ -917,10 +919,13 @@
       busy = true;
       status = `importing from ${folderLabel(source)}…`;
       const r = await importFolder(source, dest);
+      progress = null;
       const failed = r.failed.length ? ` · ${r.failed.length} failed` : "";
       busy = false;
       await addFolderAndScan(dest);
-      status = `imported ${r.copied} file${r.copied === 1 ? "" : "s"} into ${folderLabel(dest)} (${r.skipped} already there)${failed}`;
+      status = r.cancelled
+        ? `import stopped after ${r.copied} file${r.copied === 1 ? "" : "s"}${failed}`
+        : `imported ${r.copied} file${r.copied === 1 ? "" : "s"} into ${folderLabel(dest)} (${r.skipped} already there)${failed}`;
     } catch (e) {
       status = `error: ${e}`;
       busy = false;
@@ -1012,9 +1017,11 @@
 
   async function cancel() {
     const scanning = progress?.label === "Scanning";
+    const importing = progress?.label === "Importing";
     try {
       // The progress label tells us which background job to stop.
       if (scanning) await cancelScan();
+      else if (importing) await cancelImport();
       else await cancelAnalysis();
       status = "stopping…";
       // A single slow file (or a rawler hang) can delay the backend's "stopped"
@@ -1401,6 +1408,14 @@
         busy = false;
         progress = null;
         status = `scan error: ${message}`;
+      }),
+      onImportProgress((p) => {
+        progress = { label: "Importing", done: p.done, total: p.total };
+        status = p.total
+          ? `importing ${p.done}/${p.total} · copied ${p.copied}, skipped ${p.skipped}${
+              p.failed ? `, failed ${p.failed}` : ""
+            } · ${p.current}`
+          : "importing…";
       }),
       onOpenFile((path) => void openFilePath(path)),
     ];

@@ -172,14 +172,37 @@ export interface ImportReport {
   bytes: number;
   /** `"<path>: <reason>"` for files that could not be copied. */
   failed: string[];
+  /** The user stopped the run; the copies made so far are kept. */
+  cancelled: boolean;
+}
+
+/** Live import progress, after each file. */
+export interface ImportProgress {
+  done: number;
+  total: number;
+  copied: number;
+  skipped: number;
+  failed: number;
+  current: string;
 }
 
 /**
  * Copy photos from a card/folder into the library, grouped by capture day.
  * Originals are copied, never moved, and nothing is overwritten.
+ * Progress arrives through `onImportProgress`; `cancelImport` stops it.
  */
 export async function importFolder(source: string, dest: string): Promise<ImportReport> {
   return invoke("import_folder", { source, dest });
+}
+
+/** Stop an in-flight import; files already copied stay in the destination. */
+export async function cancelImport(): Promise<void> {
+  return invoke("cancel_import");
+}
+
+/** Subscribe to import progress. */
+export function onImportProgress(cb: (p: ImportProgress) => void): Promise<UnlistenFn> {
+  return listen<ImportProgress>("import-progress", (e) => cb(e.payload));
 }
 
 /** Start a scan. It runs on a background thread: progress arrives through

@@ -27,6 +27,19 @@ pub struct ImportReport {
     pub bytes: u64,
     /// `(source path, reason)` for files that could not be copied.
     pub failed: Vec<(PathBuf, String)>,
+    /// The user stopped the run; the files copied so far are kept.
+    pub cancelled: bool,
+}
+
+/// Live progress for an import, after each file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportProgress {
+    pub done: usize,
+    pub total: usize,
+    pub copied: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub current: String,
 }
 
 /// Import options.
@@ -97,6 +110,111 @@ fn directory_names<'a>(
 /// A file that cannot be copied is recorded in [`ImportReport::failed`] and the
 /// run continues; only an unusable source or destination is a hard error.
 pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<ImportReport> {
+    import_folder_streaming(src, dest, opts, &|| false, &mut |_| {})
+}
+
+/// Copy one file, updating `report`. Split out so the caller can report
+/// progress uniformly no matter which branch this takes.
+fn import_one(
+    path: &Path,
+    dest: &Path,
+    opts: &ImportOptions,
+    report: &mut ImportReport,
+    directory_cache: &mut HashMap<PathBuf, Vec<String>>,
+) {
+    let Some(name) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+    else {
+        report
+            .failed
+            .push((path.to_path_buf(), "unreadable file name".to_string()));
+        return;
+    };
+    let dir = if opts.by_day {
+        dest.join(day_folder(path))
+    } else {
+        dest.to_path_buf()
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        report.failed.push((path.to_path_buf(), e.to_string()));
+        return;
+    }
+
+    // A name collision with different content gets a ` (1)` suffix. On a
+    // later run that copy is the same photo, so check every existing
+    // candidate — comparing only the bare name would import it again as
+    // ` (2)`, ` (3)`, … every time the card is read.
+    let source_size = std::fs::metadata(path).ok().map(|m| m.len());
+    let file_names = match directory_names(&dir, directory_cache) {
+        Ok(file_names) => file_names,
+        Err(e) => {
+            report.failed.push((path.to_path_buf(), e.to_string()));
+            return;
+        }
+    };
+    let candidates = existing_candidates(&dir, &name, file_names);
+    let mut source_hash: Option<String> = None;
+    let mut already_imported = false;
+    for candidate in candidates {
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if Some(meta.len()) != source_size {
+            continue;
+        }
+        if source_hash.is_none() {
+            source_hash = hash_file(path).ok();
+        }
+        if let Some(hash) = &source_hash {
+            if hash_file(&candidate).ok().as_deref() == Some(hash.as_str()) {
+                already_imported = true;
+                break;
+            }
+        }
+    }
+    if already_imported {
+        report.skipped += 1;
+        return;
+    }
+
+    let target = match unique_target(&dir, &name) {
+        Ok(target) => target,
+        Err(e) => {
+            report.failed.push((path.to_path_buf(), e.to_string()));
+            return;
+        }
+    };
+    match copy_atomic(path, &target) {
+        Ok(()) => {
+            report.copied += 1;
+            report.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+            // Later sources can share this name; let the cached listing see
+            // the copy this run just made.
+            if let (Some(file_name), Some(names)) = (
+                target.file_name().and_then(|name| name.to_str()),
+                directory_cache.get_mut(&dir),
+            ) {
+                names.push(file_name.to_string());
+            }
+        }
+        Err(e) => report.failed.push((path.to_path_buf(), e.to_string())),
+    }
+}
+
+/// [`import_folder`] with cooperative cancellation and per-file progress.
+///
+/// Files copied before a cancel are kept; the destination is always a valid
+/// partial import. The day subfolder is computed before the progress callback,
+/// so a cancelled run never leaves a half-copied file (the copy is atomic).
+pub fn import_folder_streaming(
+    src: &Path,
+    dest: &Path,
+    opts: &ImportOptions,
+    cancel: &dyn Fn() -> bool,
+    on_progress: &mut dyn FnMut(&ImportProgress),
+) -> Result<ImportReport> {
     if !src.is_dir() {
         return Err(CoreError::config(format!(
             "{} is not a folder",
@@ -104,6 +222,12 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
         )));
     }
     std::fs::create_dir_all(dest).map_err(|e| CoreError::io(dest, e))?;
+    if cancel() {
+        return Ok(ImportReport {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
 
     let mut sources: Vec<PathBuf> = Vec::new();
     for entry in WalkDir::new(src).follow_links(false) {
@@ -133,88 +257,31 @@ pub fn import_folder(src: &Path, dest: &Path, opts: &ImportOptions) -> Result<Im
     }
     sources.sort();
 
+    let total = sources.len();
     let mut report = ImportReport::default();
     let mut directory_cache = HashMap::new();
-    for path in sources {
-        let Some(name) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(str::to_string)
-        else {
-            report
-                .failed
-                .push((path, "unreadable file name".to_string()));
-            continue;
-        };
-        let dir = if opts.by_day {
-            dest.join(day_folder(&path))
-        } else {
-            dest.to_path_buf()
-        };
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            report.failed.push((path, e.to_string()));
-            continue;
+    on_progress(&ImportProgress {
+        total,
+        ..Default::default()
+    });
+    for (index, path) in sources.iter().enumerate() {
+        if cancel() {
+            report.cancelled = true;
+            break;
         }
-
-        // A name collision with different content gets a ` (1)` suffix. On a
-        // later run that copy is the same photo, so check every existing
-        // candidate — comparing only the bare name would import it again as
-        // ` (2)`, ` (3)`, … every time the card is read.
-        let source_size = std::fs::metadata(&path).ok().map(|m| m.len());
-        let file_names = match directory_names(&dir, &mut directory_cache) {
-            Ok(file_names) => file_names,
-            Err(e) => {
-                report.failed.push((path, e.to_string()));
-                continue;
-            }
-        };
-        let candidates = existing_candidates(&dir, &name, file_names);
-        let mut source_hash: Option<String> = None;
-        let mut already_imported = false;
-        for candidate in candidates {
-            let Ok(meta) = std::fs::metadata(&candidate) else {
-                continue;
-            };
-            if Some(meta.len()) != source_size {
-                continue;
-            }
-            if source_hash.is_none() {
-                source_hash = hash_file(&path).ok();
-            }
-            if let Some(hash) = &source_hash {
-                if hash_file(&candidate).ok().as_deref() == Some(hash.as_str()) {
-                    already_imported = true;
-                    break;
-                }
-            }
-        }
-        if already_imported {
-            report.skipped += 1;
-            continue;
-        }
-
-        let target = match unique_target(&dir, &name) {
-            Ok(target) => target,
-            Err(e) => {
-                report.failed.push((path, e.to_string()));
-                continue;
-            }
-        };
-        match copy_atomic(&path, &target) {
-            Ok(()) => {
-                report.copied += 1;
-                report.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-                // Later sources can share this name; let the cached listing see
-                // the copy this run just made.
-                if let (Some(file_name), Some(names)) = (
-                    target.file_name().and_then(|name| name.to_str()),
-                    directory_cache.get_mut(&dir),
-                ) {
-                    names.push(file_name.to_string());
-                }
-            }
-            Err(e) => report.failed.push((path, e.to_string())),
-        }
+        import_one(path, dest, opts, &mut report, &mut directory_cache);
+        on_progress(&ImportProgress {
+            done: index + 1,
+            total,
+            copied: report.copied,
+            skipped: report.skipped,
+            failed: report.failed.len(),
+            current: path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        });
     }
     Ok(report)
 }
@@ -360,6 +427,35 @@ mod tests {
         assert_eq!(report.copied, 1);
         assert_eq!(report.skipped, 1);
         assert!(!dest.path().join("a (1).cr3").exists());
+    }
+
+    #[test]
+    fn streaming_import_reports_progress_and_stops_on_cancel() {
+        let src = source_with(&[("a.cr3", b"a"), ("b.cr3", b"b"), ("c.cr3", b"c")]);
+        let dest = tempfile::tempdir().unwrap();
+        let cancelled = std::cell::Cell::new(false);
+        let mut updates = Vec::new();
+
+        let report = import_folder_streaming(
+            src.path(),
+            dest.path(),
+            &ImportOptions::default(),
+            &|| cancelled.get(),
+            &mut |p| {
+                updates.push((p.done, p.total, p.copied));
+                if p.copied >= 1 {
+                    cancelled.set(true);
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(report.cancelled);
+        assert_eq!(report.copied, 1, "{:?}", report.failed);
+        assert_eq!(updates.first(), Some(&(0, 3, 0)));
+        assert_eq!(updates.last(), Some(&(1, 3, 1)));
+        assert!(dest.path().join("undated").join("a.cr3").is_file());
+        assert!(!dest.path().join("undated").join("b.cr3").exists());
     }
 
     #[test]
