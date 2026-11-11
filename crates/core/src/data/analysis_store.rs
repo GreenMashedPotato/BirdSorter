@@ -330,6 +330,10 @@ fn read_subject_boxes(
 /// A row analyzed from different bytes (the file was replaced) is treated as
 /// absent: the caller must not show the old photo's verdict for the new one.
 pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRow>> {
+    // One read snapshot for the analysis row and the normalized box table: a
+    // concurrent write must not pair one verdict with another's geometry.
+    // Deferred/read-only, so it takes no write lock.
+    let tx = conn.unchecked_transaction()?;
     let row = conn
         .query_row(
             "SELECT features_json, sharpness_score, subject_bbox_json,
@@ -427,7 +431,7 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         subject_species = rebuilt;
     }
 
-    Ok(Some(AnalysisRow {
+    let row = AnalysisRow {
         file_id,
         features: SharpnessFeatures::from_json(&features_json)?,
         sharpness_score,
@@ -451,7 +455,9 @@ pub fn get_analysis(conn: &Connection, file_id: i64) -> Result<Option<AnalysisRo
         species_id,
         model_stale,
         analyzed_content_hash,
-    }))
+    };
+    tx.commit()?;
+    Ok(Some(row))
 }
 
 /// Persist a user-selected species override without touching other fields.
