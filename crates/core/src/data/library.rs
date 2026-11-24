@@ -256,6 +256,24 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
             r.get(0)
         })?;
     with_tx(conn, || {
+        // Prepared once: a first scan writes tens of thousands of rows, and
+        // `Connection::execute` re-parses the SQL for every call.
+        let mut insert = conn.prepare(
+            "INSERT INTO files
+               (folder_id, relative_path, filename, content_hash,
+                filesize, mtime, format, imported_at, captured_at, rating)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        let mut update = conn.prepare(
+            "UPDATE files
+                SET relative_path = ?1, filename = ?2, content_hash = ?3,
+                    filesize = ?4, mtime = ?5, captured_at = ?6,
+                    trashed_at = NULL
+              WHERE id = ?7",
+        )?;
+        let mut update_rating =
+            conn.prepare("UPDATE files SET rating = ?1 WHERE id = ?2 AND rating = 0")?;
+
         for op in pending.iter() {
             match op {
                 Pending::Insert {
@@ -269,24 +287,18 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                 } => {
                     let path = PathBuf::from(&base).join(rel);
                     let rating = crate::io::xmp::read_rating(&path).unwrap_or(0) as i64;
-                    conn.execute(
-                        "INSERT INTO files
-                           (folder_id, relative_path, filename, content_hash,
-                            filesize, mtime, format, imported_at, captured_at, rating)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                        rusqlite::params![
-                            folder_id,
-                            rel,
-                            name,
-                            hash,
-                            size,
-                            mtime,
-                            format,
-                            now_iso(),
-                            captured_at,
-                            rating
-                        ],
-                    )?;
+                    insert.execute(rusqlite::params![
+                        folder_id,
+                        rel,
+                        name,
+                        hash,
+                        size,
+                        mtime,
+                        format,
+                        now_iso(),
+                        captured_at,
+                        rating
+                    ])?;
                 }
                 Pending::Update {
                     id,
@@ -299,22 +311,20 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                 } => {
                     // `rel`/`name` are the same for a content change and new for
                     // a rename matched by hash (the row keeps its analysis).
-                    conn.execute(
-                        "UPDATE files
-                            SET relative_path = ?1, filename = ?2, content_hash = ?3,
-                                filesize = ?4, mtime = ?5, captured_at = ?6,
-                                trashed_at = NULL
-                          WHERE id = ?7",
-                        rusqlite::params![rel, name, hash, size, mtime, captured_at, id],
-                    )?;
+                    update.execute(rusqlite::params![
+                        rel,
+                        name,
+                        hash,
+                        size,
+                        mtime,
+                        captured_at,
+                        id
+                    ])?;
                     if let Some(rating) =
                         crate::io::xmp::read_rating(&PathBuf::from(&base).join(rel))
                             .filter(|rating| *rating > 0)
                     {
-                        conn.execute(
-                            "UPDATE files SET rating = ?1 WHERE id = ?2 AND rating = 0",
-                            rusqlite::params![rating, id],
-                        )?;
+                        update_rating.execute(rusqlite::params![rating, id])?;
                     }
                 }
             }
@@ -748,7 +758,7 @@ pub fn files_with_latest_label(
             AND f.trashed_at IS NULL
             AND (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id
-                  ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
+                  ORDER BY l.id DESC LIMIT 1) = ?2
           ORDER BY f.filename ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -804,7 +814,8 @@ pub fn list_files_with_details(
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
                 a.species_name, a.subject_class, f.rating, f.flag, f.color,
                 (SELECT l.user_label FROM labels l
-                  WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
+                  WHERE l.file_id = f.id
+                  ORDER BY l.id DESC LIMIT 1) AS user_label
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
@@ -880,12 +891,10 @@ pub fn get_file(conn: &Connection, file_id: i64) -> Result<Option<LibraryFile>> 
 pub fn set_trashed(conn: &Connection, file_ids: &[i64], trashed: bool) -> Result<usize> {
     let stamp = if trashed { Some(now_iso()) } else { None };
     with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET trashed_at = ?1 WHERE id = ?2")?;
         let mut n = 0;
         for id in file_ids {
-            n += conn.execute(
-                "UPDATE files SET trashed_at = ?1 WHERE id = ?2",
-                rusqlite::params![stamp, id],
-            )?;
+            n += stmt.execute(rusqlite::params![stamp, id])?;
         }
         Ok(n)
     })
@@ -909,9 +918,10 @@ pub fn reconcile_trashed(conn: &Connection, folder_id: i64) -> Result<usize> {
 
     let mut restored = 0;
     with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET trashed_at = NULL WHERE id = ?1")?;
         for (id, path) in &rows {
             if path.exists() {
-                conn.execute("UPDATE files SET trashed_at = NULL WHERE id = ?1", [id])?;
+                stmt.execute([id])?;
                 restored += 1;
             }
         }
@@ -1294,6 +1304,33 @@ mod tests {
             f[0].file.content_hash,
             crate::io::hash::hash_bytes(b"changed content")
         );
+    }
+
+    #[test]
+    fn the_grid_takes_the_newest_label_when_text_timestamps_disagree() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let file_id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+
+        // RFC 3339 text trims trailing zeros, so `.5Z` sorts AFTER `.51Z` as a
+        // string although it is earlier in time. The autoincrement id is the
+        // only reliable "latest".
+        for (label, created_at) in [
+            ("sharp", "2026-01-01T00:00:00.5Z"),
+            ("blurry", "2026-01-01T00:00:00.51Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO labels (file_id, user_label, source, created_at)
+                 VALUES (?1, ?2, 'manual', ?3)",
+                rusqlite::params![file_id, label, created_at],
+            )
+            .unwrap();
+        }
+
+        let rows = list_files_with_details(&conn, fid, false, false).unwrap();
+        assert_eq!(rows[0].user_label.as_deref(), Some("blurry"));
     }
 
     #[test]

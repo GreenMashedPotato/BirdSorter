@@ -229,6 +229,7 @@ fn run_sequential(
 ) -> Result<()> {
     let batch_size = ctx.batch_size.max(1);
     let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
+    let mut health = DetectorHealth::default();
 
     for lf in pending {
         if ctx.cancelled() {
@@ -257,13 +258,19 @@ fn run_sequential(
         }
 
         if batch.len() >= batch_size {
-            flush_batch(conn, ctx, &mut batch, progress)?;
+            flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+            if health.broken() {
+                return Err(health.broken_error());
+            }
         }
         on_progress(progress);
     }
 
     if !ctx.cancelled() {
-        flush_batch(conn, ctx, &mut batch, progress)?;
+        flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+        if health.broken() {
+            return Err(health.broken_error());
+        }
     } else {
         batch.clear();
     }
@@ -324,6 +331,7 @@ fn run_parallel(
 
         let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
         let mut received = 0usize;
+        let mut health = DetectorHealth::default();
         while received < total {
             let Ok((i, res)) = rx.recv() else { break };
             received += 1;
@@ -349,7 +357,10 @@ fn run_parallel(
                 }
             }
             if batch.len() >= batch_size {
-                flush_batch(conn, ctx, &mut batch, progress)?;
+                flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+                if health.broken() {
+                    return Err(health.broken_error());
+                }
             }
             on_progress(progress);
             if ctx.cancelled() {
@@ -357,7 +368,10 @@ fn run_parallel(
             }
         }
         if !ctx.cancelled() {
-            flush_batch(conn, ctx, &mut batch, progress)?;
+            flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+            if health.broken() {
+                return Err(health.broken_error());
+            }
         } else {
             batch.clear();
         }
@@ -436,11 +450,45 @@ fn fail_batch(batch: &[PendingItem], progress: &mut IngestProgress, message: Str
     }
 }
 
+/// A permanently broken detector must not make the run decode every remaining
+/// file just to record one failure each.
+const MAX_CONSECUTIVE_DETECTOR_FAILURES: usize = 3;
+
+/// Consecutive batch-level detector failures. A batch that detects normally
+/// resets the count, so one odd image does not stop the run.
+#[derive(Default)]
+struct DetectorHealth {
+    consecutive: usize,
+}
+
+impl DetectorHealth {
+    fn failed_batch(&mut self) {
+        self.consecutive += 1;
+    }
+
+    fn good_batch(&mut self) {
+        self.consecutive = 0;
+    }
+
+    fn broken(&self) -> bool {
+        self.consecutive >= MAX_CONSECUTIVE_DETECTOR_FAILURES
+    }
+
+    fn broken_error(&self) -> CoreError {
+        CoreError::Other(format!(
+            "the detector failed on {} batches in a row; stopped so the remaining \
+             files stay pending",
+            self.consecutive
+        ))
+    }
+}
+
 fn flush_batch(
     conn: &Connection,
     ctx: &IngestContext<'_>,
     batch: &mut Vec<PendingItem>,
     progress: &mut IngestProgress,
+    health: &mut DetectorHealth,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
@@ -463,20 +511,24 @@ fn flush_batch(
                     batch.len()
                 ),
             );
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
         Ok(Err(e)) => {
             fail_batch(batch, progress, format!("detect: {e}"));
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
         Err(_) => {
             fail_batch(batch, progress, "detect: detector panicked".to_string());
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
     };
+    health.good_batch();
     tracing::debug!(
         images = batch.len(),
         ms = detect_started.elapsed().as_millis() as u64,
@@ -1039,6 +1091,31 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn a_permanently_failing_detector_stops_the_run() {
+        let (_dir, conn) = setup(5);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector {
+            fail: true,
+            ..FakeDetector::new(vec![])
+        };
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext {
+            batch_size: 1,
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        let err = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap_err();
+        assert!(err.to_string().contains("detector failed"), "{err}");
+        // Fewer decoder passes than files: the run stopped instead of grinding
+        // through the whole folder, and nothing was written.
+        assert_eq!(
+            library::files_needing_analysis(&conn, fid).unwrap().len(),
+            5
+        );
     }
 
     #[test]

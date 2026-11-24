@@ -179,7 +179,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
                 [SCHEMA_VERSION],
             )?;
         }
-        Some(v) if v < SCHEMA_VERSION => migrate(conn, v)?,
+        Some(v) if v < SCHEMA_VERSION => {
+            backup_before_migrate(conn, v);
+            migrate(conn, v)?;
+        }
         Some(v) if v > SCHEMA_VERSION => {
             return Err(CoreError::config(format!(
                 "DB schema version {v} is newer than this build ({SCHEMA_VERSION})"
@@ -188,6 +191,43 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         Some(_) => {}
     }
     Ok(())
+}
+
+/// Copy the library file aside before a version migration.
+///
+/// The migration itself is transactional, so a crash rolls it back; this guards
+/// the other failure mode, a logic bug in a step that commits successfully and
+/// cannot be reversed. The copy is made after a WAL checkpoint so it contains
+/// every committed row (the `-wal` file is not copied).
+fn backup_before_migrate(conn: &Connection, from: i64) {
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let Some(path) = path.filter(|p| !p.is_empty()) else {
+        return; // in-memory database
+    };
+    let backup = Path::new(&path).with_extension(format!("db.v{from}.bak"));
+    if backup.exists() {
+        return;
+    }
+    if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        tracing::warn!(error = %e, "could not checkpoint before the migration backup");
+    }
+    match std::fs::copy(&path, &backup) {
+        Ok(_) => {
+            tracing::info!(backup = %backup.display(), "backed up the library before migrating")
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            backup = %backup.display(),
+            "could not back up the library before migrating"
+        ),
+    }
 }
 
 fn migrate(conn: &Connection, from: i64) -> Result<()> {
@@ -474,6 +514,30 @@ pub fn with_tx<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migration_backup_copies_the_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = connect(&path).unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO folders (path, added_at) VALUES ('x', 'now')",
+            [],
+        )
+        .unwrap();
+
+        backup_before_migrate(&conn, 19);
+
+        let backup = dir.path().join("library.db.v19.bak");
+        assert!(backup.is_file());
+        // The copy is a usable library with the committed row.
+        let copy = connect(&backup).unwrap();
+        let n: i64 = copy
+            .query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
 
     #[test]
     fn fresh_init_creates_tables_and_stamps_version() {

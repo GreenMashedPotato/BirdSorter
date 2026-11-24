@@ -1168,6 +1168,7 @@ fn cmd_export(args: &[String]) -> ExitCode {
             items.push(ExportItem {
                 src: f.absolute_path.clone(),
                 species,
+                captured_at: f.file.captured_at.clone(),
             });
         }
         let opts = ExportOptions { layout, rename };

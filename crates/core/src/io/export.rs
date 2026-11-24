@@ -8,6 +8,7 @@
 //! The destination can be organised: flat (default), one subfolder per capture
 //! day, or one per species. Names can be rebuilt from a template.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -77,11 +78,14 @@ impl ExportLayout {
 }
 
 /// One file to export, plus metadata that can't be read from the file itself
-/// (the species comes from the library, not from EXIF).
+/// (the species and capture time come from the library, not from EXIF).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExportItem {
     pub src: PathBuf,
     pub species: Option<String>,
+    /// Capture time (`YYYY-MM-DDTHH:MM:SS`) the caller already has. `Some("")`
+    /// means "known to have none"; `None` falls back to reading the file.
+    pub captured_at: Option<String>,
 }
 
 /// Layout and optional rename template.
@@ -109,6 +113,18 @@ pub struct ExportReport {
 /// This is only a hint: another process can claim the name after the check.
 /// Writers must still publish with a no-clobber operation.
 pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
+    let mut next = 1;
+    unique_target_from(dir, name, &mut next)
+}
+
+/// [`unique_target`], starting the ` (n)` search at `*next` and advancing it.
+///
+/// A batch export of many same-named files (a template without `{name}`) would
+/// otherwise probe `name`, `name (1)`, … from zero for every file, which is
+/// O(n²) `exists()` calls on a NAS. The hint is only a starting point: every
+/// candidate is still checked, and the writer still publishes with a no-clobber
+/// operation.
+fn unique_target_from(dir: &Path, name: &str, next: &mut usize) -> Result<PathBuf> {
     let first = dir.join(name);
     if !first.exists() {
         return Ok(first);
@@ -117,14 +133,17 @@ pub fn unique_target(dir: &Path, name: &str) -> Result<PathBuf> {
         Some((stem, ext)) => (stem, Some(ext)),
         None => (name, None),
     };
-    for n in 1..10_000 {
+    let mut n = (*next).max(1);
+    while n < 10_000 {
         let candidate = match ext {
             Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
             None => dir.join(format!("{stem} ({n})")),
         };
         if !candidate.exists() {
+            *next = n + 1;
             return Ok(candidate);
         }
+        n += 1;
     }
     Err(CoreError::invalid_input(format!(
         "no free name for {name} in {}",
@@ -166,11 +185,22 @@ fn sanitize(value: &str) -> String {
     cleaned.trim().trim_end_matches(['.', ' ']).to_string()
 }
 
+/// Capture day for an export item: the caller's stored time when it has one,
+/// else a read of the file (the path-only callers).
+fn capture_day_of(item: &ExportItem) -> Option<String> {
+    match item.captured_at.as_deref() {
+        // The library stores "" for "scanned, but the file has no EXIF time".
+        Some("") => None,
+        Some(captured) => day_of(Some(captured)),
+        None => capture_day(&item.src),
+    }
+}
+
 /// The subfolder an export lands in (`""` for the flat layout).
-fn folder_for(layout: ExportLayout, species: Option<&str>, src: &Path) -> String {
+fn folder_for(layout: ExportLayout, species: Option<&str>, day: Option<&str>) -> String {
     match layout {
         ExportLayout::Flat => String::new(),
-        ExportLayout::ByDate => capture_day(src).unwrap_or_else(|| "_no_date".to_string()),
+        ExportLayout::ByDate => day.unwrap_or("_no_date").to_string(),
         ExportLayout::BySpecies => species
             .map(sanitize)
             .filter(|s| !s.is_empty())
@@ -180,7 +210,12 @@ fn folder_for(layout: ExportLayout, species: Option<&str>, src: &Path) -> String
 
 /// Destination file name for one item (before collision handling). `None` keeps
 /// the original name; a pattern rebuilds it from `{name}`/`{date}`/`{species}`.
-fn file_name_for(pattern: Option<&str>, src: &Path, species: Option<&str>) -> Option<String> {
+fn file_name_for(
+    pattern: Option<&str>,
+    src: &Path,
+    species: Option<&str>,
+    day: Option<&str>,
+) -> Option<String> {
     let original = src.file_name()?.to_string_lossy().to_string();
     let Some(pattern) = pattern else {
         return Some(original);
@@ -196,10 +231,7 @@ fn file_name_for(pattern: Option<&str>, src: &Path, species: Option<&str>) -> Op
         .unwrap_or_else(|| unknown_species.clone());
     let rendered = pattern
         .replace("{name}", &stem)
-        .replace(
-            "{date}",
-            &capture_day(src).unwrap_or_else(|| "nodate".to_string()),
-        )
+        .replace("{date}", day.unwrap_or("nodate"))
         .replace("{species}", &species_token);
     let rendered = sanitize(rendered.trim());
     if rendered.is_empty() {
@@ -240,6 +272,7 @@ fn bare_items(files: &[PathBuf]) -> Vec<ExportItem> {
         .map(|src| ExportItem {
             src: src.clone(),
             species: None,
+            captured_at: None,
         })
         .collect()
 }
@@ -393,9 +426,10 @@ fn place_file(
     dir: &Path,
     name: &str,
     mode: ExportMode,
+    suffix: &mut usize,
 ) -> (Result<PathBuf>, Option<std::io::Error>) {
     for _ in 0..8 {
-        let target = match unique_target(dir, name) {
+        let target = match unique_target_from(dir, name, suffix) {
             Ok(target) => target,
             Err(e) => return (Err(e), None),
         };
@@ -452,6 +486,8 @@ pub fn export_items(
         destination: dest.to_path_buf(),
         ..Default::default()
     };
+    // Next ` (n)` to try for each (directory, name) that already collided.
+    let mut suffix_cursors: HashMap<(PathBuf, String), usize> = HashMap::new();
 
     for item in items {
         let src = &item.src;
@@ -461,13 +497,19 @@ pub fn export_items(
                 .push((src.clone(), "file is missing".to_string()));
             continue;
         }
-        let Some(name) = file_name_for(opts.rename.as_deref(), src, item.species.as_deref()) else {
+        let day = capture_day_of(item);
+        let Some(name) = file_name_for(
+            opts.rename.as_deref(),
+            src,
+            item.species.as_deref(),
+            day.as_deref(),
+        ) else {
             report
                 .failed
                 .push((src.clone(), "no file name".to_string()));
             continue;
         };
-        let sub = folder_for(opts.layout, item.species.as_deref(), src);
+        let sub = folder_for(opts.layout, item.species.as_deref(), day.as_deref());
         let dir = if sub.is_empty() {
             dest.to_path_buf()
         } else {
@@ -477,7 +519,10 @@ pub fn export_items(
             report.failed.push((src.clone(), e.to_string()));
             continue;
         }
-        let (result, delete_failed) = place_file(src, &dir, &name, mode);
+        let suffix = suffix_cursors
+            .entry((dir.clone(), name.clone()))
+            .or_insert(1);
+        let (result, delete_failed) = place_file(src, &dir, &name, mode, suffix);
         match result {
             Ok(target) => {
                 report.exported += 1;
@@ -533,6 +578,7 @@ mod tests {
             &[ExportItem {
                 src: raw,
                 species: None,
+                ..Default::default()
             }],
             dst.path(),
             ExportMode::Copy,
@@ -764,14 +810,17 @@ mod tests {
             ExportItem {
                 src: a,
                 species: None,
+                captured_at: None,
             },
             ExportItem {
                 src: b,
                 species: None,
+                captured_at: None,
             },
             ExportItem {
                 src: src.path().join("gone.cr3"),
                 species: None,
+                captured_at: None,
             },
         ];
         assert_eq!(total_source_bytes(&items), 8);
@@ -783,6 +832,21 @@ mod tests {
         assert!(space_warning_for(1, dst.path()).is_none());
         let msg = space_warning_for(u64::MAX, dst.path()).unwrap();
         assert!(msg.contains("free on the destination"), "{msg}");
+    }
+
+    #[test]
+    fn the_suffix_hint_skips_names_already_probed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.cr3", "x");
+
+        let mut next = 40;
+        let first = unique_target_from(dir.path(), "a.cr3", &mut next).unwrap();
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), "a (40).cr3");
+        assert_eq!(next, 41);
+
+        write(dir.path(), "a (40).cr3", "x");
+        let second = unique_target_from(dir.path(), "a.cr3", &mut next).unwrap();
+        assert_eq!(second.file_name().unwrap().to_string_lossy(), "a (41).cr3");
     }
 
     #[test]
@@ -841,6 +905,32 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_capture_time_is_used_for_the_layout_and_date_token() {
+        // Path-only callers have no EXIF (synthetic files), but the library
+        // already knows the capture day; using it avoids a second metadata pass.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let a = write(src.path(), "a.jpg", "x");
+        let items = vec![ExportItem {
+            src: a,
+            species: None,
+            captured_at: Some("2026-03-04T10:00:00".into()),
+        }];
+        let opts = ExportOptions {
+            layout: ExportLayout::ByDate,
+            rename: Some("{date}_{name}".into()),
+        };
+
+        export_items(&items, dst.path(), ExportMode::Copy, &opts).unwrap();
+
+        assert!(dst
+            .path()
+            .join("2026-03-04")
+            .join("2026-03-04_a.jpg")
+            .is_file());
+    }
+
+    #[test]
     fn by_date_splits_into_day_subfolders() {
         // Synthetic files carry no EXIF, so they land in the `_no_date` bucket.
         let src = tempfile::tempdir().unwrap();
@@ -866,10 +956,12 @@ mod tests {
             ExportItem {
                 src: titled,
                 species: Some("Ardea alba (Great Egret)".into()),
+                captured_at: None,
             },
             ExportItem {
                 src: plain,
                 species: None,
+                captured_at: None,
             },
         ];
         let opts = ExportOptions {
@@ -890,18 +982,21 @@ mod tests {
     fn rename_pattern_builds_the_destination_name() {
         let src = Path::new("D:/shoot/_IMG_1234.CR3");
         // No pattern keeps the original name.
-        assert_eq!(file_name_for(None, src, None).unwrap(), "_IMG_1234.CR3");
+        assert_eq!(
+            file_name_for(None, src, None, None).unwrap(),
+            "_IMG_1234.CR3"
+        );
         // Tokens: {name} is the stem, the extension is kept; unknown tokens fall back.
         assert_eq!(
-            file_name_for(Some("{species}_{name}"), src, Some("Great Egret")).unwrap(),
+            file_name_for(Some("{species}_{name}"), src, Some("Great Egret"), None).unwrap(),
             "Great Egret__IMG_1234.CR3"
         );
         assert_eq!(
-            file_name_for(Some("{species}_{name}"), src, None).unwrap(),
+            file_name_for(Some("{species}_{name}"), src, None, None).unwrap(),
             "unknown__IMG_1234.CR3"
         );
         assert_eq!(
-            file_name_for(Some("{date}-{name}"), src, None).unwrap(),
+            file_name_for(Some("{date}-{name}"), src, None, None).unwrap(),
             "nodate-_IMG_1234.CR3"
         );
     }
@@ -914,6 +1009,7 @@ mod tests {
         let items = vec![ExportItem {
             src: a,
             species: Some("Egretta garzetta".into()),
+            captured_at: None,
         }];
         let opts = ExportOptions {
             layout: ExportLayout::BySpecies,
