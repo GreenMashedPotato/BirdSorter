@@ -72,6 +72,8 @@ pub(crate) struct ScanReportDto {
     relinked: usize,
     /// Rows soft-deleted because the file is no longer on disk.
     missing: usize,
+    /// Files or subtrees that could not be read (left unchanged).
+    failed: usize,
 }
 
 /// Scan progress: `done` of `total` photos (hashing is the slow part).
@@ -226,6 +228,9 @@ fn run_scan(
     )
     .map_err(err)?;
 
+    for failure in &report.failed {
+        tracing::warn!(path = %failure, "scan skipped an unreadable path");
+    }
     Ok(ScanReportDto {
         seen: report.seen,
         added: report.added,
@@ -234,6 +239,7 @@ fn run_scan(
         restored: report.restored,
         relinked: report.relinked,
         missing: report.missing,
+        failed: report.failed.len(),
     })
 }
 

@@ -46,6 +46,8 @@ export interface ScanReport {
   relinked: number;
   /** Rows soft-deleted because the file is no longer on disk. */
   missing: number;
+  /** Files or subtrees that could not be read (left unchanged). */
+  failed: number;
 }
 
 export interface ScanProgress {
