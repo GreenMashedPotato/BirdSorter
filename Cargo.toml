@@ -28,7 +28,7 @@ rawler = "0.8.0"
 demosaic = "0.3"
 sha2 = "0.11"
 ureq = "3"
-zip = "2"
+zip = "3"
 trash = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
