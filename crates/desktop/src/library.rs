@@ -25,16 +25,70 @@ pub(crate) struct ImportReportDto {
     bytes: u64,
     /// `"<path>: <reason>"` for files that could not be copied.
     failed: Vec<String>,
+    /// The user stopped the run; the copies made so far are kept.
+    cancelled: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportProgressDto {
+    done: usize,
+    total: usize,
+    copied: usize,
+    skipped: usize,
+    failed: usize,
+    current: String,
 }
 
 /// Copy photos from a card or folder into the library, grouped by capture day.
+///
+/// Progress streams through `import-progress`; `cancel_import` stops it without
+/// losing the files already copied (each copy is atomic).
 #[tauri::command]
-pub(crate) async fn import_folder(source: String, dest: String) -> Result<ImportReportDto, String> {
-    blocking(move || {
-        let report = birdsorter_core::io::import::import_folder(
+pub(crate) async fn import_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+    dest: String,
+) -> Result<ImportReportDto, String> {
+    let cancel = CancelToken::new();
+    {
+        // A second import supersedes the first; the UI keeps one running.
+        let mut slot = state.import_cancel.lock().map_err(err)?;
+        if let Some(previous) = slot.take() {
+            previous.cancel();
+        }
+        *slot = Some(cancel.clone());
+    }
+    let handle = app.clone();
+    let result = blocking(move || {
+        // Throttle like the scan path: an event per file would flood the IPC
+        // bridge on a big card. Always send the first and the last.
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        let report = birdsorter_core::io::import::import_folder_streaming(
             Path::new(&source),
             Path::new(&dest),
             &birdsorter_core::io::import::ImportOptions::default(),
+            &|| cancel.is_cancelled(),
+            &mut |p| {
+                let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
+                if due || p.done == 0 || p.done == p.total {
+                    last_emit = std::time::Instant::now();
+                    let _ = handle.emit(
+                        "import-progress",
+                        ImportProgressDto {
+                            done: p.done,
+                            total: p.total,
+                            copied: p.copied,
+                            skipped: p.skipped,
+                            failed: p.failed,
+                            current: p.current.clone(),
+                        },
+                    );
+                }
+            },
         )
         .map_err(err)?;
         Ok(ImportReportDto {
@@ -46,9 +100,23 @@ pub(crate) async fn import_folder(source: String, dest: String) -> Result<Import
                 .into_iter()
                 .map(|(path, why)| format!("{}: {why}", path.display()))
                 .collect(),
+            cancelled: report.cancelled,
         })
     })
-    .await
+    .await;
+    if let Ok(mut slot) = state.import_cancel.lock() {
+        *slot = None;
+    }
+    result
+}
+
+/// Stop an in-flight import; the destination keeps the files already copied.
+#[tauri::command]
+pub(crate) fn cancel_import(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(token) = state.import_cancel.lock().map_err(err)?.take() {
+        token.cancel();
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -72,6 +140,8 @@ pub(crate) struct ScanReportDto {
     relinked: usize,
     /// Rows soft-deleted because the file is no longer on disk.
     missing: usize,
+    /// Files or subtrees that could not be read (left unchanged).
+    failed: usize,
 }
 
 /// Scan progress: `done` of `total` photos (hashing is the slow part).
@@ -226,6 +296,9 @@ fn run_scan(
     )
     .map_err(err)?;
 
+    for failure in &report.failed {
+        tracing::warn!(path = %failure, "scan skipped an unreadable path");
+    }
     Ok(ScanReportDto {
         seen: report.seen,
         added: report.added,
@@ -234,6 +307,7 @@ fn run_scan(
         restored: report.restored,
         relinked: report.relinked,
         missing: report.missing,
+        failed: report.failed.len(),
     })
 }
 
@@ -246,6 +320,11 @@ fn mirror_ratings(
     let mut written = 0usize;
     let mut failed = Vec::new();
     for (_, path, rating) in rows {
+        // An unrated file with no sidecar has nothing to clear; writing
+        // xmp:Rating=0 would create one sidecar per RAW on every reset.
+        if rating <= 0 && xmp::existing_sidecar(&path).is_none() {
+            continue;
+        }
         match xmp::write_rating(&path, rating.clamp(0, 5) as u8) {
             Ok(()) => written += 1,
             Err(e) => failed.push(format!("{}: {e}", path.display())),
@@ -271,10 +350,50 @@ pub(crate) async fn add_folder(state: State<'_, AppState>, path: String) -> Resu
 }
 
 /// Remove a folder from the library. The directory and its files stay on disk.
+///
+/// A scan or analysis that belongs to this folder is stopped and joined first:
+/// otherwise it keeps decoding files whose rows are being cascade-deleted and
+/// records a failure for every one of them.
 #[tauri::command]
 pub(crate) async fn remove_folder(state: State<'_, AppState>, folder: i64) -> Result<(), String> {
     let db_path = state.db_path.clone();
+    let scan_running = *state.scan_target.lock().map_err(err)? == Some(folder);
+    let analysis_running = *state.analysis_target.lock().map_err(err)? == Some(folder);
+
+    let scan_token = if scan_running {
+        state.scan_cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_token = if analysis_running {
+        state.cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let scan_thread = if scan_running {
+        state.scan_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_thread = if analysis_running {
+        state.analysis_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    if let Some(token) = scan_token {
+        token.cancel();
+    }
+    if let Some(token) = analysis_token {
+        token.cancel();
+    }
+
     blocking(move || {
+        if let Some(handle) = scan_thread {
+            let _ = handle.join();
+        }
+        if let Some(handle) = analysis_thread {
+            let _ = handle.join();
+        }
         let conn = open(&db_path)?;
         library::remove_folder(&conn, folder).map_err(err)
     })
@@ -307,6 +426,8 @@ pub(crate) fn scan_folder(
     // first run's handle and waits for it before writing.
     let mut slot = state.scan_thread.lock().map_err(err)?;
     let previous = slot.take();
+    let target = state.scan_target.clone();
+    *target.lock().map_err(err)? = Some(folder);
     let handle = std::thread::spawn(move || {
         if let Some(previous) = previous {
             let _ = previous.join();
@@ -327,6 +448,11 @@ pub(crate) fn scan_folder(
                     "scan-error",
                     "scan crashed (see the console); the library was left consistent".to_string(),
                 );
+            }
+        }
+        if let Ok(mut slot) = target.lock() {
+            if *slot == Some(folder) {
+                *slot = None;
             }
         }
     });
@@ -408,6 +534,11 @@ pub(crate) async fn rate_files(
         let mut failed = Vec::new();
         for id in &files {
             if let Some(lf) = library::get_file(&conn, *id).map_err(err)? {
+                // Clearing a rating on a file with no sidecar has nothing to do;
+                // creating an empty one would litter the folder.
+                if rating == 0 && xmp::existing_sidecar(&lf.absolute_path).is_none() {
+                    continue;
+                }
                 match xmp::write_rating(&lf.absolute_path, rating) {
                     Ok(()) => written += 1,
                     Err(e) => failed.push(format!("{}: {e}", lf.file.filename)),
@@ -494,4 +625,42 @@ pub(crate) async fn reset_ratings(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use birdsorter_core::data::db;
+
+    #[test]
+    fn clearing_a_rating_does_not_create_a_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let photos = dir.path().join("photos");
+        std::fs::create_dir(&photos).unwrap();
+        std::fs::write(photos.join("a.cr3"), b"raw").unwrap();
+
+        let conn = db::connect(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let folder = library::add_folder(&conn, &photos).unwrap();
+        library::scan_folder(&conn, folder).unwrap();
+        let id = library::list_files(&conn, folder, false, false).unwrap()[0]
+            .file
+            .id;
+
+        // Clearing a rating must not write a sidecar that was never there.
+        library::set_rating(&conn, &[id], 0).unwrap();
+        let (written, failed) = mirror_ratings(&conn, folder).unwrap();
+        assert_eq!((written, failed.len()), (0, 0));
+        assert!(!photos.join("a.xmp").exists());
+
+        // A real rating still creates and mirrors one.
+        library::set_rating(&conn, &[id], 4).unwrap();
+        let (written, _) = mirror_ratings(&conn, folder).unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(
+            birdsorter_core::io::xmp::read_rating(&photos.join("a.cr3")),
+            Some(4)
+        );
+    }
 }

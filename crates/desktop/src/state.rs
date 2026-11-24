@@ -15,6 +15,15 @@ pub(crate) struct RegionSource {
     pub(crate) rgb: Arc<Array3<u8>>,
 }
 
+/// The decoded base + denoised renders for the last blended preview. Moving the
+/// denoise slider only re-blends these; without it every tick decoded both
+/// JPEGs again (~200-400 ms at 24 MP).
+pub(crate) struct BlendSource {
+    pub(crate) key: String,
+    pub(crate) original: Arc<Array3<u8>>,
+    pub(crate) clean: Arc<Array3<u8>>,
+}
+
 pub(crate) struct AppState {
     pub(crate) db_path: PathBuf,
     pub(crate) cache: ThumbCache,
@@ -23,14 +32,23 @@ pub(crate) struct AppState {
     pub(crate) cancel: Mutex<Option<CancelToken>>,
     /// Separate token so a long scan can be cancelled independently.
     pub(crate) scan_cancel: Mutex<Option<CancelToken>>,
+    /// Token for an in-flight card import.
+    pub(crate) import_cancel: Mutex<Option<CancelToken>>,
     /// The running scan thread, so a restart can wait for it to stop.
     pub(crate) scan_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Folder the running scan belongs to, so removing that folder can stop it
+    /// before its rows cascade away.
+    pub(crate) scan_target: Arc<Mutex<Option<i64>>>,
     /// The running analysis thread, so a restart can wait for it to stop.
     pub(crate) analysis_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Folder the running analysis belongs to (see [`Self::scan_target`]).
+    pub(crate) analysis_target: Arc<Mutex<Option<i64>>>,
     /// A file path the app was launched to open (file association / "Open with").
     pub(crate) open_request: Mutex<Option<String>>,
     /// The current file's decoded preview, for windowed 1:1 crops.
     pub(crate) region: Arc<Mutex<Option<RegionSource>>>,
+    /// The current file's decoded base + denoised arrays, for the denoise slider.
+    pub(crate) blend: Arc<Mutex<Option<BlendSource>>>,
     /// Detector/species/scorer stack reused by review actions, so drawing a box
     /// does not reload an 800 MB model.
     pub(crate) pipeline: Arc<Mutex<Option<crate::analysis::PipelineCache>>>,

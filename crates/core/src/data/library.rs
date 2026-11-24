@@ -95,7 +95,7 @@ pub struct LibraryFile {
     pub absolute_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanReport {
     pub added: usize,
     pub updated: usize,
@@ -107,6 +107,8 @@ pub struct ScanReport {
     pub relinked: usize,
     /// Rows soft-deleted because the file is no longer on disk.
     pub missing: usize,
+    /// Files or subtrees that could not be read, left exactly as they were.
+    pub failed: Vec<String>,
 }
 
 fn detect_format(path: &Path) -> String {
@@ -130,20 +132,6 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
         }
     }
     path
-}
-
-/// A walk error is fatal for the scan: treating an unreadable subtree as empty
-/// would soft-delete every file still on disk below it.
-fn walk_error(err: walkdir::Error) -> CoreError {
-    let message = err.to_string();
-    let path = err
-        .path()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    match err.into_io_error() {
-        Some(source) => CoreError::io(path, source),
-        None => CoreError::Other(format!("scan failed at {}: {message}", path.display())),
-    }
 }
 
 /// mtime as seconds since the Unix epoch (fractional).
@@ -268,6 +256,26 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
             r.get(0)
         })?;
     with_tx(conn, || {
+        // Prepared once: a first scan writes tens of thousands of rows, and
+        // `Connection::execute` re-parses the SQL for every call.
+        let mut insert = conn.prepare(
+            "INSERT INTO files
+               (folder_id, relative_path, filename, content_hash,
+                filesize, mtime, format, imported_at, captured_at, rating,
+                rating_manual)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )?;
+        let mut update = conn.prepare(
+            "UPDATE files
+                SET relative_path = ?1, filename = ?2, content_hash = ?3,
+                    filesize = ?4, mtime = ?5, captured_at = ?6,
+                    trashed_at = NULL
+              WHERE id = ?7",
+        )?;
+        let mut update_rating = conn.prepare(
+            "UPDATE files SET rating = ?1, rating_manual = 1 WHERE id = ?2 AND rating = 0",
+        )?;
+
         for op in pending.iter() {
             match op {
                 Pending::Insert {
@@ -281,27 +289,20 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                 } => {
                     let path = PathBuf::from(&base).join(rel);
                     let rating = crate::io::xmp::read_rating(&path).unwrap_or(0) as i64;
-                    conn.execute(
-                        "INSERT INTO files
-                           (folder_id, relative_path, filename, content_hash,
-                            filesize, mtime, format, imported_at, captured_at, rating,
-                            rating_manual)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                        rusqlite::params![
-                            folder_id,
-                            rel,
-                            name,
-                            hash,
-                            size,
-                            mtime,
-                            format,
-                            now_iso(),
-                            captured_at,
-                            rating,
-                            // A star imported from Lightroom is still the user's.
-                            (rating > 0) as i64
-                        ],
-                    )?;
+                    insert.execute(rusqlite::params![
+                        folder_id,
+                        rel,
+                        name,
+                        hash,
+                        size,
+                        mtime,
+                        format,
+                        now_iso(),
+                        captured_at,
+                        rating,
+                        // A star imported from Lightroom is still the user's.
+                        (rating > 0) as i64
+                    ])?;
                 }
                 Pending::Update {
                     id,
@@ -314,23 +315,20 @@ fn flush_pending(conn: &Connection, folder_id: i64, pending: &mut Vec<Pending>) 
                 } => {
                     // `rel`/`name` are the same for a content change and new for
                     // a rename matched by hash (the row keeps its analysis).
-                    conn.execute(
-                        "UPDATE files
-                            SET relative_path = ?1, filename = ?2, content_hash = ?3,
-                                filesize = ?4, mtime = ?5, captured_at = ?6,
-                                trashed_at = NULL
-                          WHERE id = ?7",
-                        rusqlite::params![rel, name, hash, size, mtime, captured_at, id],
-                    )?;
+                    update.execute(rusqlite::params![
+                        rel,
+                        name,
+                        hash,
+                        size,
+                        mtime,
+                        captured_at,
+                        id
+                    ])?;
                     if let Some(rating) =
                         crate::io::xmp::read_rating(&PathBuf::from(&base).join(rel))
                             .filter(|rating| *rating > 0)
                     {
-                        conn.execute(
-                            "UPDATE files SET rating = ?1, rating_manual = 1
-                              WHERE id = ?2 AND rating = 0",
-                            rusqlite::params![rating, id],
-                        )?;
+                        update_rating.execute(rusqlite::params![rating, id])?;
                     }
                 }
             }
@@ -395,8 +393,23 @@ pub fn scan_folder_streaming(
         mtime: f64,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    // An unreadable subtree makes the walk incomplete: its files must not be
+    // mistaken for deleted in the missing pass below.
+    let mut walk_incomplete = false;
+    let mut failed_rels: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in WalkDir::new(&base) {
-        let entry = entry.map_err(walk_error)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                walk_incomplete = true;
+                failed.push(match e.path() {
+                    Some(path) => format!("{}: {e}", path.display()),
+                    None => e.to_string(),
+                });
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -409,13 +422,22 @@ pub fn scan_folder_streaming(
         if !is_photo_extension(&ext) {
             continue;
         }
-        let meta = std::fs::metadata(path).map_err(|e| CoreError::io(path, e))?;
+        let rel = path
+            .strip_prefix(&base)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                // One locked/placeholder file must not abort the whole scan.
+                failed.push(format!("{}: {e}", path.display()));
+                failed_rels.insert(rel);
+                continue;
+            }
+        };
         candidates.push(Candidate {
-            rel: path
-                .strip_prefix(&base)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/"),
+            rel,
             path: path.to_path_buf(),
             size: meta.len() as i64,
             mtime: mtime_secs(&meta),
@@ -470,10 +492,20 @@ pub fn scan_folder_streaming(
         candidates.iter().map(|c| c.rel.as_str()).collect();
     let mut orphans: HashMap<String, Vec<i64>> = HashMap::new();
     for (rel, (id, hash, _, _, _)) in &existing {
-        if !walked.contains(rel.as_str()) {
+        if !walked.contains(rel.as_str()) && !failed_rels.contains(rel.as_str()) {
             orphans.entry(hash.clone()).or_default().push(*id);
         }
     }
+
+    let mut hash_or_record = |path: &Path| -> Option<String> {
+        match hash_file(path) {
+            Ok(hash) => Some(hash),
+            Err(e) => {
+                failed.push(format!("{}: {e}", path.display()));
+                None
+            }
+        }
+    };
 
     for (done, cand) in candidates.iter().enumerate() {
         if cancel() {
@@ -499,7 +531,9 @@ pub fn scan_folder_streaming(
             {
                 // Metadata cannot prove content identity: a replacement can keep
                 // both size and mtime. Hash before trusting the fast path.
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 if hash == *prev_hash {
                     report.untouched += 1;
                 } else {
@@ -516,7 +550,9 @@ pub fn scan_folder_streaming(
                 }
             }
             Some((id, _, _, _, _)) => {
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 pending.push(Pending::Update {
                     id: *id,
                     rel: rel.clone(),
@@ -529,7 +565,9 @@ pub fn scan_folder_streaming(
                 report.updated += 1;
             }
             None => {
-                let hash = hash_file(path)?;
+                let Some(hash) = hash_or_record(path) else {
+                    continue;
+                };
                 let captured_at = Some(crate::io::exif::capture_time(path).unwrap_or_default());
                 match orphans.get_mut(&hash).and_then(Vec::pop) {
                     // Renamed/moved within the folder: same content, new path.
@@ -571,15 +609,20 @@ pub fn scan_folder_streaming(
     if cancelled {
         // A partial walk cannot tell "gone" from "not reached yet", so leave the
         // folder unstamped and every row alone; the next scan finishes the job.
+        report.failed = failed;
         return Ok(report);
     }
 
     // Anything still orphaned is no longer on disk: hide it instead of listing a
-    // row that every render and export will fail on.
-    let ids: Vec<i64> = orphans.into_values().flatten().collect();
-    if !ids.is_empty() {
-        report.missing = set_trashed(conn, &ids, true)?;
+    // row that every render and export will fail on. An incomplete walk cannot
+    // tell "gone" from "not reached", so it must not delete anything.
+    if !walk_incomplete {
+        let ids: Vec<i64> = orphans.into_values().flatten().collect();
+        if !ids.is_empty() {
+            report.missing = set_trashed(conn, &ids, true)?;
+        }
     }
+    report.failed = failed;
 
     with_tx(conn, || {
         conn.execute(
@@ -719,7 +762,7 @@ pub fn files_with_latest_label(
             AND f.trashed_at IS NULL
             AND (SELECT l.user_label FROM labels l
                   WHERE l.file_id = f.id
-                  ORDER BY l.created_at DESC, l.id DESC LIMIT 1) = ?2
+                  ORDER BY l.id DESC LIMIT 1) = ?2
           ORDER BY f.filename ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -775,7 +818,8 @@ pub fn list_files_with_details(
                 a.predicted_label, a.sharpness_score, a.has_bokeh,
                 a.species_name, a.subject_class, f.rating, f.flag, f.color,
                 (SELECT l.user_label FROM labels l
-                  WHERE l.file_id = f.id ORDER BY l.created_at DESC LIMIT 1) AS user_label
+                  WHERE l.file_id = f.id
+                  ORDER BY l.id DESC LIMIT 1) AS user_label
            FROM files f
            JOIN folders fo ON fo.id = f.folder_id
            LEFT JOIN analysis a ON a.file_id = f.id
@@ -851,12 +895,10 @@ pub fn get_file(conn: &Connection, file_id: i64) -> Result<Option<LibraryFile>> 
 pub fn set_trashed(conn: &Connection, file_ids: &[i64], trashed: bool) -> Result<usize> {
     let stamp = if trashed { Some(now_iso()) } else { None };
     with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET trashed_at = ?1 WHERE id = ?2")?;
         let mut n = 0;
         for id in file_ids {
-            n += conn.execute(
-                "UPDATE files SET trashed_at = ?1 WHERE id = ?2",
-                rusqlite::params![stamp, id],
-            )?;
+            n += stmt.execute(rusqlite::params![stamp, id])?;
         }
         Ok(n)
     })
@@ -880,9 +922,10 @@ pub fn reconcile_trashed(conn: &Connection, folder_id: i64) -> Result<usize> {
 
     let mut restored = 0;
     with_tx(conn, || {
+        let mut stmt = conn.prepare("UPDATE files SET trashed_at = NULL WHERE id = ?1")?;
         for (id, path) in &rows {
             if path.exists() {
-                conn.execute("UPDATE files SET trashed_at = NULL WHERE id = ?1", [id])?;
+                stmt.execute([id])?;
                 restored += 1;
             }
         }
@@ -1274,6 +1317,33 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_takes_the_newest_label_when_text_timestamps_disagree() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        scan_folder(&conn, fid).unwrap();
+        let file_id = list_files(&conn, fid, false, false).unwrap()[0].file.id;
+
+        // RFC 3339 text trims trailing zeros, so `.5Z` sorts AFTER `.51Z` as a
+        // string although it is earlier in time. The autoincrement id is the
+        // only reliable "latest".
+        for (label, created_at) in [
+            ("sharp", "2026-01-01T00:00:00.5Z"),
+            ("blurry", "2026-01-01T00:00:00.51Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO labels (file_id, user_label, source, created_at)
+                 VALUES (?1, ?2, 'manual', ?3)",
+                rusqlite::params![file_id, label, created_at],
+            )
+            .unwrap();
+        }
+
+        let rows = list_files_with_details(&conn, fid, false, false).unwrap();
+        assert_eq!(rows[0].user_label.as_deref(), Some("blurry"));
+    }
+
+    #[test]
     fn scan_reports_progress() {
         let (dir, conn) = setup();
         write(dir.path(), "a.cr3", b"a");
@@ -1309,6 +1379,31 @@ mod tests {
         })
         .unwrap();
         assert!(report.added < 6, "should have stopped early");
+    }
+
+    #[test]
+    fn a_file_that_vanishes_between_walk_and_hash_does_not_abort_the_scan() {
+        let (dir, conn) = setup();
+        write(dir.path(), "a.cr3", b"a");
+        write(dir.path(), "b.cr3", b"b");
+        let fid = add_folder(&conn, dir.path()).unwrap();
+        let removed = std::cell::Cell::new(false);
+        let report = scan_folder_streaming(&conn, fid, &|| false, &mut |done, _total| {
+            // The walk is complete when (0, total) arrives; delete a file before
+            // the hashing phase reaches it.
+            if done == 0 && !removed.get() {
+                removed.set(true);
+                std::fs::remove_file(dir.path().join("a.cr3")).unwrap();
+            }
+        })
+        .unwrap();
+
+        assert_eq!(report.failed.len(), 1, "{:?}", report.failed);
+        assert!(report.failed[0].contains("a.cr3"));
+        // The rest of the folder was still indexed.
+        let files = list_files(&conn, fid, false, false).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file.filename, "b.cr3");
     }
 
     #[test]
