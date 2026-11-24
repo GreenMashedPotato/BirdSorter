@@ -51,10 +51,17 @@ fn unstable(out: &[f32]) -> bool {
     if out.is_empty() {
         return true;
     }
-    let bad = out
-        .iter()
-        .filter(|&&v| !(-0.02..=1.02).contains(&v))
-        .count();
+    let mut bad = 0usize;
+    for &v in out {
+        // One NaN would reach the clamp (which passes it through) and poison
+        // the whole blended tile, so a non-finite value is always fatal.
+        if !v.is_finite() {
+            return true;
+        }
+        if !(-0.02..=1.02).contains(&v) {
+            bad += 1;
+        }
+    }
     bad as f32 / out.len() as f32 > MAX_UNSTABLE_SHARE
 }
 
@@ -135,15 +142,23 @@ pub fn denoise_tiled(
     let ys = positions(ph, tile, stride);
     let window = hann_weights(tile);
 
-    // `acc`/`wsum` are full-frame f32 buffers (16 bytes per pixel) because a
-    // tile's output must be blended with its neighbours; a 44 MP denoise needs
-    // ~700 MB transient. Callers render through the preview sizes, which keeps
-    // this at a few tens of MB.
-    let mut acc = vec![0f32; ph * pw * 3];
-    let mut wsum = vec![0f32; ph * pw];
+    // Rolling band: keep only `tile` rows of the f32 accumulator. A row is
+    // final once the next tile start has passed it, so it can be written and
+    // the band shifted. This bounds the 16-byte-per-pixel accumulator to
+    // `tile * width` (a few MB) instead of the whole frame (44 MP ≈ 700 MB).
+    let mut acc = vec![0f32; tile * pw * 3];
+    let mut wsum = vec![0f32; tile * pw];
     let mut tile_buf = vec![0f32; 3 * tile * tile];
+    let mut out_img = Array3::<u8>::zeros((h, w, 3));
+    let mut band_start = 0usize;
 
     for &y0 in &ys {
+        if y0 > band_start {
+            // No later tile can reach rows before `y0`.
+            write_rows(&mut out_img, &acc, &wsum, rgb, band_start, y0, pw);
+            shift_band(&mut acc, &mut wsum, y0 - band_start, tile, pw);
+            band_start = y0;
+        }
         for &x0 in &xs {
             // HWC -> CHW [0,1]
             for ty in 0..tile {
@@ -200,7 +215,8 @@ pub fn denoise_tiled(
                 let wy = window[ty];
                 for tx in 0..tile {
                     let weight = wy * window[tx];
-                    let idx = (y0 + ty) * pw + (x0 + tx);
+                    // The band starts at this tile's first row: band row = ty.
+                    let idx = ty * pw + (x0 + tx);
                     wsum[idx] += weight;
                     for c in 0..3 {
                         acc[idx * 3 + c] +=
@@ -210,15 +226,50 @@ pub fn denoise_tiled(
             }
         }
     }
+    // Rows still in the band are final; rows past `h` are only edge padding.
+    write_rows(&mut out_img, &acc, &wsum, rgb, band_start, ph, pw);
+    Ok(out_img)
+}
 
-    Ok(Array3::from_shape_fn((h, w, 3), |(y, x, c)| {
-        let idx = y * pw + x;
-        let total = wsum[idx];
-        if total <= 0.0 {
-            return rgb[[y, x, c]];
+/// Write finished band rows `band_start..to` (absolute image rows) to `out`.
+fn write_rows(
+    out: &mut Array3<u8>,
+    acc: &[f32],
+    wsum: &[f32],
+    rgb: &Array3<u8>,
+    band_start: usize,
+    to: usize,
+    pw: usize,
+) {
+    let (h, w, _) = out.dim();
+    for y in band_start..to.min(h) {
+        let band_row = y - band_start;
+        for x in 0..w {
+            let idx = band_row * pw + x;
+            let total = wsum[idx];
+            for c in 0..3 {
+                out[[y, x, c]] = if total <= 0.0 {
+                    rgb[[y, x, c]]
+                } else {
+                    (acc[idx * 3 + c] / total * 255.0).round().clamp(0.0, 255.0) as u8
+                };
+            }
         }
-        (acc[idx * 3 + c] / total * 255.0).round().clamp(0.0, 255.0) as u8
-    }))
+    }
+}
+
+/// Move the live rows down by `by` and zero the tail of the band.
+fn shift_band(acc: &mut [f32], wsum: &mut [f32], by: usize, tile: usize, pw: usize) {
+    if by >= tile {
+        acc.fill(0.0);
+        wsum.fill(0.0);
+        return;
+    }
+    let row = pw * 3;
+    acc.copy_within(by * row..tile * row, 0);
+    acc[(tile - by) * row..].fill(0.0);
+    wsum.copy_within(by * pw..tile * pw, 0);
+    wsum[(tile - by) * pw..].fill(0.0);
 }
 
 #[cfg(test)]
@@ -285,6 +336,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tall_image_is_blended_across_multiple_bands() {
+        // 1200 px tall with a 512 tile / 480 stride exercises the rolling band
+        // (three tile rows), not just the single-band small-image path.
+        let src = gradient(300, 1200);
+        let out = denoise_tiled(&src, &TilePlan::default(), invert).unwrap();
+        for ((y, x, c), &v) in out.indexed_iter() {
+            let expected = 255 - src[[y, x, c]];
+            assert!(
+                (v as i32 - expected as i32).abs() <= 1,
+                "pixel {y},{x},{c}: got {v}, want {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn a_dark_tile_that_explodes_is_retried_at_a_lifted_exposure() {
         // Stand-in for NAFNet's failure mode: near-black input makes it blow up.
         let calls = std::cell::Cell::new(0);
@@ -322,6 +388,26 @@ mod tests {
         assert!(
             out.iter().all(|&v| v == 40),
             "garbage must not be blended in"
+        );
+    }
+
+    #[test]
+    fn a_single_nan_marks_the_tile_unstable() {
+        // A NaN passes a range check's `contains` in the wrong direction: it
+        // would be blended into the accumulator and turn the pixel black.
+        let calls = std::cell::Cell::new(0);
+        let model = |t: &[f32], _w: usize, _h: usize| {
+            calls.set(calls.get() + 1);
+            let mut out = t.to_vec();
+            out[0] = f32::NAN;
+            Ok(out)
+        };
+        let src = Array3::<u8>::from_elem((64, 64, 3), 128);
+        let out = denoise_tiled(&src, &TilePlan::default(), model).unwrap();
+
+        assert!(
+            out.iter().all(|&v| v == 128),
+            "the NaN leaked into the result"
         );
     }
 

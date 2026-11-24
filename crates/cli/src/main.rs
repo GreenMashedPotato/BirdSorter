@@ -1168,6 +1168,7 @@ fn cmd_export(args: &[String]) -> ExitCode {
             items.push(ExportItem {
                 src: f.absolute_path.clone(),
                 species: species.get(&f.file.id).cloned(),
+                captured_at: f.file.captured_at.clone(),
             });
         }
         let opts = ExportOptions { layout, rename };
@@ -1755,11 +1756,15 @@ fn run_analyze(args: AnalyzeArgs) -> birdsorter_core::Result<()> {
         restored,
         relinked,
         missing,
+        failed,
     } = library::scan_folder(&conn, folder_id)?;
     println!(
         "scan: {seen} RAW files seen ({added} new, {updated} updated, {untouched} unchanged,\
          {restored} restored, {relinked} moved, {missing} gone)"
     );
+    for failure in &failed {
+        eprintln!("warning: could not read {failure}");
+    }
 
     // `--force` recomputes files that already have results. Marking them stale
     // keeps the old verdicts (a cancelled run does not lose them) and leaves

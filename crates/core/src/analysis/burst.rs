@@ -4,6 +4,8 @@
 //! whose capture times are no more than `gap_seconds` apart. This is what lets
 //! a flight sequence collapse to its sharpest frame.
 
+use std::collections::HashMap;
+
 use ndarray::Array3;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -255,12 +257,16 @@ pub fn best_in_burst(frames: &[Frame]) -> Option<i64> {
 
 /// Group frames and rank each burst, ready for the UI.
 pub fn find_bursts(frames: &[Frame], gap_seconds: i64) -> Vec<Burst> {
+    // Look each frame up once. Scanning `frames` for every member made a
+    // folder-wide pass O(frames²), and the grid/burst panel calls this after
+    // every edit.
+    let by_id: HashMap<i64, &Frame> = frames.iter().map(|f| (f.file_id, f)).collect();
     group_bursts(frames, gap_seconds)
         .into_iter()
         .map(|ids| {
             let members: Vec<Frame> = ids
                 .iter()
-                .filter_map(|id| frames.iter().find(|f| f.file_id == *id).copied())
+                .filter_map(|id| by_id.get(id).copied().copied())
                 .collect();
             let best = best_in_burst(&members).unwrap_or(ids[0]);
             let winner_override = members.iter().any(|f| f.manual_winner);

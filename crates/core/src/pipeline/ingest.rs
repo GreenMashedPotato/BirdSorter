@@ -229,6 +229,7 @@ fn run_sequential(
 ) -> Result<()> {
     let batch_size = ctx.batch_size.max(1);
     let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
+    let mut health = DetectorHealth::default();
 
     for lf in pending {
         if ctx.cancelled() {
@@ -257,13 +258,19 @@ fn run_sequential(
         }
 
         if batch.len() >= batch_size {
-            flush_batch(conn, ctx, &mut batch, progress)?;
+            flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+            if health.broken() {
+                return Err(health.broken_error());
+            }
         }
         on_progress(progress);
     }
 
     if !ctx.cancelled() {
-        flush_batch(conn, ctx, &mut batch, progress)?;
+        flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+        if health.broken() {
+            return Err(health.broken_error());
+        }
     } else {
         batch.clear();
     }
@@ -324,6 +331,7 @@ fn run_parallel(
 
         let mut batch: Vec<PendingItem> = Vec::with_capacity(batch_size);
         let mut received = 0usize;
+        let mut health = DetectorHealth::default();
         while received < total {
             let Ok((i, res)) = rx.recv() else { break };
             received += 1;
@@ -349,7 +357,10 @@ fn run_parallel(
                 }
             }
             if batch.len() >= batch_size {
-                flush_batch(conn, ctx, &mut batch, progress)?;
+                flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+                if health.broken() {
+                    return Err(health.broken_error());
+                }
             }
             on_progress(progress);
             if ctx.cancelled() {
@@ -357,7 +368,10 @@ fn run_parallel(
             }
         }
         if !ctx.cancelled() {
-            flush_batch(conn, ctx, &mut batch, progress)?;
+            flush_batch(conn, ctx, &mut batch, progress, &mut health)?;
+            if health.broken() {
+                return Err(health.broken_error());
+            }
         } else {
             batch.clear();
         }
@@ -436,11 +450,45 @@ fn fail_batch(batch: &[PendingItem], progress: &mut IngestProgress, message: Str
     }
 }
 
+/// A permanently broken detector must not make the run decode every remaining
+/// file just to record one failure each.
+const MAX_CONSECUTIVE_DETECTOR_FAILURES: usize = 3;
+
+/// Consecutive batch-level detector failures. A batch that detects normally
+/// resets the count, so one odd image does not stop the run.
+#[derive(Default)]
+struct DetectorHealth {
+    consecutive: usize,
+}
+
+impl DetectorHealth {
+    fn failed_batch(&mut self) {
+        self.consecutive += 1;
+    }
+
+    fn good_batch(&mut self) {
+        self.consecutive = 0;
+    }
+
+    fn broken(&self) -> bool {
+        self.consecutive >= MAX_CONSECUTIVE_DETECTOR_FAILURES
+    }
+
+    fn broken_error(&self) -> CoreError {
+        CoreError::Other(format!(
+            "the detector failed on {} batches in a row; stopped so the remaining \
+             files stay pending",
+            self.consecutive
+        ))
+    }
+}
+
 fn flush_batch(
     conn: &Connection,
     ctx: &IngestContext<'_>,
     batch: &mut Vec<PendingItem>,
     progress: &mut IngestProgress,
+    health: &mut DetectorHealth,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
@@ -463,20 +511,24 @@ fn flush_batch(
                     batch.len()
                 ),
             );
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
         Ok(Err(e)) => {
             fail_batch(batch, progress, format!("detect: {e}"));
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
         Err(_) => {
             fail_batch(batch, progress, "detect: detector panicked".to_string());
+            health.failed_batch();
             batch.clear();
             return Ok(());
         }
     };
+    health.good_batch();
     tracing::debug!(
         images = batch.len(),
         ms = detect_started.elapsed().as_millis() as u64,
@@ -498,7 +550,20 @@ fn flush_batch(
             // replaced file starts clean.
             let (h, w, _) = item.rgb.dim();
             let stored = stored_detections(conn, item.file_id)?;
-            let dets = stages::resolve_detections(&stored, dets, None, &[], w as i32, h as i32)?;
+            let exclusions = crate::data::analysis_store::read_exclusions(
+                conn,
+                item.file_id,
+                &item.content_hash,
+            )?;
+            let dets = stages::resolve_detections(
+                &stored,
+                dets,
+                None,
+                &[],
+                &exclusions,
+                w as i32,
+                h as i32,
+            )?;
             let mut record = analyze_one(
                 item.file_id,
                 &item.rgb,
@@ -639,6 +704,13 @@ pub fn analyze_file_with(
         let (img, _hash) = decode_unchanged(decoder, file)?;
         let (h, w, _) = img.rgb.dim();
         let stored = stored_detections(conn, file.file.id)?;
+        // Tombstones from earlier removals, scoped to these bytes. They filter
+        // the fresh detection too; a plain re-identify still re-detects.
+        let tombstones = crate::data::analysis_store::read_exclusions(
+            conn,
+            file.file.id,
+            &file.file.content_hash,
+        )?;
         // A manual box or an exclusion edits the stored set; a fresh detection
         // pass only runs for a plain re-identify.
         let detected = if manual_box.is_none() && exclude.is_empty() {
@@ -650,8 +722,15 @@ pub fn analyze_file_with(
         } else {
             Vec::new()
         };
-        let dets =
-            stages::resolve_detections(&stored, detected, manual_box, exclude, w as i32, h as i32)?;
+        let dets = stages::resolve_detections(
+            &stored,
+            detected,
+            manual_box,
+            exclude,
+            &tombstones,
+            w as i32,
+            h as i32,
+        )?;
         let mut record = analyze_one(
             file.file.id,
             &img.rgb,
@@ -1042,6 +1121,31 @@ mod tests {
     }
 
     #[test]
+    fn a_permanently_failing_detector_stops_the_run() {
+        let (_dir, conn) = setup(5);
+        let fid = folder_id(&conn);
+        let decoder = FakeDecoder::new();
+        let detector = FakeDetector {
+            fail: true,
+            ..FakeDetector::new(vec![])
+        };
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext {
+            batch_size: 1,
+            ..IngestContext::new(&decoder, &detector, &scorer)
+        };
+
+        let err = ingest_folder(&conn, fid, &ctx, |_| {}).unwrap_err();
+        assert!(err.to_string().contains("detector failed"), "{err}");
+        // Fewer decoder passes than files: the run stopped instead of grinding
+        // through the whole folder, and nothing was written.
+        assert_eq!(
+            library::files_needing_analysis(&conn, fid).unwrap().len(),
+            5
+        );
+    }
+
+    #[test]
     fn no_detections_scores_whole_image() {
         let (_dir, conn) = setup(1);
         let fid = folder_id(&conn);
@@ -1308,6 +1412,61 @@ mod tests {
             .subject_species
             .iter()
             .any(|s| s.class.as_deref() == Some("manual")));
+    }
+
+    #[test]
+    fn a_removed_box_stays_removed_after_a_full_reanalysis() {
+        let (_dir, conn) = setup(1);
+        let fid = folder_id(&conn);
+        let mut decoder = FakeDecoder::new();
+        decoder.sharp = checkerboard(1024, 1024, 8, 230, 20);
+        let detector = FakeDetector::new(vec![
+            subject_at(32, 32, 160, 160),
+            subject_at(500, 500, 160, 160),
+        ]);
+        let scorer = PanicFreeScorer(ScoreSettings::default());
+        let ctx = IngestContext::new(&decoder, &detector, &scorer);
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let lf = list_files(&conn, fid, false, false).unwrap().remove(0);
+        let removed = BBox::new(500, 500, 160, 160);
+        // `remove_subject` records the tombstone, then re-evaluates.
+        analysis_store::add_exclusion(&conn, lf.file.id, removed, &lf.file.content_hash).unwrap();
+        analyze_file_with(
+            &conn,
+            &lf,
+            &decoder,
+            &detector,
+            &scorer,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !row.bboxes.contains(&removed),
+            "removal applies immediately: {:?}",
+            row.bboxes
+        );
+        assert!(row.bboxes.contains(&BBox::new(32, 32, 160, 160)));
+
+        // A full folder re-analysis must not resurrect the removed box.
+        analysis_store::mark_folder_stale(&conn, fid).unwrap();
+        ingest_folder(&conn, fid, &ctx, |_| {}).unwrap();
+
+        let row = analysis_store::get_analysis(&conn, lf.file.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !row.bboxes.contains(&removed),
+            "tombstone survived re-analysis: {:?}",
+            row.bboxes
+        );
     }
 
     #[test]

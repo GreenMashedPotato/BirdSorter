@@ -146,7 +146,10 @@ impl RenderGates {
     }
 
     /// The gate for `key`; keep the returned handle alive while locking it.
-    fn gate(&self, key: &str) -> Arc<Mutex<()>> {
+    ///
+    /// Public so work whose output is cached outside `ThumbCache` (the denoise
+    /// file) can coalesce the same way: lock, re-check the cache, compute.
+    pub fn gate(&self, key: &str) -> Arc<Mutex<()>> {
         let mut gates = match self.gates.lock() {
             Ok(gates) => gates,
             // A poisoned map holds no data worth recovering differently.
