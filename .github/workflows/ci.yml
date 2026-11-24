@@ -48,6 +48,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # ort-sys rc.11 symlinks/copies the ONNX Runtime DLLs into cargo's
+      # artifact dirs, but assumes `build/examples` and `build/deps` already
+      # exist; on a clean Windows runner it panics in `copy_dylibs`. Create
+      # them first so the symlink (or copy fallback) has a valid parent.
+      - name: Create ORT dylib target dirs (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path target/debug/build/examples, target/debug/build/deps | Out-Null
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -133,6 +142,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Create ORT dylib target dirs
+        run: |
+          New-Item -ItemType Directory -Force -Path target/debug/build/examples, target/debug/build/deps | Out-Null
 
       # Clippy is a superset of `cargo check` and the local gates lint the whole
       # workspace; without this the Tauri adapter was only compile-checked here.

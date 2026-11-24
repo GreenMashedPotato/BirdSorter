@@ -25,16 +25,70 @@ pub(crate) struct ImportReportDto {
     bytes: u64,
     /// `"<path>: <reason>"` for files that could not be copied.
     failed: Vec<String>,
+    /// The user stopped the run; the copies made so far are kept.
+    cancelled: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportProgressDto {
+    done: usize,
+    total: usize,
+    copied: usize,
+    skipped: usize,
+    failed: usize,
+    current: String,
 }
 
 /// Copy photos from a card or folder into the library, grouped by capture day.
+///
+/// Progress streams through `import-progress`; `cancel_import` stops it without
+/// losing the files already copied (each copy is atomic).
 #[tauri::command]
-pub(crate) async fn import_folder(source: String, dest: String) -> Result<ImportReportDto, String> {
-    blocking(move || {
-        let report = birdsorter_core::io::import::import_folder(
+pub(crate) async fn import_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+    dest: String,
+) -> Result<ImportReportDto, String> {
+    let cancel = CancelToken::new();
+    {
+        // A second import supersedes the first; the UI keeps one running.
+        let mut slot = state.import_cancel.lock().map_err(err)?;
+        if let Some(previous) = slot.take() {
+            previous.cancel();
+        }
+        *slot = Some(cancel.clone());
+    }
+    let handle = app.clone();
+    let result = blocking(move || {
+        // Throttle like the scan path: an event per file would flood the IPC
+        // bridge on a big card. Always send the first and the last.
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        let report = birdsorter_core::io::import::import_folder_streaming(
             Path::new(&source),
             Path::new(&dest),
             &birdsorter_core::io::import::ImportOptions::default(),
+            &|| cancel.is_cancelled(),
+            &mut |p| {
+                let due = last_emit.elapsed() >= std::time::Duration::from_millis(120);
+                if due || p.done == 0 || p.done == p.total {
+                    last_emit = std::time::Instant::now();
+                    let _ = handle.emit(
+                        "import-progress",
+                        ImportProgressDto {
+                            done: p.done,
+                            total: p.total,
+                            copied: p.copied,
+                            skipped: p.skipped,
+                            failed: p.failed,
+                            current: p.current.clone(),
+                        },
+                    );
+                }
+            },
         )
         .map_err(err)?;
         Ok(ImportReportDto {
@@ -46,9 +100,23 @@ pub(crate) async fn import_folder(source: String, dest: String) -> Result<Import
                 .into_iter()
                 .map(|(path, why)| format!("{}: {why}", path.display()))
                 .collect(),
+            cancelled: report.cancelled,
         })
     })
-    .await
+    .await;
+    if let Ok(mut slot) = state.import_cancel.lock() {
+        *slot = None;
+    }
+    result
+}
+
+/// Stop an in-flight import; the destination keeps the files already copied.
+#[tauri::command]
+pub(crate) fn cancel_import(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(token) = state.import_cancel.lock().map_err(err)?.take() {
+        token.cancel();
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -72,6 +140,8 @@ pub(crate) struct ScanReportDto {
     relinked: usize,
     /// Rows soft-deleted because the file is no longer on disk.
     missing: usize,
+    /// Files or subtrees that could not be read (left unchanged).
+    failed: usize,
 }
 
 /// Scan progress: `done` of `total` photos (hashing is the slow part).
@@ -226,6 +296,9 @@ fn run_scan(
     )
     .map_err(err)?;
 
+    for failure in &report.failed {
+        tracing::warn!(path = %failure, "scan skipped an unreadable path");
+    }
     Ok(ScanReportDto {
         seen: report.seen,
         added: report.added,
@@ -234,6 +307,7 @@ fn run_scan(
         restored: report.restored,
         relinked: report.relinked,
         missing: report.missing,
+        failed: report.failed.len(),
     })
 }
 
@@ -276,10 +350,50 @@ pub(crate) async fn add_folder(state: State<'_, AppState>, path: String) -> Resu
 }
 
 /// Remove a folder from the library. The directory and its files stay on disk.
+///
+/// A scan or analysis that belongs to this folder is stopped and joined first:
+/// otherwise it keeps decoding files whose rows are being cascade-deleted and
+/// records a failure for every one of them.
 #[tauri::command]
 pub(crate) async fn remove_folder(state: State<'_, AppState>, folder: i64) -> Result<(), String> {
     let db_path = state.db_path.clone();
+    let scan_running = *state.scan_target.lock().map_err(err)? == Some(folder);
+    let analysis_running = *state.analysis_target.lock().map_err(err)? == Some(folder);
+
+    let scan_token = if scan_running {
+        state.scan_cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_token = if analysis_running {
+        state.cancel.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let scan_thread = if scan_running {
+        state.scan_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    let analysis_thread = if analysis_running {
+        state.analysis_thread.lock().map_err(err)?.take()
+    } else {
+        None
+    };
+    if let Some(token) = scan_token {
+        token.cancel();
+    }
+    if let Some(token) = analysis_token {
+        token.cancel();
+    }
+
     blocking(move || {
+        if let Some(handle) = scan_thread {
+            let _ = handle.join();
+        }
+        if let Some(handle) = analysis_thread {
+            let _ = handle.join();
+        }
         let conn = open(&db_path)?;
         library::remove_folder(&conn, folder).map_err(err)
     })
@@ -312,6 +426,8 @@ pub(crate) fn scan_folder(
     // first run's handle and waits for it before writing.
     let mut slot = state.scan_thread.lock().map_err(err)?;
     let previous = slot.take();
+    let target = state.scan_target.clone();
+    *target.lock().map_err(err)? = Some(folder);
     let handle = std::thread::spawn(move || {
         if let Some(previous) = previous {
             let _ = previous.join();
@@ -332,6 +448,11 @@ pub(crate) fn scan_folder(
                     "scan-error",
                     "scan crashed (see the console); the library was left consistent".to_string(),
                 );
+            }
+        }
+        if let Ok(mut slot) = target.lock() {
+            if *slot == Some(folder) {
+                *slot = None;
             }
         }
     });
